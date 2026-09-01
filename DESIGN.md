@@ -115,6 +115,11 @@ presence 心跳（本地读 registry 即可）、`worker_upgrade_required` 等�
 **风险**：Desktop IPC 依赖 ChatGPT.app 私有协议，宿主升级会破——需要版本探测 + 降级路径
 （headless spawn 兜底）。
 
+**唤醒载体分层原则（硬约束）**：核心功能零外部依赖（频道日志 + read/send 任何会话可用）；
+每个唤醒载体（Claude socket、Desktop IPC、cmux surface…）都是**运行时探测、失败降级、
+绝不必装**。cmux 只是探测到就用的可选加速器（2026-09-01 真机验证过 `send --surface`
+可唤醒终端 TUI），任何代码不得把它写成硬依赖。
+
 ## 五、共享维护策略（两个项目一处维护）
 
 目标（owner 拍板方向）：跑通之后抽公共组件，**canonical 只有一处**，两个项目都从它维护。

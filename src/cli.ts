@@ -253,6 +253,15 @@ function cmdDoctor(parsed: Parsed): void {
   else if (codex.length === 1) warn("只有 1 个 Codex rollout——原生 IPC 唤醒需要同 renderer 下的第二个任务作 source");
   else warn("没有 Codex rollout（跑过 codex 吗？）");
 
+  console.log("可选加速器");
+  const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
+  const cmuxPing = spawnSync("cmux", ["ping"], { encoding: "utf8", timeout: 2000 });
+  if (cmuxPing.status === 0) {
+    ok("cmux 在运行——终端里的 codex/claude TUI 也能被唤醒（按 surface 寻址）");
+  } else {
+    console.log("  ｰ  cmux 未检测到（可选，不影响核心功能；终端 TUI 需自己先进频道）");
+  }
+
   console.log("数据目录");
   try {
     statSync(ocsHome());
