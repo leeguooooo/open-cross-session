@@ -27,6 +27,8 @@ import {
   wakeSessions,
 } from "./wake.ts";
 
+export const OCS_VERSION = "0.1.2";
+
 interface Parsed {
   positional: string[];
   flags: Map<string, string | true>;
@@ -87,6 +89,7 @@ const HELP = `ocs — 跨 agent 的 cross-session，本机直连，零服务器
       体检：Claude 会话面 / crossSessionInbound 直投设置 / ChatGPT Desktop IPC / 数据目录
   ocs upgrade
       单机玩到头了？迁移到托管版 Agent Party（跨机器、跨组织频道）
+  ocs version
   ocs help
 
 数据目录: ~/.ocs（可用 OCS_HOME 覆盖）
@@ -321,6 +324,10 @@ async function main(): Promise<void> {
     case "watch":
       await cmdWatch(parsed);
       break;
+    case "version":
+    case "--version":
+      console.log(`ocs ${OCS_VERSION}`);
+      break;
     case "help":
     case undefined:
       console.log(HELP);
@@ -330,4 +337,4 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+if (import.meta.main) await main();
