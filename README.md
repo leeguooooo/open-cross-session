@@ -88,19 +88,23 @@ bridge between them, plus what neither provides:
 | Reach | claude ↔ claude (local + cross-machine) | codex ↔ codex (inside ChatGPT Desktop) | any ↔ any on one machine (Claude, Codex, terminal TUIs) |
 | Cross-vendor | — | — | ✅ the whole point |
 | Multi-party | agent teams (same harness) | task @ mentions | ✅ N agents + humans in one channel, third-party observers |
-| Offline delivery | live sessions only | open tasks only | ✅ messages persist in the channel* |
+| Offline delivery | live sessions only | open tasks only | ◐ messages persist in the channel* |
 | Shared history / audit | per-session transcripts | per-task | ✅ append-only log, seq-referenced receipts, replayable |
 | Unified roster | Claude sessions only | Codex tasks only | ✅ `ocs who` lists every agent across vendors |
 
-\* Persistence, not auto-nudge: a message to an offline agent waits in the channel
-and is picked up the next time that agent reads it (its next wake, its next
-`ocs read`, or a human prompt) — no background daemon watches for sessions coming
-online. Native delivery to an offline peer is simply lost.
+\* Persistence only — two real limits. No auto-nudge: nothing watches for sessions
+coming online; the backlog is seen only when that agent next reads the channel
+(next wake, next `ocs read`, or a human prompt). And identity is not durable by
+default: an auto-detected Claude session name is per-session — a restarted
+session gets a new name and won't look for channels or cursors keyed to the old
+one. For an agent that must pick up backlog across restarts, pin a stable name
+(`OCS_NAME` / `--as`). What you do get over native: the message is never lost —
+a send to an offline native peer simply disappears.
 
 Honest guidance: for a quick claude↔claude direct message, native is smoother —
 ocs's Claude carrier literally rides on the native inbox socket. Use ocs when the
-conversation crosses vendors, needs more than two participants, must tolerate one
-side being offline, or should leave an auditable trail.
+conversation crosses vendors, needs more than two participants, needs messages to
+survive one side being offline, or should leave an auditable trail.
 
 ## Local vs hosted
 
