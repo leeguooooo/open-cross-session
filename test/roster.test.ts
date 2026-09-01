@@ -5,11 +5,13 @@ import { join } from "node:path";
 import { CLAUDE_NATIVE_SESSIONS_DIR_ENV } from "../src/claude-inject.ts";
 import {
   dmChannel,
+  findDmReplyChannel,
   resolveDmTarget,
   resolveSelfName,
   selfIdentity,
   OCS_NAME_ENV,
 } from "../src/roster.ts";
+import { appendMessage, loadCursor, readMessages, saveCursor, OCS_HOME_ENV } from "../src/store.ts";
 
 const THREAD = "aaaaaaaa-1111-2222-3333-444444444444";
 
@@ -82,6 +84,24 @@ describe("resolveDmTarget", () => {
     const offline = resolveDmTarget("ghost", env);
     expect(offline).toMatchObject({ kind: "claude", name: "ghost" });
     expect((offline as { claude?: unknown }).claude).toBeUndefined();
+  });
+});
+
+describe("findDmReplyChannel（跨载体反向 dm 会话收敛，review 回归）", () => {
+  test("被唤醒方读过的频道里有对方发言 → 反向 dm 续用同一频道", () => {
+    const env = { [OCS_HOME_ENV]: require("node:fs").mkdtempSync(require("node:path").join(require("node:os").tmpdir(), "ocs-dmrev-")) };
+    // 正向：alice dm 一个 codex 目标 → 频道按载体身份派生
+    const target = resolveDmTarget("aaaaaaaa-1111-2222-3333-444444444444", env)!;
+    const forward = dmChannel(selfIdentity("alice"), target.identity);
+    appendMessage({ channel: forward, from: "alice", body: "hi codex", env });
+    // 被唤醒方 codex-ping 按指针读频道（留下游标）
+    readMessages(forward, { env });
+    saveCursor(forward, "codex-ping", 1, env);
+    // 反向：codex-ping dm alice —— 应命中同一频道，而不是 name 对派生的新频道
+    expect(findDmReplyChannel("codex-ping", "alice", env)).toBe(forward);
+    // 无游标/无参与时不乱认
+    expect(findDmReplyChannel("stranger", "alice", env)).toBeNull();
+    expect(findDmReplyChannel("codex-ping", "nobody", env)).toBeNull();
   });
 });
 

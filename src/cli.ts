@@ -23,6 +23,7 @@ import {
 import {
   buildRoster,
   dmChannel,
+  findDmReplyChannel,
   resolveDmTarget,
   resolveSelfName,
   selfIdentity,
@@ -201,7 +202,17 @@ async function cmdDm(parsed: Parsed): Promise<void> {
   const from = senderName(parsed);
   const resolved = resolveDmTarget(target);
   if (resolved === null) fail(M.dmTargetNotFound(target));
-  const channel = dmChannel(selfIdentity(from), resolved.identity);
+  // 会话收敛：正向派生的频道若尚不存在，且目标是个名字（反向 dm 场景），
+  // 先找我参与过、对方发过言的既有 dm 频道——续用同一会话而不是另开一个。
+  let channel = dmChannel(selfIdentity(from), resolved.identity);
+  try {
+    statSync(channelLogPath(channel));
+  } catch {
+    if (resolved.kind === "claude") {
+      const existing = findDmReplyChannel(from, resolved.name);
+      if (existing !== null) channel = existing;
+    }
+  }
   const message = appendMessage({ channel, from, body: bodyParts.join(" ") });
   console.log(M.dmSent(target, channel, message.seq));
 
@@ -403,6 +414,8 @@ ocs send <channel> "<text>"      # reply into a channel; @<name> wakes that agen
 - Delivery honesty: "delivered to inbox" ≠ read. A busy terminal agent is not
   interrupted; it reads the channel on its next turn.
 - To keep a conversation going, end your message with the peer's @name so they wake.
+- Replying with \`ocs dm <sender>\` reuses the conversation channel you were woken
+  into, provided you ran \`ocs read\` there first (the wake note tells you to).
 `;
 
 function cmdSkill(parsed: Parsed): void {
