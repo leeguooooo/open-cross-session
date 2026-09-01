@@ -131,18 +131,28 @@ export type CodexWakeResult =
   | { ok: false; reason: "unavailable" | "bad-thread-id" | "no-source" | "route-mismatch" | "failed" | "unknown-outcome"; detail?: string };
 
 /**
- * 选 source thread：Desktop IPC 的 `thread-follower-start-turn` 需要一个 source 任务
- * （UI 里显示「来自任务 X 的消息」）。未显式指定时，取最近的一个非目标 rollout thread。
+ * source thread 候选：Desktop IPC 的 `thread-follower-start-turn` 需要一个 source 任务
+ * （UI 里显示「来自任务 X 的消息」）。未显式指定时按 rollout 新旧序逐个当候选——
+ * rollout 存在 ≠ 在 Desktop 里开着，谁能用要靠 owner 探测逐个试。
  */
+export function listCodexSourceCandidates(
+  targetThreadId: string,
+  env: NodeJS.ProcessEnv = process.env,
+  limit = 10,
+): string[] {
+  const wanted = targetThreadId.toLowerCase();
+  return listCodexSessions(codexSessionsRoot(env), { limit: limit + 1 })
+    .map((s) => s.threadId)
+    .filter((t) => t.toLowerCase() !== wanted)
+    .slice(0, limit);
+}
+
+/** 兼容旧签名：最近的一个非目标 rollout（不保证在 Desktop 里开着）。 */
 export function pickCodexSourceThread(
   targetThreadId: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  const wanted = targetThreadId.toLowerCase();
-  for (const session of listCodexSessions(codexSessionsRoot(env), { limit: 20 })) {
-    if (session.threadId.toLowerCase() !== wanted) return session.threadId;
-  }
-  return null;
+  return listCodexSourceCandidates(targetThreadId, env, 1)[0] ?? null;
 }
 
 /**
@@ -167,26 +177,66 @@ export async function wakeCodexTask(input: {
   if (!codexDesktopIpcAvailable(env)) {
     return { ok: false, reason: "unavailable", detail: "ChatGPT Desktop IPC socket 不可用（Desktop 没开？）" };
   }
-  const sourceThreadId = input.sourceThreadId ?? pickCodexSourceThread(input.targetThreadId, env);
-  if (sourceThreadId === null) {
-    return { ok: false, reason: "no-source", detail: "没有第二个 codex task 可作为 source（IPC 需要成对任务）" };
-  }
-  if (!isCodexThreadId(sourceThreadId) || sourceThreadId.toLowerCase() === input.targetThreadId.toLowerCase()) {
-    return { ok: false, reason: "bad-thread-id", detail: sourceThreadId };
+  if (input.sourceThreadId !== undefined &&
+      (!isCodexThreadId(input.sourceThreadId) ||
+        input.sourceThreadId.toLowerCase() === input.targetThreadId.toLowerCase())) {
+    return { ok: false, reason: "bad-thread-id", detail: input.sourceThreadId };
   }
   const client = new CodexDesktopIpcClient({ env });
   try {
     await client.connect();
-    const [targetOwner, sourceOwner] = await Promise.all([
-      client.discoverThreadOwner(input.targetThreadId),
-      client.discoverThreadOwner(sourceThreadId),
-    ]);
-    if (targetOwner !== sourceOwner) {
+    // 分开探测、准确归因：target 探不到就是 target 没开，绝不把 source 的问题算到它头上。
+    let targetOwner: string;
+    try {
+      targetOwner = await client.discoverThreadOwner(input.targetThreadId);
+    } catch {
       return {
         ok: false,
-        reason: "route-mismatch",
-        detail: `source 与 target 不属于同一个 renderer（${sourceOwner} ≠ ${targetOwner}）`,
+        reason: "failed",
+        detail: `目标 task ${input.targetThreadId} 未在 ChatGPT Desktop 中打开（IPC 只能投给开着的任务）`,
       };
+    }
+    // source：显式指定则严格校验；自动选择则逐候选试探，跳过没开着的 rollout。
+    let sourceThreadId: string;
+    if (input.sourceThreadId !== undefined) {
+      let sourceOwner: string;
+      try {
+        sourceOwner = await client.discoverThreadOwner(input.sourceThreadId);
+      } catch {
+        return {
+          ok: false,
+          reason: "failed",
+          detail: `source task ${input.sourceThreadId} 未在 ChatGPT Desktop 中打开`,
+        };
+      }
+      if (sourceOwner !== targetOwner) {
+        return {
+          ok: false,
+          reason: "route-mismatch",
+          detail: `source 与 target 不属于同一个 renderer（${sourceOwner} ≠ ${targetOwner}）`,
+        };
+      }
+      sourceThreadId = input.sourceThreadId;
+    } else {
+      let picked: string | null = null;
+      for (const candidate of listCodexSourceCandidates(input.targetThreadId, env)) {
+        try {
+          if ((await client.discoverThreadOwner(candidate)) === targetOwner) {
+            picked = candidate;
+            break;
+          }
+        } catch {
+          // 该 rollout 没在 Desktop 开着，试下一个
+        }
+      }
+      if (picked === null) {
+        return {
+          ok: false,
+          reason: "no-source",
+          detail: "同一 Desktop 里没有第二个打开的 task 可作 source（IPC 需要成对任务；再开一个或用 --codex-source 指定）",
+        };
+      }
+      sourceThreadId = picked;
     }
     const prompt = wakeNote(input.channel, input.seq, input.from);
     const { turnId } = await client.startDelegatedTurn({

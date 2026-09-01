@@ -8,14 +8,19 @@ import { pickCodexSourceThread, splitWakeMentions, wakeCodexTask } from "../src/
 
 const THREAD_A = "aaaaaaaa-1111-2222-3333-444444444444";
 const THREAD_B = "bbbbbbbb-1111-2222-3333-444444444444";
+const THREAD_C = "cccccccc-1111-2222-3333-444444444444";
 
-function rolloutFixture(): NodeJS.ProcessEnv {
+function rolloutFixture(options: { withThreadC?: boolean } = {}): NodeJS.ProcessEnv {
   const codexHome = mkdtempSync(join(tmpdir(), "ocs-codex-"));
   const day = join(codexHome, "sessions", "2026", "08", "31");
   mkdirSync(day, { recursive: true });
   const meta = (cwd: string) =>
     `${JSON.stringify({ type: "session_meta", payload: { cwd, originator: "codex", source: "terminal" } })}\n` +
     `${JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "hello\nworld" } })}\n`;
+  if (options.withThreadC) {
+    // 最老：自动选 source 时排在 A 之后
+    writeFileSync(join(day, `rollout-2026-08-31T09-00-00-${THREAD_C}.jsonl`), meta("/tmp/c"));
+  }
   writeFileSync(join(day, `rollout-2026-08-31T10-00-00-${THREAD_A}.jsonl`), meta("/tmp/a"));
   writeFileSync(join(day, `rollout-2026-08-31T11-00-00-${THREAD_B}.jsonl`), meta("/tmp/b"));
   return { CODEX_HOME: codexHome };
@@ -68,8 +73,10 @@ function encodeFrame(value: unknown): Buffer {
   return frame;
 }
 
-function fakeRouter(options: { ownerOf?: (threadId: string) => string } = {}): FakeRouter {
-  const codexHome = rolloutFixture().CODEX_HOME!;
+function fakeRouter(
+  options: { ownerOf?: (threadId: string) => string; withThreadC?: boolean } = {},
+): FakeRouter {
+  const codexHome = rolloutFixture({ withThreadC: options.withThreadC ?? false }).CODEX_HOME!;
   const ipcDir = join(codexHome, "ipc");
   mkdirSync(ipcDir, { mode: 0o700 });
   const sockPath = join(ipcDir, "ipc.sock");
@@ -151,6 +158,59 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
       expect(router.startTurnRequests.length).toBe(0);
     } finally {
       router.close();
+    }
+  });
+
+  test("自动选 source 跳过未打开的 rollout，取下一个同 renderer 候选", async () => {
+    // A（较新）未打开，C（较老）开着且同 renderer → 应跳过 A 选 C
+    const router = fakeRouter({
+      withThreadC: true,
+      ownerOf: (t) => (t === THREAD_A ? "" : "renderer-1"),
+    });
+    try {
+      const result = await wakeCodexTask({
+        targetThreadId: THREAD_B,
+        channel: "dev",
+        seq: 1,
+        from: "a",
+        env: router.env,
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.sourceThreadId).toBe(THREAD_C);
+    } finally {
+      router.close();
+    }
+  });
+
+  test("target 未打开的报错点名 target；source 未打开的报错点名 source（归因回归）", async () => {
+    const targetClosed = fakeRouter({ ownerOf: (t) => (t === THREAD_B ? "" : "renderer-1") });
+    try {
+      const r1 = await wakeCodexTask({
+        targetThreadId: THREAD_B,
+        channel: "dev",
+        seq: 1,
+        from: "a",
+        env: targetClosed.env,
+      });
+      expect(r1.ok).toBe(false);
+      if (!r1.ok) expect(r1.detail).toContain(`目标 task ${THREAD_B}`);
+    } finally {
+      targetClosed.close();
+    }
+    const sourceClosed = fakeRouter({ ownerOf: (t) => (t === THREAD_A ? "" : "renderer-1") });
+    try {
+      const r2 = await wakeCodexTask({
+        targetThreadId: THREAD_B,
+        sourceThreadId: THREAD_A,
+        channel: "dev",
+        seq: 1,
+        from: "a",
+        env: sourceClosed.env,
+      });
+      expect(r2.ok).toBe(false);
+      if (!r2.ok) expect(r2.detail).toContain(`source task ${THREAD_A}`);
+    } finally {
+      sourceClosed.close();
     }
   });
 
