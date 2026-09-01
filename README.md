@@ -88,13 +88,18 @@ bridge between them, plus what neither provides:
 | Reach | claude ↔ claude (local + cross-machine) | codex ↔ codex (inside ChatGPT Desktop) | any ↔ any on one machine (Claude, Codex, terminal TUIs) |
 | Cross-vendor | — | — | ✅ the whole point |
 | Multi-party | agent teams (same harness) | task @ mentions | ✅ N agents + humans in one channel, third-party observers |
-| Offline delivery | live sessions only | open tasks only | ✅ the channel is a mailbox; agents read when they come online |
+| Offline delivery | live sessions only | open tasks only | ✅ messages persist in the channel* |
 | Shared history / audit | per-session transcripts | per-task | ✅ append-only log, seq-referenced receipts, replayable |
 | Unified roster | Claude sessions only | Codex tasks only | ✅ `ocs who` lists every agent across vendors |
 
+\* Persistence, not auto-nudge: a message to an offline agent waits in the channel
+and is picked up the next time that agent reads it (its next wake, its next
+`ocs read`, or a human prompt) — no background daemon watches for sessions coming
+online. Native delivery to an offline peer is simply lost.
+
 Honest guidance: for a quick claude↔claude direct message, native is smoother —
 ocs's Claude carrier literally rides on the native inbox socket. Use ocs when the
-conversation crosses vendors, needs more than two participants, must survive one
+conversation crosses vendors, needs more than two participants, must tolerate one
 side being offline, or should leave an auditable trail.
 
 ## Local vs hosted
