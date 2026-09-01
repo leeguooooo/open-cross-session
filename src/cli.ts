@@ -1,13 +1,15 @@
 #!/usr/bin/env bun
-// ocs — open-cross-session CLI（M1：send / read / sessions / watch）。
+// ocs — open-cross-session CLI。
 //
 // 命令面刻意贴近上游 party CLI 的使用习惯，降低将来 `ocs upgrade` 迁到托管版的心智成本。
+// 输出全部走 i18n 目录（英文 canonical，OCS_LANG/locale 选 zh）。
 
 import { statSync } from "node:fs";
 import { listNativeSessions } from "./claude-inject.ts";
 import { enableCrossSessionInbound, readCrossSessionInbound } from "./claude-settings.ts";
 import { codexDesktopIpcAvailable, codexDesktopIpcSocketPath } from "./codex-ipc.ts";
 import { codexSessionsRoot, formatCodexSessionLine, listCodexSessions } from "./codex-sessions.ts";
+import { detectLang, messages } from "./i18n.ts";
 import {
   appendMessage,
   channelLogPath,
@@ -28,28 +30,60 @@ import {
 
 export const OCS_VERSION = "0.1.2";
 
+const LANG = detectLang();
+const M = messages(LANG);
+
 interface Parsed {
   positional: string[];
   flags: Map<string, string | true>;
 }
 
-function parseArgs(argv: string[]): Parsed {
+/** 每命令的参数 schema（review #14）：缺值、未知 flag、多余 positional 都要报错，
+ * 不许静默忽略——`--codex` 忘带值时假装发过唤醒是最坏的失败方式。 */
+interface CommandSpec {
+  value: readonly string[];
+  bool: readonly string[];
+  minPos: number;
+  maxPos: number | null;
+}
+
+const NO_ARGS: CommandSpec = { value: [], bool: [], minPos: 0, maxPos: 0 };
+const COMMAND_SPECS: Record<string, CommandSpec> = {
+  send: { value: ["as", "reply-to", "codex", "codex-source"], bool: ["no-wake"], minPos: 2, maxPos: null },
+  read: { value: ["as", "since"], bool: ["json", "peek"], minPos: 1, maxPos: 1 },
+  sessions: NO_ARGS,
+  "codex-sessions": { value: ["limit"], bool: [], minPos: 0, maxPos: 0 },
+  watch: { value: ["interval-ms"], bool: [], minPos: 1, maxPos: 1 },
+  doctor: { value: [], bool: ["fix"], minPos: 0, maxPos: 0 },
+  upgrade: NO_ARGS,
+  version: NO_ARGS,
+  "--version": NO_ARGS,
+  help: NO_ARGS,
+};
+
+function parseArgs(argv: string[], spec: CommandSpec): Parsed {
   const positional: string[] = [];
   const flags = new Map<string, string | true>();
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
-      const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith("--")) {
+      if (spec.value.includes(key)) {
+        const next = argv[i + 1];
+        if (next === undefined || next.startsWith("--")) fail(M.failMissingValue(key));
         flags.set(key, next);
         i++;
-      } else {
+      } else if (spec.bool.includes(key)) {
         flags.set(key, true);
+      } else {
+        fail(M.failUnknownFlag(key));
       }
     } else {
       positional.push(arg);
     }
+  }
+  if (spec.maxPos !== null && positional.length > spec.maxPos) {
+    fail(M.failExtraArgs(positional.slice(spec.maxPos).join(" ")));
   }
   return { positional, flags };
 }
@@ -61,7 +95,7 @@ function fail(message: string): never {
 
 function requireString(parsed: Parsed, flag: string): string {
   const value = parsed.flags.get(flag);
-  if (typeof value !== "string" || value === "") fail(`--${flag} <value> is required`);
+  if (typeof value !== "string" || value === "") fail(M.failFlagRequired(flag));
   return value;
 }
 
@@ -69,44 +103,23 @@ function printMessage(m: { seq: number; ts: string; from: string; body: string }
   console.log(`#${m.seq} ${m.ts} <${m.from}> ${m.body}`);
 }
 
-const HELP = `ocs — 跨 agent 的 cross-session，本机直连，零服务器
-
-用法:
-  ocs send <channel> <body> --as <name> [--reply-to <seq>] [--no-wake]
-           [--codex <thread-id>] [--codex-source <thread-id>]
-      追加消息到本机频道日志；body 里 @<会话名> 会注入唤醒指针到对应活 Claude 会话；
-      --codex 额外把唤醒指针投进指定 ChatGPT Desktop task（原生跨任务通信）
-  ocs read <channel> --as <name> [--since <seq>] [--json] [--peek]
-      从上次游标（或 --since）读新消息并推进游标；--peek 只读不推进
-  ocs sessions
-      列出本机活着的 Claude 原生会话（@ 目标就是这里的 name）
-  ocs codex-sessions [--limit <n>]
-      列出本机 Codex rollout 任务（--codex 的 thread-id 从这里拿）
-  ocs watch <channel> [--interval-ms <n>]
-      跟踪频道新消息（轮询 tail，Ctrl+C 退出）
-  ocs doctor [--fix]
-      体检：Claude 会话面 / crossSessionInbound 直投设置 / ChatGPT Desktop IPC / 数据目录；
-      --fix 一键把 crossSessionInbound 设为 accept（写前备份）
-  ocs upgrade
-      单机玩到头了？迁移到托管版 Agent Party（跨机器、跨组织频道）
-  ocs version
-  ocs help
-
-数据目录: ~/.ocs（可用 OCS_HOME 覆盖）
-`;
-
 async function cmdSend(parsed: Parsed): Promise<void> {
   const [channel, ...bodyParts] = parsed.positional;
-  if (channel === undefined || bodyParts.length === 0) fail("usage: ocs send <channel> <body> --as <name>");
+  if (channel === undefined || bodyParts.length === 0) fail(M.failSendUsage);
   const from = requireString(parsed, "as");
   const replyTo = parsed.flags.get("reply-to");
+  let replyToSeq: number | undefined;
+  if (replyTo !== undefined) {
+    replyToSeq = typeof replyTo === "string" ? Number(replyTo) : NaN;
+    if (!Number.isInteger(replyToSeq) || replyToSeq < 1) fail(M.failReplyTo);
+  }
   const message = appendMessage({
     channel,
     from,
     body: bodyParts.join(" "),
-    ...(typeof replyTo === "string" ? { reply_to: Number(replyTo) } : {}),
+    ...(replyToSeq !== undefined ? { reply_to: replyToSeq } : {}),
   });
-  console.log(`sent #${channel} seq ${message.seq}`);
+  console.log(M.sent(channel, message.seq));
 
   if (parsed.flags.has("no-wake")) return;
 
@@ -127,14 +140,15 @@ async function cmdSend(parsed: Parsed): Promise<void> {
       channel,
       seq: message.seq,
       from,
+      lang: LANG,
     });
     if (result.ok) {
-      console.log(`wake(codex): turn 已接受 → task ${result.targetThreadId}（turnId ${result.turnId}）`);
+      console.log(M.codexAccepted(result.targetThreadId, result.turnId));
     } else if (result.reason === "unknown-outcome") {
       // 上游铁律：帧已写出但结果未知——如实报告、绝不重放
-      console.log(`wake(codex): 结果未知（帧已写出，勿重发）: ${result.detail ?? ""}`);
+      console.log(M.codexUnknownOutcome(result.detail ?? ""));
     } else {
-      console.log(`wake(codex): 失败（${result.reason}）${result.detail ? `: ${result.detail}` : ""}`);
+      console.log(M.codexFailed(result.reason, result.detail ?? ""));
     }
   }
 
@@ -145,55 +159,56 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     selfPids: selfPid === null ? [] : [selfPid],
   });
   if (selection.targets.length === 0) {
-    const hint = selection.excludedSelf.length > 0 ? "（@ 到了自己，已跳过）" : "";
-    console.log(`wake: 没有匹配 @${claudeNames.join(" @")} 的活 Claude 会话${hint}`);
+    const hint = selection.excludedSelf.length > 0 ? M.wakeSelfSkipped : "";
+    console.log(`${M.wakeNoMatch(claudeNames.join(" @"))}${hint}`);
     return;
   }
   for (const outcome of await wakeSessions(selection.targets, {
     channel,
     seq: message.seq,
     from,
+    lang: LANG,
   })) {
     const target = `${outcome.session.name ?? "?"}(pid ${outcome.session.pid})`;
     if (outcome.result.ok) {
       // 上游铁律：ok 只代表帧进了收件箱，不代表已进对话（默认 hold）。措辞如实。
-      console.log(`wake: 已投递收件箱 → ${target}`);
+      console.log(M.wakeDelivered(target));
     } else {
-      console.log(`wake: 失败 → ${target}: ${outcome.result.reason}`);
+      console.log(M.wakeFailed(target, outcome.result.reason));
     }
   }
 }
 
 function cmdRead(parsed: Parsed): void {
   const [channel] = parsed.positional;
-  if (channel === undefined) fail("usage: ocs read <channel> --as <name>");
+  if (channel === undefined) fail(M.failReadUsage);
   const consumer = requireString(parsed, "as");
-  if (!NAME_RE.test(consumer)) fail(`invalid name: ${consumer}`);
+  if (!NAME_RE.test(consumer)) fail(M.failName(consumer));
   const sinceFlag = parsed.flags.get("since");
   const since = typeof sinceFlag === "string" ? Number(sinceFlag) : loadCursor(channel, consumer);
-  if (!Number.isInteger(since) || since < 0) fail("--since must be a non-negative integer");
-  const messages = readMessages(channel, { since });
+  if (!Number.isInteger(since) || since < 0) fail(M.failSince);
+  const found = readMessages(channel, { since });
   if (parsed.flags.has("json")) {
-    console.log(JSON.stringify(messages, null, 2));
-  } else if (messages.length === 0) {
-    console.log(`#${channel}: 没有 seq > ${since} 的新消息`);
+    console.log(JSON.stringify(found, null, 2));
+  } else if (found.length === 0) {
+    console.log(M.noNewMessages(channel, since));
   } else {
-    for (const m of messages) printMessage(m);
+    for (const m of found) printMessage(m);
   }
-  if (!parsed.flags.has("peek") && messages.length > 0) {
-    saveCursor(channel, consumer, messages[messages.length - 1]!.seq);
+  if (!parsed.flags.has("peek") && found.length > 0) {
+    saveCursor(channel, consumer, found[found.length - 1]!.seq);
   }
 }
 
 function cmdSessions(): void {
   const sessions = listNativeSessions();
   if (sessions.length === 0) {
-    console.log("没有活着的 Claude 原生会话（或 ~/.claude/sessions 不可读）");
+    console.log(M.noClaudeSessions);
     return;
   }
   for (const s of sessions) {
     console.log(
-      `${s.name ?? "(未命名)"}  pid=${s.pid}  status=${s.status ?? "?"}  sessionId=${s.sessionId ?? "?"}`,
+      `${s.name ?? "(unnamed)"}  pid=${s.pid}  status=${s.status ?? "?"}  sessionId=${s.sessionId ?? "?"}`,
     );
   }
 }
@@ -201,10 +216,10 @@ function cmdSessions(): void {
 function cmdCodexSessions(parsed: Parsed): void {
   const limitFlag = parsed.flags.get("limit");
   const limit = typeof limitFlag === "string" ? Number(limitFlag) : 20;
-  if (!Number.isInteger(limit) || limit < 1) fail("--limit must be a positive integer");
+  if (!Number.isInteger(limit) || limit < 1) fail(M.failLimit);
   const sessions = listCodexSessions(codexSessionsRoot(), { limit });
   if (sessions.length === 0) {
-    console.log("没有找到 Codex rollout（~/.codex/sessions 为空或不可读）");
+    console.log(M.noCodexRollouts);
     return;
   }
   for (const s of sessions) console.log(formatCodexSessionLine(s));
@@ -215,80 +230,63 @@ function cmdDoctor(parsed: Parsed): void {
   const warn = (s: string) => console.log(`  ⚠️  ${s}`);
   const bad = (s: string) => console.log(`  ❌ ${s}`);
 
-  console.log("Claude 侧");
+  console.log(M.doctorClaude);
   const claude = listNativeSessions();
-  if (claude.length > 0) ok(`${claude.length} 个活着的 Claude 原生会话可作唤醒目标`);
-  else warn("没有活着的 Claude 原生会话（开一个交互式 Claude Code 再试）");
+  if (claude.length > 0) ok(M.doctorClaudeSessions(claude.length));
+  else warn(M.doctorNoClaudeSessions);
   const inbound = readCrossSessionInbound();
   if (inbound === "accept") {
-    ok("crossSessionInbound = accept（注入直投，真送达）");
+    ok(M.doctorInboundAccept);
   } else if (parsed.flags.has("fix")) {
     const result = enableCrossSessionInbound();
     if ("error" in result) {
-      bad(`crossSessionInbound 修复失败：${result.error}`);
+      bad(M.doctorInboundFixFailed(result.error));
     } else if (result.changed) {
-      ok(
-        `crossSessionInbound 已设为 accept${result.backupPath ? `（原文件备份在 ${result.backupPath}）` : ""}` +
-          "；已开着的 Claude 会话要重启后生效",
-      );
+      ok(M.doctorInboundFixed(result.backupPath));
     } else {
-      ok("crossSessionInbound = accept");
+      ok(M.doctorInboundAccept);
     }
   } else {
-    bad(
-      `crossSessionInbound = ${JSON.stringify(inbound ?? "hold(默认)")} — 注入会进待审队列，` +
-        "5 分钟无人 Deliver 即静默丢弃。跑 `ocs doctor --fix` 一键设为 accept（写前自动备份），" +
-        "或手动在 ~/.claude/settings.json 顶层加 \"crossSessionInbound\": \"accept\"",
-    );
+    bad(M.doctorInboundBad(JSON.stringify(inbound ?? "hold(default)")));
   }
 
-  console.log("Codex / ChatGPT Desktop 侧");
+  console.log(M.doctorCodex);
   if (codexDesktopIpcAvailable()) {
-    ok(`Desktop IPC 可用（${codexDesktopIpcSocketPath()}）`);
+    ok(M.doctorIpcOk(codexDesktopIpcSocketPath()));
   } else {
-    warn(`Desktop IPC 不可用（${codexDesktopIpcSocketPath()} 缺失或权限不对）——ChatGPT Desktop 开着吗？`);
+    warn(M.doctorIpcMissing(codexDesktopIpcSocketPath()));
   }
   const codex = listCodexSessions(codexSessionsRoot(), { limit: 3 });
-  if (codex.length >= 2) ok(`${codex.length}+ 个 Codex rollout（IPC 唤醒需要成对任务，满足）`);
-  else if (codex.length === 1) warn("只有 1 个 Codex rollout——原生 IPC 唤醒需要同 renderer 下的第二个任务作 source");
-  else warn("没有 Codex rollout（跑过 codex 吗？）");
+  if (codex.length >= 2) ok(M.doctorRollouts(codex.length));
+  else if (codex.length === 1) warn(M.doctorOneRollout);
+  else warn(M.doctorNoRollouts);
 
-  console.log("可选加速器");
+  console.log(M.doctorAccel);
   const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
   const cmuxPing = spawnSync("cmux", ["ping"], { encoding: "utf8", timeout: 2000 });
   if (cmuxPing.status === 0) {
-    ok("cmux 在运行——终端里的 codex/claude TUI 也能被唤醒（按 surface 寻址）");
+    ok(M.doctorCmuxOk);
   } else {
-    console.log("  ｰ  cmux 未检测到（可选，不影响核心功能；终端 TUI 需自己先进频道）");
+    console.log(`  ｰ  ${M.doctorCmuxMissing}`);
   }
 
-  console.log("数据目录");
+  console.log(M.doctorData);
   try {
     statSync(ocsHome());
-    ok(`${ocsHome()} 存在`);
+    ok(M.doctorDataExists(ocsHome()));
   } catch {
-    ok(`${ocsHome()} 首次 send 时自动创建`);
+    ok(M.doctorDataAuto(ocsHome()));
   }
-}
-
-function cmdUpgrade(): void {
-  console.log(`单机版到托管版 Agent Party（跨机器、跨组织频道，同一套使用习惯）：
-
-  1. 安装:  curl -fsSL https://agentparty.leeguoo.com/install.sh | sh
-  2. 建频道: 打开 https://agentparty.leeguoo.com 创建频道，拿到 party join 片段
-  3. 迁历史: ocs read <channel> --as migrator --peek --json 导出后用 party send 回放（可选）
-
-本地 ocs 与托管 party 可以并存：本机小事走 ocs，跨机协作走 party。`);
 }
 
 async function cmdWatch(parsed: Parsed): Promise<void> {
   const [channel] = parsed.positional;
-  if (channel === undefined) fail("usage: ocs watch <channel>");
+  if (channel === undefined) fail(M.failWatchUsage);
   const intervalFlag = parsed.flags.get("interval-ms");
   const interval = typeof intervalFlag === "string" ? Number(intervalFlag) : 500;
-  if (!Number.isInteger(interval) || interval < 50) fail("--interval-ms must be >= 50");
+  if (!Number.isInteger(interval) || interval < 50) fail(M.failInterval);
   let cursor = lastSeq(channel);
-  console.log(`watching #${channel} from seq ${cursor} (Ctrl+C to stop)`);
+  console.log(M.watching(channel, cursor));
   const logPath = channelLogPath(channel);
   let lastSize = -1;
   for (;;) {
@@ -311,7 +309,11 @@ async function cmdWatch(parsed: Parsed): Promise<void> {
 
 async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
-  const parsed = parseArgs(rest);
+  const spec = command !== undefined ? COMMAND_SPECS[command] : undefined;
+  if (command !== undefined && spec === undefined) {
+    fail(`${M.unknownCommand(command)}\n\n${M.help}`);
+  }
+  const parsed = parseArgs(rest, spec ?? NO_ARGS);
   switch (command) {
     case "send":
       await cmdSend(parsed);
@@ -329,7 +331,7 @@ async function main(): Promise<void> {
       cmdDoctor(parsed);
       break;
     case "upgrade":
-      cmdUpgrade();
+      console.log(M.upgrade);
       break;
     case "watch":
       await cmdWatch(parsed);
@@ -340,10 +342,8 @@ async function main(): Promise<void> {
       break;
     case "help":
     case undefined:
-      console.log(HELP);
+      console.log(M.help);
       break;
-    default:
-      fail(`unknown command: ${command}\n\n${HELP}`);
   }
 }
 

@@ -193,7 +193,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
         env: targetClosed.env,
       });
       expect(r1.ok).toBe(false);
-      if (!r1.ok) expect(r1.detail).toContain(`目标 task ${THREAD_B}`);
+      if (!r1.ok) expect(r1.detail).toContain(`target task ${THREAD_B}`);
     } finally {
       targetClosed.close();
     }

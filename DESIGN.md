@@ -115,6 +115,11 @@ presence 心跳（本地读 registry 即可）、`worker_upgrade_required` 等�
 **风险**：Desktop IPC 依赖 ChatGPT.app 私有协议，宿主升级会破——需要版本探测 + 降级路径
 （headless spawn 兜底）。
 
+**已知限制（codex-ping 审查 #11）**：Desktop IPC 的 delegation envelope 需要一个
+source thread id，自动选择时它只是**运输载体**（同 renderer 的任一开着任务），不代表
+消息真实来源——UI 里的「来自任务 X」链接会指向载体任务。真实来源恒在指针正文里
+（`New message from <sender> in #<channel>`）。归因敏感场景用 `--codex-source` 显式指定。
+
 **唤醒载体分层原则（硬约束）**：核心功能零外部依赖（频道日志 + read/send 任何会话可用）；
 每个唤醒载体（Claude socket、Desktop IPC、cmux surface…）都是**运行时探测、失败降级、
 绝不必装**。cmux 只是探测到就用的可选加速器（2026-09-01 真机验证过 `send --surface`

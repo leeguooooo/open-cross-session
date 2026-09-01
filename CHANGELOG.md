@@ -5,6 +5,15 @@
 - `@<codex-thread-id>` 自动路由到 ChatGPT Desktop IPC，不再要求记 `--codex` 语法
 - codex 唤醒归因修复：target/source 分开探测、报错各自点名；自动选 source 逐候选跳过未打开的 rollout
 - 自我唤醒防回环改为沿进程祖先链定位本会话（`process.ppid` 在 Bash 工具链路下失效）
+- CLI 输出国际化：英文 canonical，`OCS_LANG`/locale 选中文；唤醒指针双语
+- `ocs doctor --fix` 一键设 `crossSessionInbound=accept`（写前备份）；doctor 增加 cmux 可选加速器探测
+- 对抗式审查修复 12 条（codex-ping 全仓审查，均有回归测试）：
+  - 非法 `--reply-to` 写出永久不可读行；崩溃半行吞掉下一条消息
+  - 空内容陈锁永久死锁；stale-break inode 校验 + 写后自校验堵双持锁竞态
+  - 日志 EACCES 被伪装成空频道；游标并发回退（锁内比较 + 原子写）
+  - owner 探测把传输故障误报成「任务未打开」；source 候选上限 10→50
+  - 命令级参数 schema：缺值/未知 flag/多余参数必须报错（`--codex` 缺值曾静默吞掉）
+  - install.sh 校验 fail-closed + sha256sum 兼容；冒烟通过前不覆盖旧二进制
 - `ocs version`；双语 README（[English](./README.md) / [中文](./README.zh-CN.md)）
 
 ## v0.1.1

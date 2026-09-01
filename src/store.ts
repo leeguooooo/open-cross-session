@@ -18,6 +18,7 @@
 import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
+  linkSync,
   mkdirSync,
   openSync,
   closeSync,
@@ -113,17 +114,23 @@ function lockTimeoutMs(env: NodeJS.ProcessEnv): number {
 
 /**
  * O_EXCL 锁 + 安全 stale-break。返回 unlock 函数。
- * 抢占条件：持有者 pid 确认死亡（ESRCH）**且**锁 mtime 老于 LOCK_STALE_MIN_MS。
- * 抢占动作：原子 rename 到唯一认领名——多个等待者只有一个 rename 成功，输家 ENOENT
- * 重试，不存在 unlink 式双抢误删新锁的竞态。
+ * 抢占条件（review #7/#8 修订）：锁 mtime 老于 LOCK_STALE_MIN_MS，且
+ *   - 持有者 pid 确认死亡（ESRCH），或
+ *   - 锁内容为空/非法（持有者在 openSync 与写 pid 之间崩了——不许它变成永久死锁）。
+ * 抢占动作：原子 rename 到唯一认领名，rename 后**验证 inode** 与检查时一致——
+ * 不一致说明搬走的是别人在窗口期里刚建的新锁（#8 竞态），立即用 linkSync
+ * （EEXIST 时不覆盖）原样归还。多个等待者只有一个 rename 成功，输家 ENOENT 重试。
  */
 function acquireLock(lockPath: string, env: NodeJS.ProcessEnv): () => void {
   const deadline = Date.now() + lockTimeoutMs(env);
   for (;;) {
     try {
       const fd = openSync(lockPath, "wx", 0o600);
-      writeFileSync(fd, String(process.pid));
-      closeSync(fd);
+      try {
+        writeFileSync(fd, String(process.pid));
+      } finally {
+        closeSync(fd); // 写失败也不许漏 fd（review #7）
+      }
       return () => {
         try {
           unlinkSync(lockPath);
@@ -134,22 +141,36 @@ function acquireLock(lockPath: string, env: NodeJS.ProcessEnv): () => void {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       try {
-        const stat = statSync(lockPath);
-        const holder = Number(readFileSync(lockPath, "utf8"));
-        const oldEnough = Date.now() - stat.mtimeMs > LOCK_STALE_MIN_MS;
-        let holderDead = false;
-        if (Number.isInteger(holder) && holder > 0) {
+        const observed = statSync(lockPath);
+        const rawHolder = readFileSync(lockPath, "utf8");
+        const holder = Number(rawHolder);
+        const oldEnough = Date.now() - observed.mtimeMs > LOCK_STALE_MIN_MS;
+        let breakable = false;
+        if (rawHolder.trim() === "" || !Number.isInteger(holder) || holder <= 0) {
+          breakable = true; // 空/非法内容：持有者写 pid 前就崩了（review #7）
+        } else {
           try {
             process.kill(holder, 0);
           } catch (killError) {
-            holderDead = (killError as NodeJS.ErrnoException).code === "ESRCH";
+            breakable = (killError as NodeJS.ErrnoException).code === "ESRCH";
           }
         }
-        if (holderDead && oldEnough) {
+        if (breakable && oldEnough) {
           const claim = `${lockPath}.break.${process.pid}.${randomUUID()}`;
           try {
             renameSync(lockPath, claim);
-            unlinkSync(claim);
+            // inode 校验（review #8）：搬走的必须正是刚才检查过的那个文件。
+            if (statSync(claim).ino === observed.ino) {
+              unlinkSync(claim);
+            } else {
+              // 搬走了窗口期里新建的活锁——原样归还（linkSync 遇 EEXIST 不覆盖）。
+              try {
+                linkSync(claim, lockPath);
+              } catch {
+                // 已有更新的锁占位；被搬走的持有者由 append 后的自校验兜底
+              }
+              unlinkSync(claim);
+            }
           } catch {
             // 别的等待者先认领了；正常重试
           }
@@ -206,6 +227,25 @@ function lastSeqFromLog(logPath: string, channel: string, env?: NodeJS.ProcessEn
   return all.length === 0 ? 0 : all[all.length - 1]!.seq;
 }
 
+/** 锁内调用：日志末字节不是 \n 时补一个，把崩溃残留的半行封口。 */
+function repairTrailingPartialLine(logPath: string): void {
+  let size: number;
+  try {
+    size = statSync(logPath).size;
+  } catch {
+    return; // 日志尚不存在
+  }
+  if (size === 0) return;
+  const tail = Buffer.alloc(1);
+  const fd = openSync(logPath, "r");
+  try {
+    readSync(fd, tail, 0, 1, size - 1);
+  } finally {
+    closeSync(fd);
+  }
+  if (tail[0] !== 0x0a) appendFileSync(logPath, "\n");
+}
+
 export interface AppendInput {
   channel: string;
   from: string;
@@ -219,6 +259,14 @@ export function appendMessage(input: AppendInput): OcsMessage {
   if (!NAME_RE.test(input.from)) throw new Error(`invalid sender name: ${input.from}`);
   if (input.body.length === 0) throw new Error("empty body");
   if (Buffer.byteLength(input.body, "utf8") > BODY_LIMIT) throw new Error("body too large");
+  // reply_to 必须在写入前验证：NaN 会被 JSON.stringify 成 null，写出一条读侧
+  // isOcsMessage 拒绝的行——发送方看到 "sent seq N"，但那条消息永远读不出来。
+  if (
+    input.reply_to !== undefined &&
+    (!Number.isInteger(input.reply_to) || input.reply_to < 1)
+  ) {
+    throw new Error(`invalid reply_to: ${input.reply_to}`);
+  }
 
   const dir = channelsDir(input.env);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -227,21 +275,62 @@ export function appendMessage(input: AppendInput): OcsMessage {
 
   const unlock = acquireLock(lockPath, input.env ?? process.env);
   try {
-    const last = lastSeqFromLog(logPath, input.channel, input.env);
-    const message: OcsMessage = {
-      v: 1,
-      seq: last + 1,
-      ts: new Date().toISOString(),
-      from: input.from,
-      body: input.body,
-      mentions: extractMentions(input.body),
-      ...(input.reply_to !== undefined ? { reply_to: input.reply_to } : {}),
-    };
-    appendFileSync(logPath, `${JSON.stringify(message)}\n`, { mode: 0o600 });
-    return message;
+    // 崩溃修复：上次写入中断可能留下无换行结尾的半行。不补换行就 append，新消息
+    // 会粘在半行尾部一起变成垃圾——又一条「发送成功但永远不可读」。锁内查末字节。
+    repairTrailingPartialLine(logPath);
+    // 双持锁兜底（review #8）：锁协议已尽力，但极端竞态下仍可能两个进程同时进临界区、
+    // 分配同一 seq——读侧去重保留首见，后落盘的被永久遮蔽。写后自校验：自己 seq 的
+    // 首条落盘行必须逐字节是自己，否则换新 seq 重写（旧行成为被读侧跳过的重复行）。
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const last = lastSeqFromLog(logPath, input.channel, input.env);
+      const message: OcsMessage = {
+        v: 1,
+        seq: last + 1,
+        ts: new Date().toISOString(),
+        from: input.from,
+        body: input.body,
+        mentions: extractMentions(input.body),
+        ...(input.reply_to !== undefined ? { reply_to: input.reply_to } : {}),
+      };
+      const line = JSON.stringify(message);
+      appendFileSync(logPath, `${line}\n`, { mode: 0o600 });
+      if (firstLineWithSeq(logPath, message.seq) === line) return message;
+    }
+    throw new Error(`append self-check failed 3 times: ${logPath}`);
   } finally {
     unlock();
   }
+}
+
+/** 尾块内找指定 seq 的首条合法行（读侧去重会保留的那条）。 */
+function firstLineWithSeq(logPath: string, seq: number): string | null {
+  let size: number;
+  try {
+    size = statSync(logPath).size;
+  } catch {
+    return null;
+  }
+  const readFrom = Math.max(0, size - TAIL_CHUNK_BYTES);
+  const buffer = Buffer.alloc(size - readFrom);
+  const fd = openSync(logPath, "r");
+  try {
+    readSync(fd, buffer, 0, buffer.length, readFrom);
+  } finally {
+    closeSync(fd);
+  }
+  const lines = buffer.toString("utf8").split("\n");
+  const start = readFrom === 0 ? 0 : 1;
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line === "") continue;
+    try {
+      const value = JSON.parse(line) as unknown;
+      if (isOcsMessage(value) && value.seq === seq) return line;
+    } catch {
+      // 坏行
+    }
+  }
+  return null;
 }
 
 export interface ReadOptions {
@@ -255,8 +344,11 @@ export function readMessages(channel: string, options: ReadOptions = {}): OcsMes
   let raw: string;
   try {
     raw = readFileSync(logPath, "utf8");
-  } catch {
-    return [];
+  } catch (error) {
+    // 只有「文件不存在」等于空频道；EACCES/EIO 必须炸出去——把权限错误
+    // 说成「没有新消息」会让用户永远错过消息（review #9）。
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
   }
   const since = options.since ?? 0;
   const seen = new Set<number>();
@@ -309,9 +401,19 @@ export function saveCursor(
 ): void {
   if (!NAME_RE.test(consumer)) throw new Error(`invalid consumer name: ${consumer}`);
   const path = cursorPath(channel, consumer, env);
-  mkdirSync(join(ocsHome(env), "cursors"), { recursive: true, mode: 0o700 });
-  // 只进不退：并发消费者各自推进，慢的一方不能把快的一方拉回去。
-  const existing = loadCursor(channel, consumer, env);
-  if (cursor <= existing) return;
-  writeFileSync(path, JSON.stringify({ cursor }), { mode: 0o600 });
+  const dir = join(ocsHome(env), "cursors");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // 只进不退，且比较+写入要在锁内（review #10）：无锁的 load-compare-write 下，
+  // 慢请求可以在快请求写入更大游标之后再写回小值。写入走 tmp+原子 rename，
+  // 崩溃不会留下半截 JSON。
+  const unlock = acquireLock(`${path}.lock`, env ?? process.env);
+  try {
+    const existing = loadCursor(channel, consumer, env);
+    if (cursor <= existing) return;
+    const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ cursor }), { mode: 0o600 });
+    renameSync(tmp, path);
+  } finally {
+    unlock();
+  }
 }

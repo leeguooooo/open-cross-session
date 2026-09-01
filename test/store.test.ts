@@ -133,6 +133,58 @@ describe("seq 单一真值源 = 日志（review 修复回归）", () => {
   });
 });
 
+describe("codex-ping 审查发现的两条不可读路径（回归）", () => {
+  test("非法 reply_to 在写入前被拒绝，绝不写出读侧拒绝的行", () => {
+    const env = freshEnv();
+    expect(() => appendMessage({ channel: "c", from: "a", body: "x", reply_to: NaN, env })).toThrow(/invalid reply_to/);
+    expect(() => appendMessage({ channel: "c", from: "a", body: "x", reply_to: 0, env })).toThrow(/invalid reply_to/);
+    expect(() => appendMessage({ channel: "c", from: "a", body: "x", reply_to: 1.5, env })).toThrow(/invalid reply_to/);
+    expect(readMessages("c", { env })).toEqual([]); // 一条都没写进去
+  });
+
+  test("崩溃残留的无换行半行被封口，下一条消息完整可读", () => {
+    const env = freshEnv();
+    appendMessage({ channel: "c", from: "a", body: "one", env });
+    const fs = require("node:fs") as typeof import("node:fs");
+    const { channelLogPath } = require("../src/store.ts") as typeof import("../src/store.ts");
+    // 模拟写入中断：半行、无换行结尾
+    fs.appendFileSync(channelLogPath("c", env), '{"v":1,"seq":2,"ts":"2026-');
+    const next = appendMessage({ channel: "c", from: "a", body: "two", env });
+    const all = readMessages("c", { env });
+    expect(all.map((m) => m.body)).toEqual(["one", "two"]);
+    expect(all[1]!.seq).toBe(next.seq); // 新消息独立成行，没被半行吞掉
+  });
+});
+
+describe("codex-ping 审查 #7/#9 回归", () => {
+  test("空内容的陈锁（写 pid 前崩溃）过锁龄后可被抢占，不再永久死锁", () => {
+    const env = freshEnv();
+    const fs = require("node:fs") as typeof import("node:fs");
+    const { join } = require("node:path") as typeof import("node:path");
+    const { ocsHome } = require("../src/store.ts") as typeof import("../src/store.ts");
+    const dir = join(ocsHome(env), "channels");
+    fs.mkdirSync(dir, { recursive: true });
+    const lockPath = join(dir, "dev.lock");
+    fs.writeFileSync(lockPath, ""); // openSync 后、写 pid 前崩溃的残骸
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockPath, old, old);
+    expect(appendMessage({ channel: "dev", from: "a", body: "x", env }).seq).toBe(1);
+  });
+
+  test("日志不可读（EACCES）必须炸，不许伪装成空频道", () => {
+    const env = freshEnv();
+    appendMessage({ channel: "dev", from: "a", body: "secret", env });
+    const fs = require("node:fs") as typeof import("node:fs");
+    const { channelLogPath } = require("../src/store.ts") as typeof import("../src/store.ts");
+    fs.chmodSync(channelLogPath("dev", env), 0o000);
+    try {
+      expect(() => readMessages("dev", { env })).toThrow();
+    } finally {
+      fs.chmodSync(channelLogPath("dev", env), 0o600);
+    }
+  });
+});
+
 describe("cursor", () => {
   test("首读为 0；推进只进不退；消费者互不影响", () => {
     const env = freshEnv();

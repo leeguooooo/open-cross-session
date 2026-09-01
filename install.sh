@@ -21,21 +21,35 @@ trap 'rm -rf "$tmp"' EXIT
 
 echo "downloading $url"
 curl -fsSL "$url" -o "$tmp/$asset.tar.gz"
-curl -fsSL "$url.sha256" -o "$tmp/$asset.tar.gz.sha256" || true
-if [ -s "$tmp/$asset.tar.gz.sha256" ]; then
-  (cd "$tmp" && shasum -a 256 -c "$asset.tar.gz.sha256" >/dev/null) || {
-    echo "sha256 mismatch" >&2; exit 1
-  }
+# 校验 fail closed：发布流程固定附带 .sha256，拿不到或对不上都必须失败，
+# 绝不静默跳过完整性校验。
+curl -fsSL "$url.sha256" -o "$tmp/$asset.tar.gz.sha256"
+expected=$(awk '{print $1}' "$tmp/$asset.tar.gz.sha256")
+if command -v shasum >/dev/null 2>&1; then
+  actual=$(shasum -a 256 "$tmp/$asset.tar.gz" | awk '{print $1}')
+elif command -v sha256sum >/dev/null 2>&1; then
+  actual=$(sha256sum "$tmp/$asset.tar.gz" | awk '{print $1}')
+else
+  echo "neither shasum nor sha256sum found; cannot verify download" >&2
+  exit 1
+fi
+if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+  echo "sha256 mismatch: expected $expected got $actual" >&2
+  exit 1
 fi
 
-mkdir -p "$INSTALL_DIR"
 tar -xzf "$tmp/$asset.tar.gz" -C "$tmp"
-mv "$tmp/ocs" "$INSTALL_DIR/ocs"
-chmod +x "$INSTALL_DIR/ocs"
+chmod +x "$tmp/ocs"
+# 冒烟通过前不动现有安装；staging 放同一目录内，rename 才是原子的。
+"$tmp/ocs" help >/dev/null || { echo "downloaded binary failed smoke test" >&2; exit 1; }
+mkdir -p "$INSTALL_DIR"
+staged="$INSTALL_DIR/.ocs.staged.$$"
+mv "$tmp/ocs" "$staged"
+mv -f "$staged" "$INSTALL_DIR/ocs"
 
 echo "installed: $INSTALL_DIR/ocs"
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *) echo "note: add $INSTALL_DIR to your PATH" ;;
 esac
-"$INSTALL_DIR/ocs" help >/dev/null && echo "ok: run \`ocs doctor\` to get started"
+echo "ok: run \`ocs doctor\` to get started"

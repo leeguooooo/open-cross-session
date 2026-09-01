@@ -14,6 +14,8 @@ import {
 } from "./claude-inject.ts";
 import {
   CodexDesktopIpcClient,
+  CodexDesktopIpcRequestError,
+  CodexDesktopIpcUnavailableError,
   CodexDesktopIpcUnknownOutcomeError,
   codexDesktopIpcAvailable,
 } from "./codex-ipc.ts";
@@ -21,11 +23,16 @@ import { codexSessionsRoot, isCodexThreadId, listCodexSessions } from "./codex-s
 
 export const WAKE_NOTE_MAX_BYTES = 512;
 
-export function wakeNote(channel: string, seq: number, from: string): string {
-  const note =
-    `[open-cross-session] 频道 #${channel} 有来自 ${from} 的新消息（seq ${seq}）。` +
-    `请运行 \`ocs read ${channel} --as <你的名字>\` 读取并处理；` +
-    `回复用 \`ocs send ${channel} "<正文>" --as <你的名字>\`。`;
+export type WakeLang = "en" | "zh";
+
+export function wakeNote(channel: string, seq: number, from: string, lang: WakeLang = "en"): string {
+  const note = lang === "zh"
+    ? `[open-cross-session] 频道 #${channel} 有来自 ${from} 的新消息（seq ${seq}）。` +
+      `请运行 \`ocs read ${channel} --as <你的名字>\` 读取并处理；` +
+      `回复用 \`ocs send ${channel} "<正文>" --as <你的名字>\`。`
+    : `[open-cross-session] New message from ${from} in #${channel} (seq ${seq}). ` +
+      `Run \`ocs read ${channel} --as <your-name>\` to read and handle it; ` +
+      `reply with \`ocs send ${channel} "<text>" --as <your-name>\`.`;
   if (Buffer.byteLength(note, "utf8") > WAKE_NOTE_MAX_BYTES) {
     throw new Error("wake note exceeds 512 bytes"); // 构造恒定，超限属编程错误
   }
@@ -107,7 +114,7 @@ export interface WakeOutcome {
 
 export async function wakeSessions(
   targets: readonly NativeClaudeSession[],
-  input: { channel: string; seq: number; from: string; env?: NodeJS.ProcessEnv },
+  input: { channel: string; seq: number; from: string; lang?: WakeLang; env?: NodeJS.ProcessEnv },
 ): Promise<WakeOutcome[]> {
   const outcomes: WakeOutcome[] = [];
   for (const session of targets) {
@@ -115,7 +122,7 @@ export async function wakeSessions(
       name: session.name ?? `pid-${session.pid}`,
       pid: session.pid,
       sessionId: session.sessionId,
-      body: wakeNote(input.channel, input.seq, input.from),
+      body: wakeNote(input.channel, input.seq, input.from, input.lang),
       fromName: input.from,
       env: input.env,
     });
@@ -135,10 +142,24 @@ export type CodexWakeResult =
  * （UI 里显示「来自任务 X 的消息」）。未显式指定时按 rollout 新旧序逐个当候选——
  * rollout 存在 ≠ 在 Desktop 里开着，谁能用要靠 owner 探测逐个试。
  */
+/**
+ * owner 探测异常分类（review #13）：只有「明确无 renderer 认领」才算 not-open，
+ * 超时/断连/协议错误是 transport——把传输故障说成「任务没开」会误导用户去开任务。
+ */
+function classifyOwnerError(error: unknown): "not-open" | "transport" {
+  if (error instanceof CodexDesktopIpcUnavailableError && error.message.includes("No ChatGPT renderer owns")) {
+    return "not-open";
+  }
+  if (error instanceof CodexDesktopIpcRequestError && error.message.includes("no-client-found")) {
+    return "not-open";
+  }
+  return "transport";
+}
+
 export function listCodexSourceCandidates(
   targetThreadId: string,
   env: NodeJS.ProcessEnv = process.env,
-  limit = 10,
+  limit = 50, // review #12：唯一开着的 source 可能比最近 10 个已关闭 rollout 更老
 ): string[] {
   const wanted = targetThreadId.toLowerCase();
   return listCodexSessions(codexSessionsRoot(env), { limit: limit + 1 })
@@ -168,6 +189,7 @@ export async function wakeCodexTask(input: {
   channel: string;
   seq: number;
   from: string;
+  lang?: WakeLang;
   env?: NodeJS.ProcessEnv;
 }): Promise<CodexWakeResult> {
   const env = input.env ?? process.env;
@@ -175,7 +197,7 @@ export async function wakeCodexTask(input: {
     return { ok: false, reason: "bad-thread-id", detail: input.targetThreadId };
   }
   if (!codexDesktopIpcAvailable(env)) {
-    return { ok: false, reason: "unavailable", detail: "ChatGPT Desktop IPC socket 不可用（Desktop 没开？）" };
+    return { ok: false, reason: "unavailable", detail: "ChatGPT Desktop IPC socket unavailable (is the Desktop app running?)" };
   }
   if (input.sourceThreadId !== undefined &&
       (!isCodexThreadId(input.sourceThreadId) ||
@@ -189,12 +211,18 @@ export async function wakeCodexTask(input: {
     let targetOwner: string;
     try {
       targetOwner = await client.discoverThreadOwner(input.targetThreadId);
-    } catch {
-      return {
-        ok: false,
-        reason: "failed",
-        detail: `目标 task ${input.targetThreadId} 未在 ChatGPT Desktop 中打开（IPC 只能投给开着的任务）`,
-      };
+    } catch (error) {
+      return classifyOwnerError(error) === "not-open"
+        ? {
+            ok: false,
+            reason: "failed",
+            detail: `target task ${input.targetThreadId} is not open in ChatGPT Desktop (IPC only reaches open tasks)`,
+          }
+        : {
+            ok: false,
+            reason: "failed",
+            detail: `IPC error while discovering target owner: ${String(error)}`,
+          };
     }
     // source：显式指定则严格校验；自动选择则逐候选试探，跳过没开着的 rollout。
     let sourceThreadId: string;
@@ -202,18 +230,24 @@ export async function wakeCodexTask(input: {
       let sourceOwner: string;
       try {
         sourceOwner = await client.discoverThreadOwner(input.sourceThreadId);
-      } catch {
-        return {
-          ok: false,
-          reason: "failed",
-          detail: `source task ${input.sourceThreadId} 未在 ChatGPT Desktop 中打开`,
-        };
+      } catch (error) {
+        return classifyOwnerError(error) === "not-open"
+          ? {
+              ok: false,
+              reason: "failed",
+              detail: `source task ${input.sourceThreadId} is not open in ChatGPT Desktop`,
+            }
+          : {
+              ok: false,
+              reason: "failed",
+              detail: `IPC error while discovering source owner: ${String(error)}`,
+            };
       }
       if (sourceOwner !== targetOwner) {
         return {
           ok: false,
           reason: "route-mismatch",
-          detail: `source 与 target 不属于同一个 renderer（${sourceOwner} ≠ ${targetOwner}）`,
+          detail: `source and target belong to different renderers (${sourceOwner} != ${targetOwner})`,
         };
       }
       sourceThreadId = input.sourceThreadId;
@@ -225,20 +259,28 @@ export async function wakeCodexTask(input: {
             picked = candidate;
             break;
           }
-        } catch {
-          // 该 rollout 没在 Desktop 开着，试下一个
+        } catch (error) {
+          // 只有「确实没开」才跳过继续；传输故障必须中止并如实报告（review #13），
+          // 否则会把断连/超时伪装成 no-source。
+          if (classifyOwnerError(error) === "transport") {
+            return {
+              ok: false,
+              reason: "failed",
+              detail: `IPC error while probing source candidates: ${String(error)}`,
+            };
+          }
         }
       }
       if (picked === null) {
         return {
           ok: false,
           reason: "no-source",
-          detail: "同一 Desktop 里没有第二个打开的 task 可作 source（IPC 需要成对任务；再开一个或用 --codex-source 指定）",
+          detail: "no second open task under the same Desktop to act as source (open another task, or pass --codex-source)",
         };
       }
       sourceThreadId = picked;
     }
-    const prompt = wakeNote(input.channel, input.seq, input.from);
+    const prompt = wakeNote(input.channel, input.seq, input.from, input.lang);
     const { turnId } = await client.startDelegatedTurn({
       targetThreadId: input.targetThreadId,
       sourceThreadId,
@@ -255,7 +297,7 @@ export async function wakeCodexTask(input: {
       return {
         ok: false,
         reason: "failed",
-        detail: "目标 task 未在 ChatGPT Desktop 中打开（IPC 只能投给开着的任务；用 `ocs codex-sessions` 核对后在 Desktop 里打开它）",
+        detail: "target task is not open in ChatGPT Desktop (check `ocs codex-sessions`, then open it in the Desktop app)",
       };
     }
     return { ok: false, reason: "failed", detail: text };
