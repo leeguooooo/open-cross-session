@@ -204,7 +204,12 @@ async function cmdDm(parsed: Parsed): Promise<void> {
   const message = appendMessage({ channel, from, body: bodyParts.join(" ") });
   console.log(M.dmSent(target, channel, message.seq));
 
-  if (resolved.kind === "claude" && resolved.claude !== undefined) {
+  if (resolved.kind === "claude") {
+    if (resolved.claude === undefined) {
+      // 目标此刻不在线：消息已停靠进频道，如实说没唤醒、要等它下次读。
+      console.log(M.dmParked(target, channel));
+      return;
+    }
     const [outcome] = await wakeSessions([resolved.claude], {
       channel,
       seq: message.seq,

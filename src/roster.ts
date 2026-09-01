@@ -147,7 +147,12 @@ export interface ResolvedDmTarget {
   cmuxRef?: string;
 }
 
-/** 把 dm 目标字符串解析到三个命名空间之一：surface:N → cmux；uuid → codex；否则 Claude 会话名。 */
+/**
+ * 把 dm 目标字符串解析到三个命名空间之一：surface:N → cmux；uuid → codex；
+ * 否则 Claude 会话名。名字合法但当前无活会话时**不报错**——返回无 session 的
+ * claude 目标，调用方把消息停靠进频道（离线投递=持久化的承诺靠这里兑现），
+ * 只有格式非法才返回 null。
+ */
 export function resolveDmTarget(
   target: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -158,7 +163,7 @@ export function resolveDmTarget(
   if (isCodexThreadId(target)) {
     return { kind: "codex-task", name: `codex-${target.slice(0, 8)}`, threadId: target };
   }
+  if (!NAME_RE.test(target)) return null;
   const session = listNativeSessions(env).find((s) => s.name === target);
-  if (session === undefined) return null;
-  return { kind: "claude", name: target, claude: session };
+  return { kind: "claude", name: target, ...(session !== undefined ? { claude: session } : {}) };
 }

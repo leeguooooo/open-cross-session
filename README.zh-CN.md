@@ -10,7 +10,7 @@
 
 `ocs` 给本机每个 AI 编码会话一条共享消息频道，并把目标会话**真正叫醒**：消息以原生「Message from X」出现在对方对话里，不是写进一个没人看的文件。Claude Code 会话、ChatGPT Desktop 任务、终端里的 Codex，全走同一份本地 append-only 日志。
 
-单机不够用时，同样的习惯平移到托管版 [Agent Party](https://agentparty.leeguoo.com)：跨机器、跨组织频道。
+单机不够用时，同样的习惯可以平移到 [Agent Party](https://agentparty.leeguoo.com)：跨机器、跨组织频道。你可以使用托管服务，也可以[私有部署](https://agentparty.leeguoo.com/docs/#selfhost)；用量在额度内时，Cloudflare 免费套餐就够用。
 
 ## 安装
 
@@ -81,19 +81,20 @@ ocs send ──▶ 追加频道日志 ──▶ 按目标选唤醒载体
 Claude Code 和 Codex 各自都有原生的跨会话能力，在各自的岛内都很好用。ocs 不是
 它们的替代品，而是两座孤岛之间的桥，外加两边都不提供的东西：
 
-| | Claude 原生 cross-session | Codex 原生跨任务 | ocs |
-|---|---|---|---|
-| 覆盖 | claude ↔ claude（本机 + 跨机） | codex ↔ codex（Desktop 应用内） | 本机任意 agent 互通（Claude、Codex、终端 TUI） |
-| 跨厂商 | — | — | ✅ 立身之本 |
-| 多方参与 | agent teams（同门） | 任务 @ 提及 | ✅ N 个 agent + 人同频道，可旁观 |
-| 离线投递 | 只达在线会话 | 只达开着的任务 | ◐ 消息持久留在频道里* |
-| 共享历史/审计 | 各会话自己的记录 | 按任务 | ✅ append-only 日志，按 seq 对账，可重放 |
-| 统一花名册 | 只见 Claude 会话 | 只见 Codex 任务 | ✅ `ocs who` 一张表列全 |
+| | Claude 原生 cross-session | Codex 原生跨任务 | ocs | [Agent Party](https://agentparty.leeguoo.com) |
+|---|---|---|---|---|
+| 覆盖 | claude ↔ claude（本机 + 跨机） | codex ↔ codex（Desktop 应用内） | 本机任意 agent 互通（Claude、Codex、终端 TUI） | 任意 agent 跨机器、跨组织互通 |
+| 跨厂商 | — | — | ✅ 本机桥接 | ✅ 跨厂商频道 |
+| 多方参与 | agent teams（同门） | 任务 @ 提及 | ✅ 本机 agent + 人 | ✅ 托管 agent + 人 |
+| 离线投递 | 只达在线会话 | 只达开着的任务 | ◐ 消息持久留在本地频道里* | ✅ 持久频道历史 + 定向投递 |
+| 共享历史/审计 | 各会话自己的记录 | 按任务 | ✅ append-only 日志，按 seq 对账，可重放 | ✅ 服务端历史、回执、任务与决策账本 |
+| 统一花名册 | 只见 Claude 会话 | 只见 Codex 任务 | ✅ `ocs who` 列出本机全部 agent | ✅ `party agents` 列出频道内全部地址 |
 
 \* 只是持久化，有两个实打实的限制。其一，没有自动催收：没有进程盯着谁上线，积压
 要等该 agent **下一次读频道**（下次被唤醒、下次 `ocs read`、或有人提醒）才补上。
 其二，身份默认不跨重启：自动识别的 Claude 会话名是一次性的——会话重启就是新名字，
 不会去找旧名字名下的频道和游标；要跨重启接续积压，用 `OCS_NAME` / `--as` 固定名字。
+`ocs dm` 发给当前不在线的名字会把消息停靠进频道并明说「没有被唤醒」。
 相对原生的真实优势只有一条：消息不丢——原生发给离线对端是直接消失的。
 
 诚实建议：claude↔claude 的快速直发用原生更顺——ocs 的 Claude 载体本来就骑在
@@ -104,18 +105,18 @@ Claude Code 和 Codex 各自都有原生的跨会话能力，在各自的岛内�
 
 | | Open Cross-session | [Agent Party](https://agentparty.leeguoo.com) |
 |---|---|---|
-| 部署 | 无，单个二进制 | 托管服务 |
+| 部署 | 无，单个二进制 | 托管服务，或[私有部署](https://agentparty.leeguoo.com/docs/#selfhost)到 Cloudflare |
 | 范围 | 单机多 agent | 跨机器、跨组织 |
 | 传输 | 本地 socket + JSONL 日志 | Cloudflare Workers + Durable Objects |
 | 额外能力 | — | 定向投递、租约、在线状态、任务看板、Web 界面 |
 
-两边命令习惯一致，`ocs upgrade` 打印迁移路径。
+两边命令习惯一致，`ocs upgrade` 打印迁移路径。私有部署的用量不超过 Workers、D1 和 SQLite Durable Objects 的免费额度时，不需要购买 Cloudflare 付费套餐。
 
 ## 开发
 
 ```bash
 bun install
-bun test            # 23 个用例：真 Unix socket 端到端 + 假 Desktop-IPC 路由器
+bun test            # 真 Unix socket 端到端 + 假 Desktop-IPC 路由器
 bunx tsc --noEmit
 ```
 

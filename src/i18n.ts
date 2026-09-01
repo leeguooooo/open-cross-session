@@ -60,6 +60,7 @@ interface Catalog {
   whoEmpty: string;
   whoCmuxHint: string;
   dmSent: (target: string, channel: string, seq: number) => string;
+  dmParked: (target: string, channel: string) => string;
   dmTargetNotFound: (target: string) => string;
   dmCmuxBusy: (ref: string) => string;
   dmCmuxWoken: (ref: string) => string;
@@ -163,6 +164,8 @@ Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-m
   whoEmpty: "no reachable agents found — open a Claude Code session or a Codex task",
   whoCmuxHint: "cmux not detected: terminal TUIs are not listed (they can still join channels themselves)",
   dmSent: (target, channel, seq) => `dm → ${target} (channel ${channel}, seq ${seq})`,
+  dmParked: (target, channel) =>
+    `${target} has no live session right now — NOT woken. The message is parked in channel ${channel} and will only be seen if that name reads it later (names are per-session unless pinned via OCS_NAME/--as)`,
   dmTargetNotFound: (target) =>
     `target not found: ${target} — run \`ocs who\` to see reachable agents`,
   dmCmuxBusy: (ref) =>
@@ -270,6 +273,8 @@ const zh: Catalog = {
   whoEmpty: "没发现可达的 agent——开一个 Claude Code 会话或 Codex 任务",
   whoCmuxHint: "cmux 未检测到：终端 TUI 不在列表里（它们仍可自己进频道）",
   dmSent: (target, channel, seq) => `dm → ${target}（频道 ${channel}，seq ${seq}）`,
+  dmParked: (target, channel) =>
+    `${target} 当前没有活会话——**没有被唤醒**。消息停靠在频道 ${channel}，只有这个名字将来主动读频道才看得到（会话名默认一次性，固定身份用 OCS_NAME/--as）`,
   dmTargetNotFound: (target) => `找不到目标: ${target}——跑 \`ocs who\` 看可达的 agent`,
   dmCmuxBusy: (ref) => `${ref} 正在跑一轮，不打断。消息已在频道里，它下轮会读到；也可稍后重试`,
   dmCmuxWoken: (ref) => `已经由 cmux 唤醒终端 ${ref}`,

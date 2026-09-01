@@ -32,12 +32,19 @@ describe("dmChannel", () => {
 });
 
 describe("resolveDmTarget", () => {
-  test("surface:N → cmux；uuid → codex；会话名 → claude；未知 → null", () => {
+  test("surface:N → cmux；uuid → codex；会话名 → claude；格式非法 → null", () => {
     const env = sessionsFixture();
     expect(resolveDmTarget("surface:33", env)).toMatchObject({ kind: "cmux", cmuxRef: "surface:33" });
     expect(resolveDmTarget(THREAD, env)).toMatchObject({ kind: "codex-task", threadId: THREAD });
     expect(resolveDmTarget("worker-a", env)).toMatchObject({ kind: "claude", name: "worker-a" });
-    expect(resolveDmTarget("ghost", env)).toBeNull();
+    expect(resolveDmTarget("bad name!", env)).toBeNull();
+  });
+
+  test("名字合法但不在线 → 返回无 session 的 claude 目标（消息可停靠而非报错）", () => {
+    const env = sessionsFixture();
+    const offline = resolveDmTarget("ghost", env);
+    expect(offline).toMatchObject({ kind: "claude", name: "ghost" });
+    expect((offline as { claude?: unknown }).claude).toBeUndefined();
   });
 });
 

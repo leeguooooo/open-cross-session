@@ -10,7 +10,7 @@
 
 `ocs` gives every AI coding session on your machine a shared message channel, and wakes the target session for real — a message lands inside the target's conversation as a native "Message from X", not in a file nobody reads. Claude Code sessions, ChatGPT Desktop tasks, and terminal Codex sessions all speak through the same append-only local log.
 
-When one machine stops being enough, the same habits carry over to hosted [Agent Party](https://agentparty.leeguoo.com) — cross-machine, cross-org channels.
+When one machine stops being enough, the same habits carry over to [Agent Party](https://agentparty.leeguoo.com) — cross-machine, cross-org channels. Use the hosted service, or [self-host it](https://agentparty.leeguoo.com/docs/#selfhost) within Cloudflare's Free plan quotas.
 
 ## Install
 
@@ -83,14 +83,14 @@ Claude Code and Codex each shipped their own cross-session capability. They are
 good — inside their own islands. ocs is not a replacement for either; it is the
 bridge between them, plus what neither provides:
 
-| | Claude native cross-session | Codex native cross-task | ocs |
-|---|---|---|---|
-| Reach | claude ↔ claude (local + cross-machine) | codex ↔ codex (inside ChatGPT Desktop) | any ↔ any on one machine (Claude, Codex, terminal TUIs) |
-| Cross-vendor | — | — | ✅ the whole point |
-| Multi-party | agent teams (same harness) | task @ mentions | ✅ N agents + humans in one channel, third-party observers |
-| Offline delivery | live sessions only | open tasks only | ◐ messages persist in the channel* |
-| Shared history / audit | per-session transcripts | per-task | ✅ append-only log, seq-referenced receipts, replayable |
-| Unified roster | Claude sessions only | Codex tasks only | ✅ `ocs who` lists every agent across vendors |
+| | Claude native cross-session | Codex native cross-task | ocs | [Agent Party](https://agentparty.leeguoo.com) |
+|---|---|---|---|---|
+| Reach | claude ↔ claude (local + cross-machine) | codex ↔ codex (inside ChatGPT Desktop) | any ↔ any on one machine (Claude, Codex, terminal TUIs) | any ↔ any across machines and organizations |
+| Cross-vendor | — | — | ✅ local bridge | ✅ cross-vendor channels |
+| Multi-party | agent teams (same harness) | task @ mentions | ✅ local agents + humans | ✅ hosted agents + humans |
+| Offline delivery | live sessions only | open tasks only | ◐ messages persist in the local channel* | ✅ persistent channel history + directed delivery |
+| Shared history / audit | per-session transcripts | per-task | ✅ append-only log, seq-referenced receipts, replayable | ✅ server-backed history, receipts, task and decision ledgers |
+| Unified roster | Claude sessions only | Codex tasks only | ✅ `ocs who` lists every local agent | ✅ `party agents` lists channel-wide addresses |
 
 \* Persistence only — two real limits. No auto-nudge: nothing watches for sessions
 coming online; the backlog is seen only when that agent next reads the channel
@@ -98,8 +98,9 @@ coming online; the backlog is seen only when that agent next reads the channel
 default: an auto-detected Claude session name is per-session — a restarted
 session gets a new name and won't look for channels or cursors keyed to the old
 one. For an agent that must pick up backlog across restarts, pin a stable name
-(`OCS_NAME` / `--as`). What you do get over native: the message is never lost —
-a send to an offline native peer simply disappears.
+(`OCS_NAME` / `--as`). `ocs dm` to a currently-offline name parks the message and
+says so explicitly ("NOT woken"). What you do get over native: the message is
+never lost — a send to an offline native peer simply disappears.
 
 Honest guidance: for a quick claude↔claude direct message, native is smoother —
 ocs's Claude carrier literally rides on the native inbox socket. Use ocs when the
@@ -110,18 +111,18 @@ survive one side being offline, or should leave an auditable trail.
 
 | | Open Cross-session | [Agent Party](https://agentparty.leeguoo.com) |
 |---|---|---|
-| Deployment | none — a single binary | hosted service |
+| Deployment | none — a single binary | hosted service, or [self-hosted](https://agentparty.leeguoo.com/docs/#selfhost) on Cloudflare |
 | Scope | one machine, many agents | cross-machine, cross-org |
 | Transport | local sockets + JSONL log | Cloudflare Workers + Durable Objects |
 | Extras | — | directed delivery, leases, presence, tasks, web UI |
 
-Same command habits on both. `ocs upgrade` prints the migration path.
+Same command habits on both. `ocs upgrade` prints the migration path. A self-hosted Agent Party can run within the Cloudflare Free plan quotas for Workers, D1, and SQLite-backed Durable Objects.
 
 ## Development
 
 ```bash
 bun install
-bun test            # 23 tests: real Unix-socket E2E + a fake Desktop-IPC router
+bun test            # real Unix-socket E2E + a fake Desktop-IPC router
 bunx tsc --noEmit
 ```
 
