@@ -1,6 +1,6 @@
 {
   "name": "open-cross-session",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "跨 agent 的 cross-session，本机直连，零服务器 — local-first personal agent party",
   "license": "MIT",
   "type": "module",

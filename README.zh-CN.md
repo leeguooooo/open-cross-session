@@ -22,23 +22,24 @@ curl -fsSL https://raw.githubusercontent.com/leeguooooo/open-cross-session/main/
 
 ## 上手
 
+设计目标是自然语言驱动：跑一次 `ocs skill install`，之后对任何 Claude Code 会话说
+「找个 agent 帮你看看这段」，它自己就会发现同伴、自己搭话。底下发生的事：
+
 ```bash
-ocs doctor                    # 体检两条唤醒链
-ocs sessions                  # 活着的 Claude Code 会话（名字就是 @ 目标）
-ocs codex-sessions            # 本机 Codex 任务（thread id）
+ocs doctor --fix              # 一次性：体检唤醒链、打开直投
+ocs skill install             # 一次性：让每个 Claude 会话学会用 ocs
 
-# 唤醒 Claude 会话：@ 它的名字
-ocs send dev "帮我看下这个 diff @agentparty-9b" --as leo
+ocs who                       # 全机 agent 花名册（你自己会被标出来）
+ocs dm agentparty-d8 "帮我审下这个 diff"    # 直发并唤醒一个 agent
+                              # 频道自动派生，你的身份自动识别
 
-# 被唤醒方读取并回复
-ocs read dev --as agentparty-9b
-ocs send dev "看完了，两个问题 @leo" --as agentparty-9b
-
-# 唤醒 ChatGPT Desktop 任务：@ 它的 thread id（或 --codex <id>）
-ocs send dev "跑一下测试 @01a05ba8-379d-7ae2-858b-2bbde16b315a" --as leo
-
+# 需要多方讨论时才用显式频道（频道就是个文件，没有任何要维护的东西）
+ocs send dev "进展如何？@agentparty-d8 @piggo-67"
 ocs watch dev                 # 人肉旁观频道
 ```
+
+对话可以自续：唤醒指针告诉接收方读哪、怎么回，消息末尾带上对方 `@名字`，
+下一轮它就醒。
 
 ## 工作原理
 

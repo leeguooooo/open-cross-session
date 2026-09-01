@@ -21,14 +21,22 @@ import {
   NAME_RE,
 } from "./store.ts";
 import {
+  buildRoster,
+  dmChannel,
+  resolveDmTarget,
+  resolveSelfName,
+  wakeCmuxSurface,
+} from "./roster.ts";
+import {
   findSelfClaudePid,
   selectWakeTargets,
   splitWakeMentions,
   wakeCodexTask,
+  wakeNote,
   wakeSessions,
 } from "./wake.ts";
 
-export const OCS_VERSION = "0.1.2";
+export const OCS_VERSION = "0.2.0";
 
 const LANG = detectLang();
 const M = messages(LANG);
@@ -50,16 +58,29 @@ interface CommandSpec {
 const NO_ARGS: CommandSpec = { value: [], bool: [], minPos: 0, maxPos: 0 };
 const COMMAND_SPECS: Record<string, CommandSpec> = {
   send: { value: ["as", "reply-to", "codex", "codex-source"], bool: ["no-wake"], minPos: 2, maxPos: null },
+  dm: { value: ["as"], bool: [], minPos: 2, maxPos: null },
   read: { value: ["as", "since"], bool: ["json", "peek"], minPos: 1, maxPos: 1 },
+  who: NO_ARGS,
+  whoami: NO_ARGS,
   sessions: NO_ARGS,
   "codex-sessions": { value: ["limit"], bool: [], minPos: 0, maxPos: 0 },
   watch: { value: ["interval-ms"], bool: [], minPos: 1, maxPos: 1 },
   doctor: { value: [], bool: ["fix"], minPos: 0, maxPos: 0 },
+  skill: { value: [], bool: [], minPos: 1, maxPos: 1 },
   upgrade: NO_ARGS,
   version: NO_ARGS,
   "--version": NO_ARGS,
   help: NO_ARGS,
 };
+
+/** 发送者身份：--as > $OCS_NAME > 祖先 Claude 会话名。都拿不到才要求显式。 */
+function senderName(parsed: Parsed): string {
+  const explicit = parsed.flags.get("as");
+  if (typeof explicit === "string" && explicit !== "") return explicit;
+  const inferred = resolveSelfName();
+  if (inferred !== null) return inferred;
+  fail(M.failNoSelfName);
+}
 
 function parseArgs(argv: string[], spec: CommandSpec): Parsed {
   const positional: string[] = [];
@@ -93,12 +114,6 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-function requireString(parsed: Parsed, flag: string): string {
-  const value = parsed.flags.get(flag);
-  if (typeof value !== "string" || value === "") fail(M.failFlagRequired(flag));
-  return value;
-}
-
 function printMessage(m: { seq: number; ts: string; from: string; body: string }): void {
   console.log(`#${m.seq} ${m.ts} <${m.from}> ${m.body}`);
 }
@@ -106,7 +121,7 @@ function printMessage(m: { seq: number; ts: string; from: string; body: string }
 async function cmdSend(parsed: Parsed): Promise<void> {
   const [channel, ...bodyParts] = parsed.positional;
   if (channel === undefined || bodyParts.length === 0) fail(M.failSendUsage);
-  const from = requireString(parsed, "as");
+  const from = senderName(parsed);
   const replyTo = parsed.flags.get("reply-to");
   let replyToSeq: number | undefined;
   if (replyTo !== undefined) {
@@ -179,10 +194,91 @@ async function cmdSend(parsed: Parsed): Promise<void> {
   }
 }
 
+async function cmdDm(parsed: Parsed): Promise<void> {
+  const [target, ...bodyParts] = parsed.positional;
+  if (target === undefined || bodyParts.length === 0) fail(M.failSendUsage);
+  const from = senderName(parsed);
+  const resolved = resolveDmTarget(target);
+  if (resolved === null) fail(M.dmTargetNotFound(target));
+  const channel = dmChannel(from, resolved.name);
+  const message = appendMessage({ channel, from, body: bodyParts.join(" ") });
+  console.log(M.dmSent(target, channel, message.seq));
+
+  if (resolved.kind === "claude" && resolved.claude !== undefined) {
+    const [outcome] = await wakeSessions([resolved.claude], {
+      channel,
+      seq: message.seq,
+      from,
+      lang: LANG,
+    });
+    const label = `${resolved.claude.name ?? "?"}(pid ${resolved.claude.pid})`;
+    if (outcome!.result.ok) console.log(M.wakeDelivered(label));
+    else console.log(M.wakeFailed(label, outcome!.result.reason));
+  } else if (resolved.kind === "codex-task" && resolved.threadId !== undefined) {
+    const result = await wakeCodexTask({
+      targetThreadId: resolved.threadId,
+      channel,
+      seq: message.seq,
+      from,
+      lang: LANG,
+    });
+    if (result.ok) console.log(M.codexAccepted(result.targetThreadId, result.turnId));
+    else if (result.reason === "unknown-outcome") console.log(M.codexUnknownOutcome(result.detail ?? ""));
+    else console.log(M.codexFailed(result.reason, result.detail ?? ""));
+  } else if (resolved.kind === "cmux" && resolved.cmuxRef !== undefined) {
+    const result = wakeCmuxSurface(resolved.cmuxRef, wakeNote(channel, message.seq, from, LANG));
+    if (result.ok) console.log(M.dmCmuxWoken(result.ref));
+    else if (result.reason === "busy") console.log(M.dmCmuxBusy(resolved.cmuxRef));
+    else console.log(M.dmCmuxFailed(resolved.cmuxRef, result.detail ?? result.reason));
+  }
+}
+
+function cmdWho(): void {
+  const roster = buildRoster();
+  if (roster.entries.length === 0) {
+    console.log(M.whoEmpty);
+    return;
+  }
+  const claude = roster.entries.filter((e) => e.kind === "claude");
+  const codex = roster.entries.filter((e) => e.kind === "codex-task");
+  const cmux = roster.entries.filter((e) => e.kind === "cmux");
+  if (claude.length > 0) {
+    console.log(M.whoClaudeHeader);
+    for (const e of claude) {
+      if (e.kind !== "claude") continue;
+      console.log(`  ${e.name}  pid=${e.pid}  ${e.status ?? "?"}${e.self ? M.whoSelfTag : ""}`);
+    }
+  }
+  if (codex.length > 0) {
+    console.log(M.whoCodexHeader(roster.codexIpc));
+    for (const e of codex) {
+      if (e.kind !== "codex-task") continue;
+      console.log(`  ${e.threadId}  ${(e.summary ?? e.cwd ?? "").slice(0, 60)}`);
+    }
+  }
+  if (roster.cmux) {
+    if (cmux.length > 0) {
+      console.log(M.whoCmuxHeader);
+      for (const e of cmux) {
+        if (e.kind !== "cmux") continue;
+        console.log(`  ${e.ref}  ${e.title.slice(0, 70)}`);
+      }
+    }
+  } else {
+    console.log(M.whoCmuxHint);
+  }
+}
+
+function cmdWhoami(): void {
+  const name = resolveSelfName();
+  if (name === null) fail(M.whoamiUnknown);
+  console.log(name);
+}
+
 function cmdRead(parsed: Parsed): void {
   const [channel] = parsed.positional;
   if (channel === undefined) fail(M.failReadUsage);
-  const consumer = requireString(parsed, "as");
+  const consumer = senderName(parsed);
   if (!NAME_RE.test(consumer)) fail(M.failName(consumer));
   const sinceFlag = parsed.flags.get("since");
   const since = typeof sinceFlag === "string" ? Number(sinceFlag) : loadCursor(channel, consumer);
@@ -279,6 +375,44 @@ function cmdDoctor(parsed: Parsed): void {
   }
 }
 
+const SKILL_MD = `---
+name: ocs
+description: Talk to any other AI coding agent on this machine (Claude Code sessions, Codex tasks, terminal TUIs) over open-cross-session. Use when asked to discuss with, delegate to, wake, or message another local agent/session, or to check what other agents are running.
+---
+
+# ocs — talk to other local agents
+
+Discover who is reachable, then message them. Channels are plumbing — you never
+need to create or manage them.
+
+\`\`\`bash
+ocs who                          # roster of every reachable agent (you are marked)
+ocs dm <name-or-id> "<text>"     # message + wake one agent (channel auto-derived)
+ocs read <channel>               # read new messages (channel comes from the wake note)
+ocs send <channel> "<text>"      # reply into a channel; @<name> wakes that agent
+\`\`\`
+
+- Your own identity is auto-detected inside a Claude session; \`--as <name>\` overrides.
+- A wake note you receive tells you the exact channel and commands to use — follow it.
+- Delivery honesty: "delivered to inbox" ≠ read. A busy terminal agent is not
+  interrupted; it reads the channel on its next turn.
+- To keep a conversation going, end your message with the peer's @name so they wake.
+`;
+
+function cmdSkill(parsed: Parsed): void {
+  const [sub] = parsed.positional;
+  if (sub !== "install") fail(M.unknownCommand(`skill ${sub ?? ""}`));
+  const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+  const { homedir } = require("node:os") as typeof import("node:os");
+  const { join } = require("node:path") as typeof import("node:path");
+  const dir = join(homedir(), ".claude", "skills", "ocs");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "SKILL.md");
+  writeFileSync(path, SKILL_MD);
+  console.log(M.skillInstalled(path));
+  console.log(M.skillCodexHint);
+}
+
 async function cmdWatch(parsed: Parsed): Promise<void> {
   const [channel] = parsed.positional;
   if (channel === undefined) fail(M.failWatchUsage);
@@ -317,6 +451,18 @@ async function main(): Promise<void> {
   switch (command) {
     case "send":
       await cmdSend(parsed);
+      break;
+    case "dm":
+      await cmdDm(parsed);
+      break;
+    case "who":
+      cmdWho();
+      break;
+    case "whoami":
+      cmdWhoami();
+      break;
+    case "skill":
+      cmdSkill(parsed);
       break;
     case "read":
       cmdRead(parsed);

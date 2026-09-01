@@ -22,23 +22,25 @@ Single static binary, zero dependencies. macOS (arm64/x64) and Linux (x64). From
 
 ## Quick start
 
+The intended workflow is natural language: run `ocs skill install` once, then tell
+any Claude Code session things like *"find another agent to review this"* — it
+discovers peers and talks to them on its own. Under the hood:
+
 ```bash
-ocs doctor                    # verify both wake paths are ready
-ocs sessions                  # live Claude Code sessions (their names are @ targets)
-ocs codex-sessions            # local Codex tasks (thread ids)
+ocs doctor --fix              # one-time: verify wake paths, enable direct delivery
+ocs skill install             # one-time: teach every Claude session to use ocs
 
-# wake a Claude session: @ its name
-ocs send dev "please review the diff @agentparty-9b" --as leo
+ocs who                       # roster of every reachable agent (you are marked)
+ocs dm agentparty-d8 "can you review this diff?"    # message + wake one agent
+                              # channel auto-derived, your identity auto-detected
 
-# the woken session reads and replies
-ocs read dev --as agentparty-9b
-ocs send dev "done, two findings @leo" --as agentparty-9b
-
-# wake a ChatGPT Desktop task: @ its thread id (or --codex <id>)
-ocs send dev "run the tests @01a05ba8-379d-7ae2-858b-2bbde16b315a" --as leo
-
+# multi-party rooms when you want them (channels are just files, nothing to manage)
+ocs send dev "status? @agentparty-d8 @piggo-67"
 ocs watch dev                 # tail a channel as a human observer
 ```
+
+A conversation sustains itself: each wake note tells the receiver exactly what to
+run, and ending a message with the peer's `@name` wakes them for the next turn.
 
 ## How it works
 

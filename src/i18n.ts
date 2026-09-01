@@ -53,6 +53,21 @@ interface Catalog {
   failSince: string;
   failInterval: string;
   failLimit: string;
+  whoClaudeHeader: string;
+  whoCodexHeader: (ipc: boolean) => string;
+  whoCmuxHeader: string;
+  whoSelfTag: string;
+  whoEmpty: string;
+  whoCmuxHint: string;
+  dmSent: (target: string, channel: string, seq: number) => string;
+  dmTargetNotFound: (target: string) => string;
+  dmCmuxBusy: (ref: string) => string;
+  dmCmuxWoken: (ref: string) => string;
+  dmCmuxFailed: (ref: string, detail: string) => string;
+  whoamiUnknown: string;
+  skillInstalled: (path: string) => string;
+  skillCodexHint: string;
+  failNoSelfName: string;
   failName: (name: string) => string;
   failFlagRequired: (flag: string) => string;
   failMissingValue: (flag: string) => string;
@@ -65,25 +80,32 @@ const en: Catalog = {
   help: `ocs — cross-agent, cross-session coordination on one machine. No server.
 
 Usage:
-  ocs send <channel> <body> --as <name> [--reply-to <seq>] [--no-wake]
+  ocs who
+      Roster of every reachable agent: Claude sessions, Codex tasks, terminals.
+  ocs dm <name-or-id> <text> [--as <name>]
+      Message + wake one agent. Channel is auto-derived; nothing to set up.
+  ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake]
            [--codex <thread-id>] [--codex-source <thread-id>]
-      Append to the local channel log. @<session-name> wakes a live Claude
-      session; @<thread-id> or --codex targets an open ChatGPT Desktop task.
-  ocs read <channel> --as <name> [--since <seq>] [--json] [--peek]
+      Append to a channel. @<session-name> wakes a live Claude session;
+      @<thread-id> or --codex targets an open ChatGPT Desktop task.
+  ocs read <channel> [--as <name>] [--since <seq>] [--json] [--peek]
       Read new messages since your cursor, then advance it (--peek: don't).
-  ocs sessions
-      List live Claude Code sessions (their names are @ targets).
-  ocs codex-sessions [--limit <n>]
-      List local Codex tasks (thread ids for --codex).
+  ocs whoami
+      Print the auto-detected sender identity.
+  ocs sessions | codex-sessions [--limit <n>]
+      Raw lists per namespace (who covers both).
   ocs watch <channel> [--interval-ms <n>]
       Tail a channel (Ctrl+C to stop).
   ocs doctor [--fix]
-      Health-check both wake paths; --fix sets crossSessionInbound=accept
+      Health-check all wake paths; --fix sets crossSessionInbound=accept
       (backs up the file first).
+  ocs skill install
+      Teach every Claude Code session to use ocs (installs ~/.claude/skills/ocs).
   ocs upgrade
       Migration guide to hosted Agent Party (cross-machine channels).
   ocs version | help
 
+--as is optional inside a Claude session (auto-detected; OCS_NAME also works).
 Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   sent: (channel, seq) => `sent #${channel} seq ${seq}`,
   wakeNoMatch: (names) => `wake: no live Claude session matches @${names}`,
@@ -133,6 +155,27 @@ Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-m
   failSince: "--since must be a non-negative integer",
   failInterval: "--interval-ms must be >= 50",
   failLimit: "--limit must be a positive integer",
+  whoClaudeHeader: "Claude Code sessions (wake: @name / ocs dm <name>)",
+  whoCodexHeader: (ipc) =>
+    `Codex tasks (wake: ocs dm <thread-id>; Desktop IPC ${ipc ? "available" : "UNAVAILABLE — open ChatGPT Desktop"})`,
+  whoCmuxHeader: "cmux terminal surfaces (wake: ocs dm surface:N)",
+  whoSelfTag: "  ← you",
+  whoEmpty: "no reachable agents found — open a Claude Code session or a Codex task",
+  whoCmuxHint: "cmux not detected: terminal TUIs are not listed (they can still join channels themselves)",
+  dmSent: (target, channel, seq) => `dm → ${target} (channel ${channel}, seq ${seq})`,
+  dmTargetNotFound: (target) =>
+    `target not found: ${target} — run \`ocs who\` to see reachable agents`,
+  dmCmuxBusy: (ref) =>
+    `${ref} is mid-turn; not interrupting. The message is in the channel — it will be read on the next turn, or retry later`,
+  dmCmuxWoken: (ref) => `woke terminal ${ref} via cmux`,
+  dmCmuxFailed: (ref, detail) => `cmux wake failed for ${ref}: ${detail}`,
+  whoamiUnknown:
+    "cannot tell who you are: not inside a Claude session, and OCS_NAME is unset. Pass --as <name> or export OCS_NAME",
+  skillInstalled: (path) => `skill installed: ${path} — new Claude sessions will pick it up automatically`,
+  skillCodexHint:
+    "For Codex agents, add to your AGENTS.md: \"To talk to other local agents, use `ocs who` to discover them and `ocs dm <name> <text>` to message; read replies with `ocs read <channel> --as <your-name>`.\"",
+  failNoSelfName:
+    "cannot infer sender name (not inside a Claude session). Pass --as <name> or export OCS_NAME",
   failName: (name) => `invalid name: ${name}`,
   failFlagRequired: (flag) => `--${flag} <value> is required`,
   failMissingValue: (flag) => `--${flag} requires a value`,
@@ -145,24 +188,31 @@ const zh: Catalog = {
   help: `ocs — 跨 agent 的 cross-session，本机直连，零服务器
 
 用法:
-  ocs send <channel> <body> --as <name> [--reply-to <seq>] [--no-wake]
+  ocs who
+      全机 agent 花名册：Claude 会话、Codex 任务、终端，都在一张表里
+  ocs dm <名字或id> <内容> [--as <name>]
+      给一个 agent 发消息并唤醒；频道自动派生，什么都不用建
+  ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake]
            [--codex <thread-id>] [--codex-source <thread-id>]
-      追加消息到本机频道日志；@<会话名> 唤醒活 Claude 会话，@<thread-id>
+      往频道追加消息；@<会话名> 唤醒活 Claude 会话，@<thread-id>
       或 --codex 投给 ChatGPT Desktop 里开着的任务
-  ocs read <channel> --as <name> [--since <seq>] [--json] [--peek]
+  ocs read <channel> [--as <name>] [--since <seq>] [--json] [--peek]
       从上次游标读新消息并推进游标；--peek 只读不推进
-  ocs sessions
-      列出本机活着的 Claude 会话（@ 目标就是这里的 name）
-  ocs codex-sessions [--limit <n>]
-      列出本机 Codex 任务（--codex 的 thread-id 从这里拿）
+  ocs whoami
+      看自动识别出的发送者身份
+  ocs sessions | codex-sessions [--limit <n>]
+      按命名空间的原始列表（who 已覆盖两者）
   ocs watch <channel> [--interval-ms <n>]
       跟踪频道新消息（Ctrl+C 退出）
   ocs doctor [--fix]
-      体检两条唤醒链；--fix 一键把 crossSessionInbound 设为 accept（写前备份）
+      体检全部唤醒链；--fix 一键把 crossSessionInbound 设为 accept（写前备份）
+  ocs skill install
+      让每个 Claude Code 会话学会用 ocs（装 ~/.claude/skills/ocs）
   ocs upgrade
       迁移到托管版 Agent Party（跨机器、跨组织频道）
   ocs version | help
 
+在 Claude 会话里 --as 可省略（自动识别；OCS_NAME 也行）。
 数据目录: ~/.ocs（OCS_HOME 可覆盖）。语言: OCS_LANG=en|zh。`,
   sent: (channel, seq) => `已发送 #${channel} seq ${seq}`,
   wakeNoMatch: (names) => `wake: 没有匹配 @${names} 的活 Claude 会话`,
@@ -212,6 +262,23 @@ const zh: Catalog = {
   failSince: "--since 必须是非负整数",
   failInterval: "--interval-ms 必须 >= 50",
   failLimit: "--limit 必须是正整数",
+  whoClaudeHeader: "Claude Code 会话（唤醒: @名字 / ocs dm <名字>）",
+  whoCodexHeader: (ipc) =>
+    `Codex 任务（唤醒: ocs dm <thread-id>；Desktop IPC ${ipc ? "可用" : "不可用——先开 ChatGPT Desktop"}）`,
+  whoCmuxHeader: "cmux 终端 surface（唤醒: ocs dm surface:N）",
+  whoSelfTag: "  ← 你自己",
+  whoEmpty: "没发现可达的 agent——开一个 Claude Code 会话或 Codex 任务",
+  whoCmuxHint: "cmux 未检测到：终端 TUI 不在列表里（它们仍可自己进频道）",
+  dmSent: (target, channel, seq) => `dm → ${target}（频道 ${channel}，seq ${seq}）`,
+  dmTargetNotFound: (target) => `找不到目标: ${target}——跑 \`ocs who\` 看可达的 agent`,
+  dmCmuxBusy: (ref) => `${ref} 正在跑一轮，不打断。消息已在频道里，它下轮会读到；也可稍后重试`,
+  dmCmuxWoken: (ref) => `已经由 cmux 唤醒终端 ${ref}`,
+  dmCmuxFailed: (ref, detail) => `cmux 唤醒 ${ref} 失败: ${detail}`,
+  whoamiUnknown: "认不出你是谁：不在 Claude 会话里，OCS_NAME 也没设。用 --as <name> 或 export OCS_NAME",
+  skillInstalled: (path) => `技能已安装: ${path}——新开的 Claude 会话会自动学会用 ocs`,
+  skillCodexHint:
+    "Codex agent 的话，把这段加进 AGENTS.md：「要联系本机其它 agent，用 `ocs who` 发现、`ocs dm <名字> <内容>` 搭话；用 `ocs read <频道> --as <你的名字>` 读回复。」",
+  failNoSelfName: "推断不出发送者名字（不在 Claude 会话里）。用 --as <name> 或 export OCS_NAME",
   failName: (name) => `名字不合法: ${name}`,
   failFlagRequired: (flag) => `--${flag} <value> 是必填项`,
   failMissingValue: (flag) => `--${flag} 后面必须带值`,
