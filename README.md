@@ -62,6 +62,11 @@ ocs upgrade                        # 跨机器需求出现时：迁到托管版 
 > （待审，5 分钟无人处理即丢弃），设为 `accept` 才是直投；`ocs doctor` 会检查并给出
 > 修复指引。Codex 侧走 ChatGPT Desktop 私有 IPC，宿主升级可能破坏，doctor 可探测。
 
+> **能唤醒谁**：`@会话名` 唤醒本机交互式 Claude Code 会话；`--codex`/`@thread-id`
+> 只能投给 **ChatGPT Desktop 应用里开着的任务**。终端里的 codex TUI 没有本地入站
+> 注入口（MCP elicitation 会被自动拒、Stop hook 只在轮次边界触发）——让它先跑一条
+> `ocs read` 进频道，之后的对话由 @ 唤醒对端驱动。
+
 ## 状态
 
 ✅ **两侧唤醒链已通**：本地频道日志（多进程安全单调 seq）、Claude 收件箱 socket
