@@ -84,6 +84,55 @@ describe("extractMentions", () => {
   });
 });
 
+describe("seq 单一真值源 = 日志（review 修复回归）", () => {
+  test("日志被外部写入更高 seq 后，分配从日志尾继续，绝不复用", () => {
+    const env = freshEnv();
+    appendMessage({ channel: "dev", from: "a", body: "one", env });
+    const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+    const { channelLogPath } = require("../src/store.ts") as typeof import("../src/store.ts");
+    // 模拟另一写入者（或崩溃残留）：日志里已有 seq 5
+    appendFileSync(
+      channelLogPath("dev", env),
+      `${JSON.stringify({ v: 1, seq: 5, ts: "2026-01-01T00:00:00Z", from: "x", body: "oob", mentions: [] })}\n`,
+    );
+    const next = appendMessage({ channel: "dev", from: "a", body: "two", env });
+    expect(next.seq).toBe(6);
+    // 全部可读，无遮蔽
+    expect(readMessages("dev", { env }).map((m) => m.seq)).toEqual([1, 5, 6]);
+  });
+
+  test("死持有者的陈锁被安全抢占（rename 认领）", () => {
+    const env = freshEnv();
+    const fs = require("node:fs") as typeof import("node:fs");
+    const { join } = require("node:path") as typeof import("node:path");
+    const { ocsHome } = require("../src/store.ts") as typeof import("../src/store.ts");
+    const dir = join(ocsHome(env), "channels");
+    fs.mkdirSync(dir, { recursive: true });
+    const lockPath = join(dir, "dev.lock");
+    fs.writeFileSync(lockPath, "999999999"); // 不存在的 pid → ESRCH
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockPath, old, old); // 锁龄过门槛
+    const m = appendMessage({ channel: "dev", from: "a", body: "through", env });
+    expect(m.seq).toBe(1);
+  });
+
+  test("活持有者的锁不可抢，等待方超时报错", () => {
+    const env = { ...freshEnv(), OCS_LOCK_TIMEOUT_MS: "200" };
+    const fs = require("node:fs") as typeof import("node:fs");
+    const { join } = require("node:path") as typeof import("node:path");
+    const { ocsHome } = require("../src/store.ts") as typeof import("../src/store.ts");
+    const dir = join(ocsHome(env), "channels");
+    fs.mkdirSync(dir, { recursive: true });
+    const lockPath = join(dir, "dev.lock");
+    fs.writeFileSync(lockPath, String(process.pid)); // 自己＝活着的持有者
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockPath, old, old); // 就算锁很老，pid 活着也不许抢
+    expect(() => appendMessage({ channel: "dev", from: "a", body: "x", env })).toThrow(
+      /lock timeout/,
+    );
+  });
+});
+
 describe("cursor", () => {
   test("首读为 0；推进只进不退；消费者互不影响", () => {
     const env = freshEnv();

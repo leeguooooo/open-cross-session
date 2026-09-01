@@ -7,28 +7,43 @@
 // 2. isOcsMessage 校验的字段表必须与写入方逐字镜像，否则静默丢消息（上游 #622 教训）；
 //    test/store.test.ts 里有镜像一致性测试守着。
 //
-// 并发模型：多进程同时 send 同一频道，用 O_EXCL 锁文件串行化「读 seq → 追加 → 写 seq」。
-// 锁持有者崩溃靠 stale-break：锁文件里写 pid，pid 死了即可抢占。
+// 并发模型：多进程同时 send 同一频道，用 O_EXCL 锁文件串行化「读日志尾 seq → 追加」。
+// seq 的**单一真值源是日志本身**（锁内从日志尾部推导 last seq）——不设独立 seq 文件，
+// 否则「日志已追加、seq 文件未更新」的崩溃窗口会让下一个发送者复用 seq，而读侧按
+// seq 去重会把后到的那条永久遮蔽（发送成功但永远不可读）。
+// 锁持有者崩溃靠 stale-break：pid 死（ESRCH）且锁龄超过门槛才可抢，抢占用原子 rename
+// 认领——unlink 式抢占有双抢竞态（两个等待者都 unlink，第二个 unlink 掉的是首位
+// 抢占成功者刚建的新锁，结果双持锁 → seq 重复 → 同样的永久遮蔽）。
 
+import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
   mkdirSync,
   openSync,
   closeSync,
   readFileSync,
+  readSync,
+  renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
-  existsSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
 export const OCS_HOME_ENV = "OCS_HOME";
+export const LOCK_TIMEOUT_ENV = "OCS_LOCK_TIMEOUT_MS";
 export const CHANNEL_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 export const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const BODY_LIMIT = 100_000;
 const LOCK_RETRY_MS = 25;
 const LOCK_TIMEOUT_MS = 5_000;
+/** 陈锁抢占门槛：pid 死还不够，锁还得老过这个时长——防「刚被抢占又被新持有者建好」的
+ * 读-判-抢窗口里误伤活锁（新锁 mtime 恒新鲜，够不着门槛）。 */
+const LOCK_STALE_MIN_MS = 1_000;
+/** 推导 last seq 时先读日志尾部这么多字节；单行最大 ≈ BODY_LIMIT+元数据，取不到完整
+ * 行（全是被截断的超长行）再整读兜底。 */
+const TAIL_CHUNK_BYTES = 256 * 1024;
 
 export function ocsHome(env: NodeJS.ProcessEnv = process.env): string {
   const override = env[OCS_HOME_ENV];
@@ -86,9 +101,24 @@ export function extractMentions(body: string): string[] {
   return [...out];
 }
 
-/** O_EXCL 锁 + pid stale-break。返回 unlock 函数。 */
-function acquireLock(lockPath: string): () => void {
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function lockTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = env[LOCK_TIMEOUT_ENV];
+  const parsed = raw === undefined ? NaN : Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : LOCK_TIMEOUT_MS;
+}
+
+/**
+ * O_EXCL 锁 + 安全 stale-break。返回 unlock 函数。
+ * 抢占条件：持有者 pid 确认死亡（ESRCH）**且**锁 mtime 老于 LOCK_STALE_MIN_MS。
+ * 抢占动作：原子 rename 到唯一认领名——多个等待者只有一个 rename 成功，输家 ENOENT
+ * 重试，不存在 unlink 式双抢误删新锁的竞态。
+ */
+function acquireLock(lockPath: string, env: NodeJS.ProcessEnv): () => void {
+  const deadline = Date.now() + lockTimeoutMs(env);
   for (;;) {
     try {
       const fd = openSync(lockPath, "wx", 0o600);
@@ -103,35 +133,77 @@ function acquireLock(lockPath: string): () => void {
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      // stale-break：持有者 pid 死了就抢占。
       try {
+        const stat = statSync(lockPath);
         const holder = Number(readFileSync(lockPath, "utf8"));
+        const oldEnough = Date.now() - stat.mtimeMs > LOCK_STALE_MIN_MS;
+        let holderDead = false;
         if (Number.isInteger(holder) && holder > 0) {
           try {
             process.kill(holder, 0);
           } catch (killError) {
-            if ((killError as NodeJS.ErrnoException).code === "ESRCH") {
-              try {
-                unlinkSync(lockPath);
-              } catch {
-                // 别人先清了，重试即可
-              }
-              continue;
-            }
+            holderDead = (killError as NodeJS.ErrnoException).code === "ESRCH";
           }
         }
+        if (holderDead && oldEnough) {
+          const claim = `${lockPath}.break.${process.pid}.${randomUUID()}`;
+          try {
+            renameSync(lockPath, claim);
+            unlinkSync(claim);
+          } catch {
+            // 别的等待者先认领了；正常重试
+          }
+          continue;
+        }
       } catch {
-        // 锁文件读不了（刚被清），重试
+        // 锁文件在读的瞬间被释放了；正常重试
       }
       if (Date.now() > deadline) {
         throw new Error(`channel lock timeout: ${lockPath}`);
       }
-      const wait = Date.now() + LOCK_RETRY_MS;
-      while (Date.now() < wait) {
-        // busy-wait：锁窗口极短（一次读+两次写），同步等待比引入异步依赖简单
-      }
+      sleepSync(LOCK_RETRY_MS);
     }
   }
+}
+
+/**
+ * 锁内从日志尾部推导 last seq——seq 的单一真值源。先读尾部 TAIL_CHUNK_BYTES 找最后
+ * 一条合法行；尾部全是不完整/坏行时整读兜底（readMessages 已做校验+去重+排序）。
+ */
+function lastSeqFromLog(logPath: string, channel: string, env?: NodeJS.ProcessEnv): number {
+  let size: number;
+  try {
+    size = statSync(logPath).size;
+  } catch {
+    return 0;
+  }
+  if (size === 0) return 0;
+  const readFrom = Math.max(0, size - TAIL_CHUNK_BYTES);
+  const buffer = Buffer.alloc(size - readFrom);
+  const fd = openSync(logPath, "r");
+  try {
+    readSync(fd, buffer, 0, buffer.length, readFrom);
+  } finally {
+    closeSync(fd);
+  }
+  const lines = buffer.toString("utf8").split("\n");
+  // 从块中读出的第一行可能是被截断的半行——除非块从文件头开始，否则丢弃第 0 行。
+  const start = readFrom === 0 ? 0 : 1;
+  let best = 0;
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line === "") continue;
+    try {
+      const value = JSON.parse(line) as unknown;
+      if (isOcsMessage(value) && value.seq > best) best = value.seq;
+    } catch {
+      // 坏行
+    }
+  }
+  if (best > 0) return best;
+  // 尾块里一条合法行都没有（例如末尾堆着超长坏行）——整读兜底
+  const all = readMessages(channel, { env });
+  return all.length === 0 ? 0 : all[all.length - 1]!.seq;
 }
 
 export interface AppendInput {
@@ -151,16 +223,11 @@ export function appendMessage(input: AppendInput): OcsMessage {
   const dir = channelsDir(input.env);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const logPath = channelLogPath(input.channel, input.env);
-  const seqPath = join(dir, `${input.channel}.seq`);
   const lockPath = join(dir, `${input.channel}.lock`);
 
-  const unlock = acquireLock(lockPath);
+  const unlock = acquireLock(lockPath, input.env ?? process.env);
   try {
-    let last = 0;
-    if (existsSync(seqPath)) {
-      const parsed = Number(readFileSync(seqPath, "utf8"));
-      if (Number.isInteger(parsed) && parsed >= 0) last = parsed;
-    }
+    const last = lastSeqFromLog(logPath, input.channel, input.env);
     const message: OcsMessage = {
       v: 1,
       seq: last + 1,
@@ -171,9 +238,6 @@ export function appendMessage(input: AppendInput): OcsMessage {
       ...(input.reply_to !== undefined ? { reply_to: input.reply_to } : {}),
     };
     appendFileSync(logPath, `${JSON.stringify(message)}\n`, { mode: 0o600 });
-    // seq 文件在日志之后写：崩溃在两写之间 → seq 文件落后 → 下次 send 会重读出重复 seq。
-    // 兜底：读侧按 seq 去重（readMessages 保留首见），写侧锁内追加使这种窗口极窄。
-    writeFileSync(seqPath, String(message.seq), { mode: 0o600 });
     return message;
   } finally {
     unlock();
