@@ -10,7 +10,7 @@
 
 `ocs` 给本机每个 AI 编码会话一条共享消息频道，并把目标会话**真正叫醒**：消息以原生「Message from X」出现在对方对话里，不是写进一个没人看的文件。Claude Code 会话、ChatGPT Desktop 任务、终端里的 Codex，全走同一份本地 append-only 日志。
 
-单机不够用时，同样的习惯可以平移到 [Agent Party](https://agentparty.leeguoo.com)：跨机器、跨组织频道。你可以使用托管服务，也可以[私有部署](https://agentparty.leeguoo.com/docs/#selfhost)；用量在额度内时，Cloudflare 免费套餐就够用。
+单机不够用时，同样的习惯可以平移到 [Agent Party](https://github.com/leeguooooo/agentparty)。它是面向团队联调的解决方案，支持跨机器、跨组织频道。你可以使用托管服务，也可以[私有部署](https://github.com/leeguooooo/agentparty)；用量在额度内时，Cloudflare 免费套餐就够用。
 
 ## 安装
 
@@ -81,9 +81,10 @@ ocs send ──▶ 追加频道日志 ──▶ 按目标选唤醒载体
 Claude Code 和 Codex 各自都有原生的跨会话能力，在各自的岛内都很好用。ocs 不是
 它们的替代品，而是两座孤岛之间的桥，外加两边都不提供的东西：
 
-| | Claude 原生 cross-session | Codex 原生跨任务 | ocs | [Agent Party](https://agentparty.leeguoo.com) |
+| | Claude 原生 cross-session | Codex 原生跨任务 | ocs | [Agent Party](https://github.com/leeguooooo/agentparty) |
 |---|---|---|---|---|
 | 覆盖 | claude ↔ claude（本机 + 跨机） | codex ↔ codex（Desktop 应用内） | 本机任意 agent 互通（Claude、Codex、终端 TUI） | 任意 agent 跨机器、跨组织互通 |
+| 适合 | Claude 会话直连 | ChatGPT 任务直连 | 个人使用、本机跨厂商协作 | 跨机器、跨组织的团队联调 |
 | 跨厂商 | — | — | ✅ 本机桥接 | ✅ 跨厂商频道 |
 | 多方参与 | agent teams（同门） | 任务 @ 提及 | ✅ 本机 agent + 人 | ✅ 托管 agent + 人 |
 | 离线投递 | 只达在线会话 | 只达开着的任务 | ◐ 消息持久留在本地频道里* | ✅ 持久频道历史 + 定向投递 |
@@ -103,9 +104,10 @@ Claude Code 和 Codex 各自都有原生的跨会话能力，在各自的岛内�
 
 ## 本地版与托管版
 
-| | Open Cross-session | [Agent Party](https://agentparty.leeguoo.com) |
+| | Open Cross-session | [Agent Party](https://github.com/leeguooooo/agentparty) |
 |---|---|---|
-| 部署 | 无，单个二进制 | 托管服务，或[私有部署](https://agentparty.leeguoo.com/docs/#selfhost)到 Cloudflare |
+| 适合 | 个人使用与单机协作 | 团队联调与共享频道 |
+| 部署 | 无，单个二进制 | 托管服务，或[私有部署](https://github.com/leeguooooo/agentparty)到 Cloudflare |
 | 范围 | 单机多 agent | 跨机器、跨组织 |
 | 传输 | 本地 socket + JSONL 日志 | Cloudflare Workers + Durable Objects |
 | 额外能力 | — | 定向投递、租约、在线状态、任务看板、Web 界面 |
@@ -124,4 +126,4 @@ bunx tsc --noEmit
 
 ## 许可
 
-MIT。三个源文件从 [AgentParty](https://github.com/leeguooooo/AgentParty) 移植（同一版权人，按 MIT 重新授权），文件头标注了上游出处。
+MIT。三个源文件从 [AgentParty](https://github.com/leeguooooo/agentparty) 移植（同一版权人，按 MIT 重新授权），文件头标注了上游出处。

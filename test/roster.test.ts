@@ -25,9 +25,23 @@ function sessionsFixture(): NodeJS.ProcessEnv {
 }
 
 describe("dmChannel", () => {
-  test("双方各自派生得到同一频道；大小写/非法字符归一", () => {
-    expect(dmChannel("Alice.9b", "bob")).toBe(dmChannel("bob", "Alice.9b"));
-    expect(dmChannel("Alice.9b", "bob")).toBe("dm--alice-9b--bob");
+  test("双方各自派生得到同一频道，且格式合法", () => {
+    const channel = dmChannel("Alice.9b", "bob");
+    expect(channel).toBe(dmChannel("bob", "Alice.9b"));
+    expect(channel).toMatch(/^dm-[0-9a-f]{8}--/);
+    expect(channel.length).toBeLessThanOrEqual(64);
+  });
+
+  test("不同名字对绝不合并进同一频道（review 回归：清洗/截断/分隔符歧义）", () => {
+    // 分隔符歧义：(a--b, c) vs (a, b--c)
+    expect(dmChannel("a--b", "c")).not.toBe(dmChannel("a", "b--c"));
+    // 清洗折叠：大小写、点号
+    expect(dmChannel("Alice", "bob")).not.toBe(dmChannel("alice", "bob"));
+    expect(dmChannel("a.b", "c")).not.toBe(dmChannel("a-b", "c"));
+    // 截断：64 字符内共享前缀的长名字对
+    const long1 = "x".repeat(60) + "1";
+    const long2 = "x".repeat(60) + "2";
+    expect(dmChannel(long1, "peer")).not.toBe(dmChannel(long2, "peer"));
   });
 });
 

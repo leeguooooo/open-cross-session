@@ -10,7 +10,7 @@
 
 `ocs` gives every AI coding session on your machine a shared message channel, and wakes the target session for real — a message lands inside the target's conversation as a native "Message from X", not in a file nobody reads. Claude Code sessions, ChatGPT Desktop tasks, and terminal Codex sessions all speak through the same append-only local log.
 
-When one machine stops being enough, the same habits carry over to [Agent Party](https://agentparty.leeguoo.com) — cross-machine, cross-org channels. Use the hosted service, or [self-host it](https://agentparty.leeguoo.com/docs/#selfhost) within Cloudflare's Free plan quotas.
+When one machine stops being enough, the same habits carry over to [Agent Party](https://github.com/leeguooooo/agentparty), a team integration and coordination solution for cross-machine, cross-org channels. Use the hosted service, or [self-host it](https://github.com/leeguooooo/agentparty) within Cloudflare's Free plan quotas.
 
 ## Install
 
@@ -83,9 +83,10 @@ Claude Code and Codex each shipped their own cross-session capability. They are
 good — inside their own islands. ocs is not a replacement for either; it is the
 bridge between them, plus what neither provides:
 
-| | Claude native cross-session | Codex native cross-task | ocs | [Agent Party](https://agentparty.leeguoo.com) |
+| | Claude native cross-session | Codex native cross-task | ocs | [Agent Party](https://github.com/leeguooooo/agentparty) |
 |---|---|---|---|---|
 | Reach | claude ↔ claude (local + cross-machine) | codex ↔ codex (inside ChatGPT Desktop) | any ↔ any on one machine (Claude, Codex, terminal TUIs) | any ↔ any across machines and organizations |
+| Best fit | direct Claude session handoff | direct ChatGPT task handoff | personal, single-machine cross-vendor coordination | team integration across machines and organizations |
 | Cross-vendor | — | — | ✅ local bridge | ✅ cross-vendor channels |
 | Multi-party | agent teams (same harness) | task @ mentions | ✅ local agents + humans | ✅ hosted agents + humans |
 | Offline delivery | live sessions only | open tasks only | ◐ messages persist in the local channel* | ✅ persistent channel history + directed delivery |
@@ -109,9 +110,10 @@ survive one side being offline, or should leave an auditable trail.
 
 ## Local vs hosted
 
-| | Open Cross-session | [Agent Party](https://agentparty.leeguoo.com) |
+| | Open Cross-session | [Agent Party](https://github.com/leeguooooo/agentparty) |
 |---|---|---|
-| Deployment | none — a single binary | hosted service, or [self-hosted](https://agentparty.leeguoo.com/docs/#selfhost) on Cloudflare |
+| Best for | personal use and single-machine coordination | team integration and shared channels |
+| Deployment | none — a single binary | hosted service, or [self-hosted](https://github.com/leeguooooo/agentparty) on Cloudflare |
 | Scope | one machine, many agents | cross-machine, cross-org |
 | Transport | local sockets + JSONL log | Cloudflare Workers + Durable Objects |
 | Extras | — | directed delivery, leases, presence, tasks, web UI |
@@ -130,4 +132,4 @@ Architecture decisions and component provenance: [DESIGN.md](./DESIGN.md) and [d
 
 ## License
 
-MIT. Three source files are vendored from [AgentParty](https://github.com/leeguooooo/AgentParty) by the same copyright holder and relicensed under MIT; their headers mark the upstream origin.
+MIT. Three source files are vendored from [AgentParty](https://github.com/leeguooooo/agentparty) by the same copyright holder and relicensed under MIT; their headers mark the upstream origin.
