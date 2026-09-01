@@ -77,6 +77,26 @@ Delivery honesty: for Claude targets, a successful send means the frame reached 
 
 Data lives in `~/.ocs` (override with `OCS_HOME`). Channels are plain JSONL logs — inspect or back them up with standard tools.
 
+## vs native cross-session
+
+Claude Code and Codex each shipped their own cross-session capability. They are
+good — inside their own islands. ocs is not a replacement for either; it is the
+bridge between them, plus what neither provides:
+
+| | Claude native cross-session | Codex native cross-task | ocs |
+|---|---|---|---|
+| Reach | claude ↔ claude (local + cross-machine) | codex ↔ codex (inside ChatGPT Desktop) | any ↔ any on one machine (Claude, Codex, terminal TUIs) |
+| Cross-vendor | — | — | ✅ the whole point |
+| Multi-party | agent teams (same harness) | task @ mentions | ✅ N agents + humans in one channel, third-party observers |
+| Offline delivery | live sessions only | open tasks only | ✅ the channel is a mailbox; agents read when they come online |
+| Shared history / audit | per-session transcripts | per-task | ✅ append-only log, seq-referenced receipts, replayable |
+| Unified roster | Claude sessions only | Codex tasks only | ✅ `ocs who` lists every agent across vendors |
+
+Honest guidance: for a quick claude↔claude direct message, native is smoother —
+ocs's Claude carrier literally rides on the native inbox socket. Use ocs when the
+conversation crosses vendors, needs more than two participants, must survive one
+side being offline, or should leave an auditable trail.
+
 ## Local vs hosted
 
 | | Open Cross-session | [Agent Party](https://agentparty.leeguoo.com) |

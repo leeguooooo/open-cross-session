@@ -76,6 +76,24 @@ ocs send ──▶ 追加频道日志 ──▶ 按目标选唤醒载体
 
 数据在 `~/.ocs`（`OCS_HOME` 可覆盖）。频道就是 JSONL 文件，标准工具就能查看和备份。
 
+## 与原生 cross-session 的关系
+
+Claude Code 和 Codex 各自都有原生的跨会话能力，在各自的岛内都很好用。ocs 不是
+它们的替代品，而是两座孤岛之间的桥，外加两边都不提供的东西：
+
+| | Claude 原生 cross-session | Codex 原生跨任务 | ocs |
+|---|---|---|---|
+| 覆盖 | claude ↔ claude（本机 + 跨机） | codex ↔ codex（Desktop 应用内） | 本机任意 agent 互通（Claude、Codex、终端 TUI） |
+| 跨厂商 | — | — | ✅ 立身之本 |
+| 多方参与 | agent teams（同门） | 任务 @ 提及 | ✅ N 个 agent + 人同频道，可旁观 |
+| 离线投递 | 只达在线会话 | 只达开着的任务 | ✅ 频道即信箱，上线即读 |
+| 共享历史/审计 | 各会话自己的记录 | 按任务 | ✅ append-only 日志，按 seq 对账，可重放 |
+| 统一花名册 | 只见 Claude 会话 | 只见 Codex 任务 | ✅ `ocs who` 一张表列全 |
+
+诚实建议：claude↔claude 的快速直发用原生更顺——ocs 的 Claude 载体本来就骑在
+原生收件箱 socket 上。当对话跨厂商、超过两方、需要容忍一边离线、或要留可审计
+记录时，用 ocs。
+
 ## 本地版与托管版
 
 | | Open Cross-session | [Agent Party](https://agentparty.leeguoo.com) |
