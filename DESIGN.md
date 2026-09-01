@@ -55,25 +55,65 @@
 
 ## 三、可抽取组件地图（来自 agentparty 主仓盘点）
 
-> ⏳ 盘点进行中，本节待补全。已确认的关键事实：
+> 完整盘点（带 file:line 引用与三档标注）见
+> [docs/agentparty-extraction-map.md](./docs/agentparty-extraction-map.md)。以下是结论。
 
-- 主仓已存在**两条纯本地零网络传输**：
-  - Claude 侧：`cli/src/claude-inbox-inject.ts` — Unix socket
-    （`/tmp/cc-socks/<pid>.sock`）按 PID 寻址注入活会话，JSONL 帧，
-    ≤512B channel+seq 指针载荷。
-  - Codex 侧：`cli/src/codex-desktop-ipc.ts`（#1012）— ChatGPT Desktop 私有 IPC
-    注入活 task。
-- 云端仅承担：消息总线、在线状态、回复欠账。
-  → **本地版唯一要自研的核心 = 本地消息总线**，两端唤醒/注入代码可复用。
-- ⚠️ 已知坑：Claude 收件箱注入 `ok:true` ≠ 已入对话；接收端默认 hold 进审核队列，
-  5 分钟无人 Deliver 即静默丢弃且不回错。本地版必须正面解决默认 hold 策略。
+**主仓已存在两条纯本地零网络传输**，本地版不需要发明传输：
 
-## 四、架构（草案，待盘点补全后细化）
+1. **Claude 侧**：`claude-inbox-inject.ts` — cc-socks Unix socket
+   （`/tmp/cc-socks/<pid>.sock`）按 PID 寻址注入活会话，JSONL 帧，
+   ≤512B channel+seq 指针载荷（正文永远回频道重读）。
+2. **Codex 侧**：`codex-desktop-ipc.ts`（#1012）— ChatGPT Desktop 自己的
+   `~/.codex/ipc/ipc.sock`，用 `thread-follower-start-turn` + `codex_app`
+   toolOutput 注入原生跨任务消息，UI 里保留原生来源链接。
+3. **补充**：Codex Stop hook 的 `{"decision":"block","reason":…}` —
+   `reason` 即注入 prompt（≤512B），机制全本地，只有「有没有新消息」一问走服务端。
 
-- 本地总线：替代云端三职责（消息、在线、欠账）的单机实现。
-- 唤醒适配器：Claude（socket 注入 / `--resume` runner）、Codex（原生 IPC）。
-- CLI 与 MCP 面：沿用 party 的使用习惯，命令集对齐，降低升级迁移成本。
-- `upgrade` 通道：把本地频道迁到 agentparty.leeguoo.com。
+**可几乎原样复用**（零服务端依赖）：两个 session registry、
+`serve-wake-proxy` 全套、`codex-sessions` / `codex-session-kind` /
+`codex-stop-wake`（决策纯函数）、`codex-turn-arbiter`（transport 本来就是注入的）、
+hook 信任闸修复器、`runtime-topology`（本地 locality 判定的隐藏宝石，只需换盐）、
+`join-binding` / `instance-lock` / cursor+stuck / `continuation` /
+`atomic-json` / `mention-wake-claim`、`MsgFrame` 数据形状及其两条铁律
+（只按 seq 定序绝不按 ts；`isMessageFrame` 校验必须逐字镜像字段表，#622）。
+
+**只需重写两个收敛点**：`rest.ts`（全部 HTTP 汇聚于单个 fetch——保签名、
+换成本地存储实现）和 `client.ts` 的 `connect()`（唯一 WS 收敛点——换成本地日志 tail）。
+**25 个 MCP handler 一行不用改。**
+
+**服务端绑死可直接删**：OIDC/token、lease epoch/token 的分布式 CAS 协议、
+presence 心跳（本地读 registry 即可）、`worker_upgrade_required` 等纯服务端 blocker。
+
+## 四、架构
+
+```
+┌─ Claude 会话 ─┐   ┌─ Codex/ChatGPT task ─┐   ┌─ headless ─┐
+│ cc-socks UDS  │   │ Desktop IPC          │   │ claude -p  │
+│ 注入          │   │ thread-follower      │   │ --resume / │
+└──────┬────────┘   └────────┬─────────────┘   │ codex resume│
+       │                     │                 └─────┬──────┘
+       └───────── 按目标 harness 选载体 ─────────────┘
+                         ▲
+              本机 append-only 消息日志
+        （SQLite/JSONL，per-channel 单调 seq）
+              + UDS/文件 watch 新消息通知
+```
+
+- 投递 = 写日志 → 通知 → 选载体注入；正文永远由被唤醒方回日志重读（指针模式）。
+- 身份：沿用「每身份一进程 MCP，绝不共享 daemon」硬约束（权限放大教训 #865/#862）；
+  身份 key 从 `server+name` 换成本地 config path。
+- 验收：直接抄 `verify-agentparty-claude-cross-session.ts` 的 21 条证据链，
+  删掉 worker/runtime_peer 两类纯服务端 blocker。
+
+**两个必须正面解决的坑**（都静默失败、不回错）：
+
+1. Claude 跨会话收件箱默认 **hold**，5 分钟无人 Deliver 即丢弃——本地版要么改默认
+   放行策略，要么设计带确认的回路，不能沿用「发了就不管」。
+2. Codex ≥0.149 的 **hook 信任闸**——`hooks.json` 里的 hook 未在 `config.toml`
+   批准就静默跳过。修复器可复用；绝不用 `--dangerously-bypass-hook-trust`。
+
+**风险**：Desktop IPC 依赖 ChatGPT.app 私有协议，宿主升级会破——需要版本探测 + 降级路径
+（headless spawn 兜底）。
 
 ## 五、共享维护策略（两个项目一处维护）
 
