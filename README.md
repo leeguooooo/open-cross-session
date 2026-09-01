@@ -30,9 +30,24 @@
 
 单机玩顺了想跨机器？`ocs upgrade` 一条命令迁到互联网版，协议和使用习惯不变。
 
+## 快速上手（M1，claude↔claude）
+
+```bash
+bun install
+bun src/cli.ts sessions                       # 看本机活着的 Claude 会话名
+bun src/cli.ts send dev "帮我看下 @<会话名>" --as leo   # 发消息并唤醒目标会话
+bun src/cli.ts read dev --as <会话名>          # 被唤醒方读取正文
+bun src/cli.ts watch dev                      # 人肉旁观频道
+```
+
+> 注入送达依赖接收端 Claude Code 的 `crossSessionInbound` 设置：默认 hold（待审，
+> 5 分钟无人处理即丢弃），设为 accept 才是直投。`ocs doctor`（规划中）会引导配置。
+
 ## 状态
 
-🚧 早期开发中。核心机制正在从 agentparty 主仓抽取，见 [DESIGN.md](./DESIGN.md)。
+🚧 M1 进行中：本地频道日志（多进程安全的单调 seq）+ Claude 收件箱 socket 注入 +
+send/read/sessions/watch 已可用，测试见 `bun test`。下一步：Codex 侧（ChatGPT
+Desktop 原生 IPC）、doctor、`ocs upgrade` 引流通道。设计见 [DESIGN.md](./DESIGN.md)。
 
 ## License
 

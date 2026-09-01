@@ -1,0 +1,19 @@
+{
+  "name": "open-cross-session",
+  "version": "0.1.0",
+  "description": "跨 agent 的 cross-session，本机直连，零服务器 — local-first personal agent party",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "ocs": "./src/cli.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "check": "bun test && bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}
