@@ -3,10 +3,9 @@
 //
 // 命令面刻意贴近上游 party CLI 的使用习惯，降低将来 `ocs upgrade` 迁到托管版的心智成本。
 
-import { readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { statSync } from "node:fs";
 import { listNativeSessions } from "./claude-inject.ts";
+import { enableCrossSessionInbound, readCrossSessionInbound } from "./claude-settings.ts";
 import { codexDesktopIpcAvailable, codexDesktopIpcSocketPath } from "./codex-ipc.ts";
 import { codexSessionsRoot, formatCodexSessionLine, listCodexSessions } from "./codex-sessions.ts";
 import {
@@ -85,8 +84,9 @@ const HELP = `ocs — 跨 agent 的 cross-session，本机直连，零服务器
       列出本机 Codex rollout 任务（--codex 的 thread-id 从这里拿）
   ocs watch <channel> [--interval-ms <n>]
       跟踪频道新消息（轮询 tail，Ctrl+C 退出）
-  ocs doctor
-      体检：Claude 会话面 / crossSessionInbound 直投设置 / ChatGPT Desktop IPC / 数据目录
+  ocs doctor [--fix]
+      体检：Claude 会话面 / crossSessionInbound 直投设置 / ChatGPT Desktop IPC / 数据目录；
+      --fix 一键把 crossSessionInbound 设为 accept（写前备份）
   ocs upgrade
       单机玩到头了？迁移到托管版 Agent Party（跨机器、跨组织频道）
   ocs version
@@ -210,18 +210,7 @@ function cmdCodexSessions(parsed: Parsed): void {
   for (const s of sessions) console.log(formatCodexSessionLine(s));
 }
 
-function readClaudeSettingValue(key: string): unknown {
-  try {
-    const settings = JSON.parse(
-      readFileSync(join(homedir(), ".claude", "settings.json"), "utf8"),
-    ) as Record<string, unknown>;
-    return settings[key];
-  } catch {
-    return undefined;
-  }
-}
-
-function cmdDoctor(): void {
+function cmdDoctor(parsed: Parsed): void {
   const ok = (s: string) => console.log(`  ✅ ${s}`);
   const warn = (s: string) => console.log(`  ⚠️  ${s}`);
   const bad = (s: string) => console.log(`  ❌ ${s}`);
@@ -230,14 +219,26 @@ function cmdDoctor(): void {
   const claude = listNativeSessions();
   if (claude.length > 0) ok(`${claude.length} 个活着的 Claude 原生会话可作唤醒目标`);
   else warn("没有活着的 Claude 原生会话（开一个交互式 Claude Code 再试）");
-  const inbound = readClaudeSettingValue("crossSessionInbound");
+  const inbound = readCrossSessionInbound();
   if (inbound === "accept") {
     ok("crossSessionInbound = accept（注入直投，真送达）");
+  } else if (parsed.flags.has("fix")) {
+    const result = enableCrossSessionInbound();
+    if ("error" in result) {
+      bad(`crossSessionInbound 修复失败：${result.error}`);
+    } else if (result.changed) {
+      ok(
+        `crossSessionInbound 已设为 accept${result.backupPath ? `（原文件备份在 ${result.backupPath}）` : ""}` +
+          "；已开着的 Claude 会话要重启后生效",
+      );
+    } else {
+      ok("crossSessionInbound = accept");
+    }
   } else {
     bad(
       `crossSessionInbound = ${JSON.stringify(inbound ?? "hold(默认)")} — 注入会进待审队列，` +
-        "5 分钟无人 Deliver 即静默丢弃。修复：在 ~/.claude/settings.json 顶层加 " +
-        '"crossSessionInbound": "accept"',
+        "5 分钟无人 Deliver 即静默丢弃。跑 `ocs doctor --fix` 一键设为 accept（写前自动备份），" +
+        "或手动在 ~/.claude/settings.json 顶层加 \"crossSessionInbound\": \"accept\"",
     );
   }
 
@@ -316,7 +317,7 @@ async function main(): Promise<void> {
       cmdCodexSessions(parsed);
       break;
     case "doctor":
-      cmdDoctor();
+      cmdDoctor(parsed);
       break;
     case "upgrade":
       cmdUpgrade();
