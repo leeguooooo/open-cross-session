@@ -3,7 +3,13 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLAUDE_NATIVE_SESSIONS_DIR_ENV } from "../src/claude-inject.ts";
-import { dmChannel, resolveDmTarget, resolveSelfName, OCS_NAME_ENV } from "../src/roster.ts";
+import {
+  dmChannel,
+  resolveDmTarget,
+  resolveSelfName,
+  selfIdentity,
+  OCS_NAME_ENV,
+} from "../src/roster.ts";
 
 const THREAD = "aaaaaaaa-1111-2222-3333-444444444444";
 
@@ -42,6 +48,23 @@ describe("dmChannel", () => {
     const long1 = "x".repeat(60) + "1";
     const long2 = "x".repeat(60) + "2";
     expect(dmChannel(long1, "peer")).not.toBe(dmChannel(long2, "peer"));
+  });
+
+  test("身份串全长且带命名空间：别名截断/跨空间同形不再碰撞（review 回归）", () => {
+    const env = sessionsFixture();
+    const me = selfIdentity("me");
+    // 共享 8-hex 前缀的两个 codex thread：别名同为 codex-aaaaaaaa，身份串不同
+    const t1 = resolveDmTarget("aaaaaaaa-1111-2222-3333-444444444444", env)!;
+    const t2 = resolveDmTarget("aaaaaaaa-9999-8888-7777-666666666666", env)!;
+    expect(t1.name).toBe(t2.name);
+    expect(dmChannel(me, t1.identity)).not.toBe(dmChannel(me, t2.identity));
+    // 跨命名空间同形：叫 surface-33 的 Claude 会话 vs cmux 的 surface:33
+    const claudeAlike = resolveDmTarget("surface-33", env)!;
+    const cmuxReal = resolveDmTarget("surface:33", env)!;
+    expect(dmChannel(me, claudeAlike.identity)).not.toBe(dmChannel(me, cmuxReal.identity));
+    // 叫 codex-aaaaaaaa 的 Claude 会话 vs 真 codex 任务
+    const codexAlike = resolveDmTarget("codex-aaaaaaaa", env)!;
+    expect(dmChannel(me, codexAlike.identity)).not.toBe(dmChannel(me, t1.identity));
   });
 });
 

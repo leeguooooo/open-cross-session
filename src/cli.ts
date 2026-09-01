@@ -25,6 +25,7 @@ import {
   dmChannel,
   resolveDmTarget,
   resolveSelfName,
+  selfIdentity,
   wakeCmuxSurface,
 } from "./roster.ts";
 import {
@@ -200,7 +201,7 @@ async function cmdDm(parsed: Parsed): Promise<void> {
   const from = senderName(parsed);
   const resolved = resolveDmTarget(target);
   if (resolved === null) fail(M.dmTargetNotFound(target));
-  const channel = dmChannel(from, resolved.name);
+  const channel = dmChannel(selfIdentity(from), resolved.identity);
   const message = appendMessage({ channel, from, body: bodyParts.join(" ") });
   console.log(M.dmSent(target, channel, message.seq));
 
