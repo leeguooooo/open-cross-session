@@ -30,10 +30,18 @@
 
 单机玩顺了想跨机器？`ocs upgrade` 一条命令迁到互联网版，协议和使用习惯不变。
 
+## 安装
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/open-cross-session/main/install.sh | sh
+```
+
+macOS（arm64/x64）与 Linux（x64）单文件二进制，零依赖。从源码跑见下。
+
 ## 快速上手
 
 ```bash
-bun install && bun link            # 之后可直接用 `ocs`
+bun install && bun link            # 源码方式；二进制安装则直接用 `ocs`
 
 ocs doctor                         # 体检：两侧唤醒链是否就绪
 ocs sessions                       # 本机活着的 Claude 会话（@ 目标）
