@@ -39,6 +39,44 @@ export interface WakeTargetSelection {
 }
 
 /**
+ * mention 分流：形如 codex thread id（uuid）的 @ 走 ChatGPT Desktop IPC，
+ * 其余按 Claude 原生会话名匹配。用户直觉是「@ 谁就唤谁」，不该要求记两套语法。
+ */
+export function splitWakeMentions(mentions: readonly string[]): {
+  claudeNames: string[];
+  codexThreads: string[];
+} {
+  const claudeNames: string[] = [];
+  const codexThreads: string[] = [];
+  for (const mention of mentions) {
+    (isCodexThreadId(mention) ? codexThreads : claudeNames).push(mention);
+  }
+  return { claudeNames, codexThreads };
+}
+
+/**
+ * 沿进程祖先链找到本进程所属的 Claude 会话 pid（`~/.claude/sessions/<pid>.json` 存在
+ * 即命中）。ocs 通常经由 Claude 的 Bash 工具调用，`process.ppid` 是中间 shell 而非
+ * Claude 本体——拿它做自我排除形同虚设（真机验证过：自 @ 自己会真的注入回环）。
+ */
+export function findSelfClaudePid(
+  env: NodeJS.ProcessEnv = process.env,
+  maxHops = 10,
+): number | null {
+  const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
+  const alive = new Set(listNativeSessions(env).map((s) => s.pid));
+  let pid = process.pid;
+  for (let hop = 0; hop < maxHops; hop++) {
+    const out = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" });
+    const parent = Number(out.stdout.trim());
+    if (!Number.isInteger(parent) || parent <= 1) return null;
+    if (alive.has(parent)) return parent;
+    pid = parent;
+  }
+  return null;
+}
+
+/**
  * 目标选择：mentions 与本机活 Claude 原生会话名求交集。
  * - 排除 selfPids（发送方自己所在的会话，通常传 [process.ppid]）。
  * - 同名多会话不消歧、全部命中（本地个人场景下同名即同人多开，都该被叫醒）。
@@ -162,7 +200,15 @@ export async function wakeCodexTask(input: {
     if (error instanceof CodexDesktopIpcUnknownOutcomeError) {
       return { ok: false, reason: "unknown-outcome", detail: error.message };
     }
-    return { ok: false, reason: "failed", detail: String(error) };
+    const text = String(error);
+    if (text.includes("no-client-found") || text.includes("No ChatGPT renderer owns")) {
+      return {
+        ok: false,
+        reason: "failed",
+        detail: "目标 task 未在 ChatGPT Desktop 中打开（IPC 只能投给开着的任务；用 `ocs codex-sessions` 核对后在 Desktop 里打开它）",
+      };
+    }
+    return { ok: false, reason: "failed", detail: text };
   } finally {
     client.close();
   }

@@ -4,7 +4,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexSessionsRoot, listCodexSessions } from "../src/codex-sessions.ts";
-import { pickCodexSourceThread, wakeCodexTask } from "../src/wake.ts";
+import { pickCodexSourceThread, splitWakeMentions, wakeCodexTask } from "../src/wake.ts";
 
 const THREAD_A = "aaaaaaaa-1111-2222-3333-444444444444";
 const THREAD_B = "bbbbbbbb-1111-2222-3333-444444444444";
@@ -35,6 +35,19 @@ describe("codex-sessions（rollout 发现）", () => {
     expect(pickCodexSourceThread(THREAD_B, env)).toBe(THREAD_A);
     expect(pickCodexSourceThread(THREAD_A, env)).toBe(THREAD_B);
     expect(pickCodexSourceThread(THREAD_A, { CODEX_HOME: mkdtempSync(join(tmpdir(), "ocs-empty-")) })).toBeNull();
+  });
+});
+
+describe("splitWakeMentions（@ 分流）", () => {
+  test("uuid 形状归 codex，其余归 Claude 会话名", () => {
+    const { claudeNames, codexThreads } = splitWakeMentions([
+      "worker-a",
+      THREAD_A,
+      "agentparty-9b",
+      THREAD_B,
+    ]);
+    expect(claudeNames).toEqual(["worker-a", "agentparty-9b"]);
+    expect(codexThreads).toEqual([THREAD_A, THREAD_B]);
   });
 });
 

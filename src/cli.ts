@@ -19,7 +19,13 @@ import {
   saveCursor,
   NAME_RE,
 } from "./store.ts";
-import { selectWakeTargets, wakeCodexTask, wakeSessions } from "./wake.ts";
+import {
+  findSelfClaudePid,
+  selectWakeTargets,
+  splitWakeMentions,
+  wakeCodexTask,
+  wakeSessions,
+} from "./wake.ts";
 
 interface Parsed {
   positional: string[];
@@ -101,12 +107,19 @@ async function cmdSend(parsed: Parsed): Promise<void> {
 
   if (parsed.flags.has("no-wake")) return;
 
-  // Codex 侧：--codex <thread-id> 走 ChatGPT Desktop 原生跨任务通信
-  const codexTarget = parsed.flags.get("codex");
-  if (typeof codexTarget === "string") {
-    const codexSource = parsed.flags.get("codex-source");
+  // @ 分流：uuid 形状的 mention 视为 codex thread id，其余按 Claude 会话名。
+  const { claudeNames, codexThreads } = splitWakeMentions(message.mentions);
+
+  // Codex 侧：--codex <thread-id> 或 @<thread-id>，走 ChatGPT Desktop 原生跨任务通信
+  const codexFlag = parsed.flags.get("codex");
+  const codexTargets = [
+    ...(typeof codexFlag === "string" ? [codexFlag] : []),
+    ...codexThreads.filter((t) => t !== codexFlag),
+  ];
+  const codexSource = parsed.flags.get("codex-source");
+  for (const target of codexTargets) {
     const result = await wakeCodexTask({
-      targetThreadId: codexTarget,
+      targetThreadId: target,
       ...(typeof codexSource === "string" ? { sourceThreadId: codexSource } : {}),
       channel,
       seq: message.seq,
@@ -122,12 +135,15 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     }
   }
 
-  if (message.mentions.length === 0) return;
-  // 自我唤醒防回环：ocs 通常在 Claude 会话里被调用，父进程 pid 即自身会话。
-  const selection = selectWakeTargets(message.mentions, { selfPids: [process.ppid] });
+  if (claudeNames.length === 0) return;
+  // 自我唤醒防回环：沿进程祖先链找本会话的 Claude pid（ppid 是中间 shell，不可用）。
+  const selfPid = findSelfClaudePid();
+  const selection = selectWakeTargets(claudeNames, {
+    selfPids: selfPid === null ? [] : [selfPid],
+  });
   if (selection.targets.length === 0) {
     const hint = selection.excludedSelf.length > 0 ? "（@ 到了自己，已跳过）" : "";
-    console.log(`wake: 没有匹配 @${message.mentions.join(" @")} 的活 Claude 会话${hint}`);
+    console.log(`wake: 没有匹配 @${claudeNames.join(" @")} 的活 Claude 会话${hint}`);
     return;
   }
   for (const outcome of await wakeSessions(selection.targets, {
