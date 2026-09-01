@@ -28,7 +28,7 @@ describe("dmChannel", () => {
   test("双方各自派生得到同一频道，且格式合法", () => {
     const channel = dmChannel("Alice.9b", "bob");
     expect(channel).toBe(dmChannel("bob", "Alice.9b"));
-    expect(channel).toMatch(/^dm-[0-9a-f]{8}--/);
+    expect(channel).toMatch(/^dm-[0-9a-f]{40}--/);
     expect(channel.length).toBeLessThanOrEqual(64);
   });
 
