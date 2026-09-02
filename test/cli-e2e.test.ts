@@ -65,9 +65,13 @@ function fixture(options: { withSelf?: boolean } = {}): Fixture {
     );
   setPeer("busy");
   const home = join(dir, "home");
+  // 剥掉本测试进程可能从真实 Claude 会话继承的自身识别变量，CLI 只认 fixture。
+  const inherited = { ...process.env } as Record<string, string>;
+  delete inherited.CLAUDE_CODE_SESSION_ID;
+  delete inherited.CLAUDE_CODE_MESSAGING_SOCKET;
   return {
     env: {
-      ...process.env as Record<string, string>,
+      ...inherited,
       [OCS_HOME_ENV]: home,
       [CLAUDE_NATIVE_SESSIONS_DIR_ENV]: sessionsDir,
       [IDLE_POLL_MS_ENV]: "20",

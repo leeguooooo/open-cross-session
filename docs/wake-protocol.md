@@ -119,6 +119,12 @@ setsid + stdio 全关），每 2 秒轮询目标文件；订阅记录在 `$OCS_H
 读不到时才用各自的回退名（ocs：pid；AgentParty：`claude-<12hex>`），且要在之后的 hook 回合重试读取，
 读到就以原生名覆盖显示名。
 
+自身会话识别顺序（两个项目一致）：先看 Claude Code 给子进程的环境变量 `CLAUDE_CODE_SESSION_ID` +
+`CLAUDE_CODE_MESSAGING_SOCKET`——从 socket 文件名取 pid，读 `sessions/<pid>.json`，要求 sessionId、
+messagingSocketPath 都与环境变量一致且 pid 活，才算认出自己（零 spawn）；任一不符（继承来的陈旧环境、
+`/clear` 后换会话、pid 复用）就回落到沿进程祖先链找（父 pid：Linux 读 `/proc/<pid>/stat`，否则 `ps`；
+两者都没有＝视为不在会话里）。
+
 ## 5. 验收（两边各自做）
 
 1. A 会话 `send` 一条 300 字节正文并 @B：B 的上下文里出现完整正文与两行命令；直接复制 `Reply:`

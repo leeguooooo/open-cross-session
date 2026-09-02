@@ -10,9 +10,11 @@
 
 import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import {
   injectChannelMessage,
   listNativeSessions,
+  resolveSessionSocketByPid,
   type InjectResult,
   type NativeClaudeSession,
 } from "./claude-inject.ts";
@@ -163,20 +165,49 @@ export function parentPidOf(pid: number): number | null {
   }
 }
 
+/** Claude Code（2.1.258 实测）给 Bash 子进程的环境变量：会话 id 与本会话收件箱 socket。 */
+export const CLAUDE_SESSION_ID_ENV = "CLAUDE_CODE_SESSION_ID";
+export const CLAUDE_MESSAGING_SOCKET_ENV = "CLAUDE_CODE_MESSAGING_SOCKET";
+
 /**
- * 沿进程祖先链找到本进程所属的 Claude 会话 pid（`~/.claude/sessions/<pid>.json` 存在
- * 即命中）。ocs 通常经由 Claude 的 Bash 工具调用，`process.ppid` 是中间 shell 而非
- * Claude 本体——拿它做自我排除形同虚设（真机验证过：自 @ 自己会真的注入回环）。
- * 父 pid 查不到（无 /proc 且无 ps）＝当作「不在 Claude 会话里」，绝不抛异常。
+ * 零 spawn 的自身识别：从 `CLAUDE_CODE_MESSAGING_SOCKET` 文件名取 pid，读 sessions/<pid>.json，
+ * 要求 **sessionId、messagingSocketPath 都与环境变量一致且 pid 活**才算认出自己。任一不符
+ * （继承来的陈旧环境、/clear 后换了会话、pid 被复用）返回 null，交给祖先链兜底。
+ */
+export function selfPidFromEnv(env: NodeJS.ProcessEnv = process.env): number | null {
+  const sessionId = env[CLAUDE_SESSION_ID_ENV];
+  const sock = env[CLAUDE_MESSAGING_SOCKET_ENV];
+  if (typeof sessionId !== "string" || sessionId === "" || typeof sock !== "string" || sock === "") return null;
+  const match = /(\d+)\.sock$/.exec(basename(sock));
+  if (match === null) return null;
+  const pid = Number(match[1]);
+  const resolved = resolveSessionSocketByPid(pid, { expectSessionId: sessionId, env }); // 含 pid 活 + sessionId 比对
+  if (!resolved.ok) return null;
+  if (resolved.session.messagingSocketPath !== sock) return null;
+  return pid;
+}
+
+/**
+ * 本进程所属的 Claude 会话 pid。顺序（docs/wake-protocol.md §4）：
+ * 1. 环境变量（selfPidFromEnv）——零 spawn；
+ * 2. 沿进程祖先链找（`~/.claude/sessions/<pid>.json` 存在即命中）。ocs 通常经由 Claude 的
+ *    Bash 工具调用，`process.ppid` 是中间 shell 而非 Claude 本体——拿它做自我排除形同虚设
+ *    （真机验证过：自 @ 自己会真的注入回环）。父 pid 查询 Linux 走 /proc、否则 ps；
+ *    两者都没有＝当作「不在 Claude 会话里」，绝不抛异常。
+ * `deps.parentPid` 可注入（测试数 spawn 次数）。
  */
 export function findSelfClaudePid(
   env: NodeJS.ProcessEnv = process.env,
   maxHops = 10,
+  deps: { parentPid?: (pid: number) => number | null } = {},
 ): number | null {
+  const fromEnv = selfPidFromEnv(env);
+  if (fromEnv !== null) return fromEnv;
+  const parentPid = deps.parentPid ?? parentPidOf;
   const alive = new Set(listNativeSessions(env).map((s) => s.pid));
   let pid = process.pid;
   for (let hop = 0; hop < maxHops; hop++) {
-    const parent = parentPidOf(pid);
+    const parent = parentPid(pid);
     if (parent === null || parent <= 1) return null;
     if (alive.has(parent)) return parent;
     pid = parent;

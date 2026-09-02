@@ -9,6 +9,8 @@ import {
   listNativeSessions,
 } from "../src/claude-inject.ts";
 import {
+  CLAUDE_MESSAGING_SOCKET_ENV,
+  CLAUDE_SESSION_ID_ENV,
   findSelfClaudePid,
   parentPidOf,
   selectWakeTargets,
@@ -29,11 +31,11 @@ interface Fixture {
   received: () => Promise<string>;
 }
 
-function fixture(options: { pid?: number; name?: string; sessionId?: string } = {}): Fixture {
+function fixture(options: { pid?: number; name?: string; sessionId?: string; sockName?: string } = {}): Fixture {
   const dir = mkdtempSync(join(tmpdir(), "ocs-wake-"));
   const sessionsDir = join(dir, "sessions");
   mkdirSync(sessionsDir, { mode: 0o700 });
-  const sockPath = join(dir, "inbox.sock");
+  const sockPath = join(dir, options.sockName ?? "inbox.sock");
   let resolveData: (data: string) => void;
   const dataPromise = new Promise<string>((resolve) => {
     resolveData = resolve;
@@ -290,4 +292,62 @@ describe("findSelfClaudePid：ps 缺失也不许炸", () => {
       expect(r.stderr).toContain("cannot tell who you are");
     }
   }, 30_000);
+});
+
+describe("findSelfClaudePid：环境变量优先，祖先链兜底", () => {
+  // parentPid 注入一个计数桩：调用次数 = 会 spawn（ps）的次数；桩的链把任何 pid 都指向本进程。
+  function counting() {
+    let calls = 0;
+    return { calls: () => calls, parentPid: (_pid: number) => { calls++; return process.pid; } };
+  }
+
+  test("三者一致（sessionId、socket 路径、pid 活）→ 直接认出，零 spawn", () => {
+    const f = fixture({ sessionId: "sess-env", sockName: `${process.pid}.sock` });
+    const c = counting();
+    try {
+      const env = { ...f.env, [CLAUDE_SESSION_ID_ENV]: "sess-env", [CLAUDE_MESSAGING_SOCKET_ENV]: f.sockPath };
+      expect(findSelfClaudePid(env, 10, { parentPid: c.parentPid })).toBe(process.pid);
+      expect(c.calls()).toBe(0);
+    } finally {
+      f.server.close();
+    }
+  });
+
+  test("环境变量与文件不一致 → 忽略环境变量，回落祖先链", () => {
+    const f = fixture({ sessionId: "sess-real", sockName: `${process.pid}.sock` });
+    try {
+      // sessionId 陈旧（/clear 后换会话）
+      const stale = { ...f.env, [CLAUDE_SESSION_ID_ENV]: "sess-STALE", [CLAUDE_MESSAGING_SOCKET_ENV]: f.sockPath };
+      const c1 = counting();
+      expect(findSelfClaudePid(stale, 10, { parentPid: c1.parentPid })).toBe(process.pid);
+      expect(c1.calls()).toBeGreaterThan(0);
+      // socket 路径对不上
+      const wrongSock = { ...f.env, [CLAUDE_SESSION_ID_ENV]: "sess-real", [CLAUDE_MESSAGING_SOCKET_ENV]: `/tmp/elsewhere/${process.pid}.sock` };
+      const c2 = counting();
+      expect(findSelfClaudePid(wrongSock, 10, { parentPid: c2.parentPid })).toBe(process.pid);
+      expect(c2.calls()).toBeGreaterThan(0);
+      // socket 文件名里的 pid 不是活会话
+      const deadPid = { ...f.env, [CLAUDE_SESSION_ID_ENV]: "sess-real", [CLAUDE_MESSAGING_SOCKET_ENV]: "/tmp/cc-socks/999999999.sock" };
+      const c3 = counting();
+      expect(findSelfClaudePid(deadPid, 10, { parentPid: c3.parentPid })).toBe(process.pid);
+      expect(c3.calls()).toBeGreaterThan(0);
+      // 祖先链也找不到 → null，不抛
+      const nobody = { ...stale };
+      expect(findSelfClaudePid(nobody, 10, { parentPid: () => null })).toBeNull();
+    } finally {
+      f.server.close();
+    }
+  });
+
+  test("环境变量缺失 → 现有祖先链路径", () => {
+    const f = fixture();
+    const c = counting();
+    try {
+      expect(f.env[CLAUDE_SESSION_ID_ENV]).toBeUndefined();
+      expect(findSelfClaudePid(f.env, 10, { parentPid: c.parentPid })).toBe(process.pid);
+      expect(c.calls()).toBe(1);
+    } finally {
+      f.server.close();
+    }
+  });
 });
