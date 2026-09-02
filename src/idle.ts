@@ -270,6 +270,13 @@ export async function runIdleWatch(
 
   for (;;) {
     const now = Date.now();
+    // 订阅方自己没了（会话退出 / pid 复用）：没人可收通知，立刻收工——否则 watcher 会
+    // 盯着目标空转到 6 小时过期（被 kill 的测试跑遗留过一个）。
+    if (observeIdleTarget(sub.subscriber, env).kind === "exited") {
+      sub = { ...sub, state: "failed", detail: "subscriber gone" };
+      saveIdleSubscription(sub, env);
+      return sub;
+    }
     if (now >= Date.parse(sub.expires)) {
       return finish(M.idleNoticeExpired(sub.target.name), "expired");
     }

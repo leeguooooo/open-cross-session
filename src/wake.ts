@@ -9,6 +9,7 @@
 // 默认 hold（5 分钟无人 Deliver 即丢）。`ocs doctor` 负责引导用户把它设为 accept。
 
 import { Buffer } from "node:buffer";
+import { readFileSync } from "node:fs";
 import {
   injectChannelMessage,
   listNativeSessions,
@@ -134,21 +135,49 @@ export function splitWakeMentions(mentions: readonly string[]): {
 }
 
 /**
+ * 取父 pid。Linux 优先读 `/proc/<pid>/stat`（ppid 是最后一个 `)` 之后的第 2 个字段——comm 里
+ * 可能有空格和括号，不能从头按空格切）；没有 /proc 再退到 `ps -o ppid=`。`ps` 不存在
+ * （精简容器）或失败时返回 null——不许炸：`spawnSync` 在 ENOENT 时 stdout 是 null，
+ * 直接 `.trim()` 会把整条命令打成 TypeError（Linux CI 现场）。
+ */
+export function parentPidOf(pid: number): number | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const close = stat.lastIndexOf(")");
+    if (close !== -1) {
+      const fields = stat.slice(close + 1).trim().split(/\s+/);
+      const ppid = Number(fields[1]);
+      if (Number.isInteger(ppid) && ppid >= 0) return ppid;
+    }
+  } catch {
+    // 无 /proc（macOS）或读不到——退到 ps
+  }
+  const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
+  try {
+    const out = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" });
+    if (out.error !== undefined || out.status !== 0 || typeof out.stdout !== "string") return null;
+    const ppid = Number(out.stdout.trim());
+    return Number.isInteger(ppid) && ppid >= 0 ? ppid : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 沿进程祖先链找到本进程所属的 Claude 会话 pid（`~/.claude/sessions/<pid>.json` 存在
  * 即命中）。ocs 通常经由 Claude 的 Bash 工具调用，`process.ppid` 是中间 shell 而非
  * Claude 本体——拿它做自我排除形同虚设（真机验证过：自 @ 自己会真的注入回环）。
+ * 父 pid 查不到（无 /proc 且无 ps）＝当作「不在 Claude 会话里」，绝不抛异常。
  */
 export function findSelfClaudePid(
   env: NodeJS.ProcessEnv = process.env,
   maxHops = 10,
 ): number | null {
-  const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
   const alive = new Set(listNativeSessions(env).map((s) => s.pid));
   let pid = process.pid;
   for (let hop = 0; hop < maxHops; hop++) {
-    const out = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" });
-    const parent = Number(out.stdout.trim());
-    if (!Number.isInteger(parent) || parent <= 1) return null;
+    const parent = parentPidOf(pid);
+    if (parent === null || parent <= 1) return null;
     if (alive.has(parent)) return parent;
     pid = parent;
   }

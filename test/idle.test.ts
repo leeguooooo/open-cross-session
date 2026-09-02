@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
@@ -16,23 +16,19 @@ import {
 } from "../src/idle.ts";
 import { OCS_HOME_ENV } from "../src/store.ts";
 
-// 订阅方 = 本测试进程（有真 socket 收帧）；目标 = 一个 sleep 子进程（活 pid，可随时杀）。
-let target: ReturnType<typeof Bun.spawn>;
-beforeAll(() => {
-  target = Bun.spawn(["sleep", "120"], { stdio: ["ignore", "ignore", "ignore"] });
-});
-afterAll(() => {
-  target.kill();
-});
+// 订阅方 = 本测试进程（有真 socket 收帧）；目标 = 每个 fixture 自己的 sleep 子进程
+// （活 pid，可随时杀）。不用 beforeAll 共享：bun test 在用例超时后会杀掉所有子进程。
 
 interface Fixture {
   env: NodeJS.ProcessEnv;
   sessionsDir: string;
+  target: ReturnType<typeof Bun.spawn>;
   server: Server;
   frames: string[];
   nextFrame: () => Promise<string>;
   setTarget: (status: "busy" | "idle", statusUpdatedAt?: number) => void;
   removeTarget: () => void;
+  close: () => void;
 }
 
 function fixture(): Fixture {
@@ -42,6 +38,7 @@ function fixture(): Fixture {
   const sockPath = join(dir, "sub.sock");
   const frames: string[] = [];
   const waiters: Array<(f: string) => void> = [];
+  let consumed = 0; // nextFrame 先吐已到但未取的帧（异步跑 CLI 时帧常早于调用到达），再等新帧
   const server = createServer((socket) => {
     let buf = "";
     socket.on("data", (chunk) => {
@@ -59,6 +56,7 @@ function fixture(): Fixture {
     JSON.stringify({ pid: process.pid, sessionId: "sub-sess", name: "subscriber-1", status: "busy", messagingSocketPath: sockPath }),
     { mode: 0o600 },
   );
+  const target = Bun.spawn(["sleep", "120"], { stdio: ["ignore", "ignore", "ignore"] });
   const targetPath = join(sessionsDir, `${target.pid}.json`);
   const setTarget = (status: "busy" | "idle", statusUpdatedAt?: number) =>
     writeFileSync(
@@ -76,22 +74,34 @@ function fixture(): Fixture {
   return {
     env: { [CLAUDE_NATIVE_SESSIONS_DIR_ENV]: sessionsDir, [OCS_HOME_ENV]: join(dir, "home") },
     sessionsDir,
+    target,
     server,
     frames,
     nextFrame: () =>
       new Promise<string>((resolve, reject) => {
-        waiters.push(resolve);
+        if (consumed < frames.length) {
+          resolve(frames[consumed++]!);
+          return;
+        }
+        waiters.push((frame) => {
+          consumed++;
+          resolve(frame);
+        });
         setTimeout(() => reject(new Error("no frame within 3s")), 3000);
       }),
     setTarget,
     removeTarget: () => unlinkSync(targetPath),
+    close: () => {
+      server.close();
+      target.kill();
+    },
   };
 }
 
 function subscribe(f: Fixture) {
   const sessions = listNativeSessions(f.env);
   const sub = sessions.find((s) => s.pid === process.pid)!;
-  const tgt = sessions.find((s) => s.pid === target.pid)!;
+  const tgt = sessions.find((s) => s.pid === f.target.pid)!;
   return createIdleSubscription({ target: tgt, subscriber: sub, lang: "en", env: f.env });
 }
 
@@ -131,7 +141,7 @@ describe("notify-when-idle watcher", () => {
       expect(loadIdleSubscription(sub.id, f.env)?.state).toBe("fired");
       expect(pendingIdleSubscriptions(f.env)).toEqual([]);
     } finally {
-      f.server.close();
+      f.close();
     }
   });
 
@@ -146,7 +156,7 @@ describe("notify-when-idle watcher", () => {
       expect((await watcher)?.state).toBe("fired");
       expect(f.frames.length).toBe(1);
     } finally {
-      f.server.close();
+      f.close();
     }
   });
 
@@ -163,7 +173,7 @@ describe("notify-when-idle watcher", () => {
       expect((await watcher)?.state).toBe("exited");
       expect(f.frames.length).toBe(1);
     } finally {
-      f.server.close();
+      f.close();
     }
   });
 
@@ -175,13 +185,34 @@ describe("notify-when-idle watcher", () => {
       const watcher = runIdleWatch(sub.id, { env: f.env, pollMs: 20 });
       await sleep(60);
       writeFileSync(
-        join(f.sessionsDir, `${target.pid}.json`),
-        JSON.stringify({ pid: target.pid, sessionId: "REUSED", name: "worker-b", status: "idle", messagingSocketPath: "/tmp/x.sock" }),
+        join(f.sessionsDir, `${f.target.pid}.json`),
+        JSON.stringify({ pid: f.target.pid, sessionId: "REUSED", name: "worker-b", status: "idle", messagingSocketPath: "/tmp/x.sock" }),
       );
       expect(content(await f.nextFrame())).toContain("exited before going idle");
       expect((await watcher)?.state).toBe("exited");
     } finally {
-      f.server.close();
+      f.close();
+    }
+  });
+
+  test("订阅方自己没了 → watcher 直接收工，不发帧、不空转", async () => {
+    const f = fixture();
+    try {
+      f.setTarget("busy");
+      const { sub } = subscribe(f);
+      const watcher = runIdleWatch(sub.id, { env: f.env, pollMs: 20 });
+      await sleep(60);
+      unlinkSync(join(f.sessionsDir, `${process.pid}.json`)); // 订阅方会话注销
+      const done = await Promise.race([watcher, sleep(1500).then(() => "timeout" as const)]);
+      expect(done).not.toBe("timeout");
+      expect((done as { state: string; detail?: string }).state).toBe("failed");
+      expect((done as { detail?: string }).detail).toBe("subscriber gone");
+      f.setTarget("idle");
+      await sleep(100);
+      expect(f.frames.length).toBe(0);
+      expect(pendingIdleSubscriptions(f.env)).toEqual([]);
+    } finally {
+      f.close();
     }
   });
 
@@ -197,7 +228,7 @@ describe("notify-when-idle watcher", () => {
       );
       expect((await watcher)?.state).toBe("expired");
     } finally {
-      f.server.close();
+      f.close();
     }
   });
 
@@ -216,7 +247,7 @@ describe("notify-when-idle watcher", () => {
       expect(third.deduped).toBe(false);
       expect(third.sub.id).not.toBe(first.sub.id);
     } finally {
-      f.server.close();
+      f.close();
     }
   });
 
@@ -226,7 +257,7 @@ describe("notify-when-idle watcher", () => {
       f.setTarget("idle");
       const sessions = listNativeSessions(f.env);
       const { sub } = createIdleSubscription({
-        target: sessions.find((s) => s.pid === target.pid)!,
+        target: sessions.find((s) => s.pid === f.target.pid)!,
         subscriber: sessions.find((s) => s.pid === process.pid)!,
         lang: "zh",
         env: f.env,
@@ -235,7 +266,7 @@ describe("notify-when-idle watcher", () => {
       expect(content(await f.nextFrame())).toContain("[跨会话空闲通知] worker-b 现在空闲了（忙了 0s）。");
       await watcher;
     } finally {
-      f.server.close();
+      f.close();
     }
   });
 

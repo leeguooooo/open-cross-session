@@ -3,7 +3,9 @@
 // Vendored from AgentParty cli/src/claude-inbox-inject.ts（同一版权人，按 MIT 重新授权
 // 随本仓库分发；上游改动需手工同步——本文件不是 canonical，行为疑问以上游为准）。
 // 相对上游的改动：env 覆盖变量改名为 OCS_*；新增 listNativeSessions() 导出；
-// NativeClaudeSession 多读一个 statusUpdatedAt（notify-when-idle 算「忙了多久」用）。
+// NativeClaudeSession 多读一个 statusUpdatedAt（notify-when-idle 算「忙了多久」用）；
+// writeFramesToSocket 成功路径也 destroy()（对端迟迟不关连接时进程不再被撑着，见函数注释；
+// 建议回流上游）。
 //
 // 定位：本模块是「最后一公里」——
 // 把频道 @ 消息以 Claude Code 原生「Message from X」内联 UX 注入到本机已入册、当前 idle
@@ -546,23 +548,28 @@ export async function injectChannelMessage(
   };
 }
 
-/** 连上 → 写 JSONL（各行 `\n` 结尾）→ end()。一次性连接。 */
+/**
+ * 连上 → 写 JSONL（各行 `\n` 结尾）→ end() → **destroy()**。一次性连接。
+ *
+ * 成功路径也必须 destroy（ocs Linux CI 现场）：`end()` 的回调只说明字节已交给内核，此时
+ * socket 还是半关闭、在等对端的 FIN。对端若迟迟不 accept/不关（接收端事件循环被阻塞），
+ * 这个句柄会把进程的事件循环一直撑着——`ocs send` 打印完「delivered」却永远不退出；
+ * 而 timeout 分支在已 settled 之后又直接 return，连兜底的 destroy 都不做。字节已 flush 进
+ * 内核缓冲，AF_UNIX 下我们这头关掉不会丢对端待读的数据（Linux/macOS 都实测过）。
+ */
 function writeFramesToSocket(sockPath: string, lines: readonly string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (error?: Error) => {
+      try {
+        socket.destroy();
+      } catch {
+        // ignore
+      }
       if (settled) return;
       settled = true;
-      if (error) {
-        try {
-          socket.destroy();
-        } catch {
-          // ignore
-        }
-        reject(error);
-      } else {
-        resolve();
-      }
+      if (error) reject(error);
+      else resolve();
     };
     const socket = connect({ path: sockPath });
     socket.setTimeout(WRITE_TIMEOUT_MS);

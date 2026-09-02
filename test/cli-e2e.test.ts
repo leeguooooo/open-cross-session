@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
@@ -10,15 +10,12 @@ import { OCS_HOME_ENV } from "../src/store.ts";
 // 真 CLI 进程 + 真 UDS + 真脱离终端的 watcher。
 // 订阅方/发送方会话 = 本测试进程（CLI 的祖先，findSelfClaudePid 命中，名 tester）；
 // 对端会话 = 一个 sleep 子进程（活 pid，名 worker-a），两者共用一个收帧 socket。
-let peer: ReturnType<typeof Bun.spawn>;
-beforeAll(() => {
-  peer = Bun.spawn(["sleep", "120"], { stdio: ["ignore", "ignore", "ignore"] });
-});
-afterAll(() => {
-  peer.kill();
-});
-
+//
+// 对端**每个 fixture 各起一个**，不用 beforeAll 共享：bun test 在任一用例超时后会
+// "kill dangling processes"——把共享的 sleep 一起杀掉，之后所有需要活对端的用例连锁红
+// （Linux CI 现场：冷启动 CLI 约 3s，首个用例超默认 5s 即触发）。每用例 60s 预算同理。
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
+const T = 60_000;
 
 interface Fixture {
   env: Record<string, string>;
@@ -28,6 +25,7 @@ interface Fixture {
   nextFrame: () => Promise<string>;
   setPeer: (status: "busy" | "idle") => void;
   writeSelf: boolean;
+  close: () => void;
 }
 
 function fixture(options: { withSelf?: boolean } = {}): Fixture {
@@ -37,6 +35,7 @@ function fixture(options: { withSelf?: boolean } = {}): Fixture {
   const sockPath = join(dir, "inbox.sock");
   const frames: string[] = [];
   const waiters: Array<(f: string) => void> = [];
+  let consumed = 0; // nextFrame 先吐已到但未取的帧（异步跑 CLI 时帧常早于调用到达），再等新帧
   const server = createServer((socket) => {
     let buf = "";
     socket.on("data", (chunk) => {
@@ -49,6 +48,7 @@ function fixture(options: { withSelf?: boolean } = {}): Fixture {
     });
   });
   server.listen(sockPath);
+  const peer = Bun.spawn(["sleep", "120"], { stdio: ["ignore", "ignore", "ignore"] });
   const withSelf = options.withSelf ?? true;
   if (withSelf) {
     writeFileSync(
@@ -78,17 +78,34 @@ function fixture(options: { withSelf?: boolean } = {}): Fixture {
     frames,
     nextFrame: () =>
       new Promise<string>((resolve, reject) => {
-        waiters.push(resolve);
+        if (consumed < frames.length) {
+          resolve(frames[consumed++]!);
+          return;
+        }
+        waiters.push((frame) => {
+          consumed++;
+          resolve(frame);
+        });
         setTimeout(() => reject(new Error("no frame within 4s")), 4000);
       }),
     setPeer,
     writeSelf: withSelf,
+    close: () => {
+      server.close();
+      peer.kill();
+    },
   };
 }
 
-function run(f: Fixture, args: string[]): { code: number; stdout: string; stderr: string } {
-  const proc = Bun.spawnSync(["bun", CLI, ...args], { env: f.env });
-  return { code: proc.exitCode, stdout: proc.stdout.toString(), stderr: proc.stderr.toString() };
+/**
+ * 异步跑 CLI：本测试进程同时是收帧的 UDS 服务端，`spawnSync` 会把事件循环卡住——
+ * CLI 连上来的帧要等 CLI 退出后才被 accept，与真实接收端（独立进程、随时 accept）不符。
+ */
+async function run(f: Fixture, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  const proc = Bun.spawn([process.execPath, CLI, ...args], { env: f.env, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+  await proc.exited;
+  return { code: proc.exitCode ?? -1, stdout, stderr };
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -96,112 +113,112 @@ const content = (frame: string) =>
   (JSON.parse(frame.trim()) as { message: { content: string } }).message.content;
 
 describe("read 不回显自己（#3）", () => {
-  test("默认折叠成一行；--include-self 完整显示；--json 带 self", () => {
+  test("默认折叠成一行；--include-self 完整显示；--json 带 self", async () => {
     const f = fixture();
     try {
       const mine = "hello there this is a fairly long message from me that goes past sixty characters";
-      expect(run(f, ["send", "chat", mine, "--as", "me", "--no-wake"]).code).toBe(0);
-      expect(run(f, ["send", "chat", "short reply", "--as", "peer", "--no-wake"]).code).toBe(0);
+      expect((await run(f, ["send", "chat", mine, "--as", "me", "--no-wake"])).code).toBe(0);
+      expect((await run(f, ["send", "chat", "short reply", "--as", "peer", "--no-wake"])).code).toBe(0);
 
-      const folded = run(f, ["read", "chat", "--as", "me"]);
+      const folded = await run(f, ["read", "chat", "--as", "me"]);
       expect(folded.code).toBe(0);
       const lines = folded.stdout.trimEnd().split("\n");
       expect(lines.length).toBe(2);
       expect(lines[0]).toBe(`#1 <you> ${[...mine].slice(0, 60).join("")}…`);
       expect(lines[1]).toMatch(/^#2 \S+ <peer> short reply$/);
 
-      const full = run(f, ["read", "chat", "--as", "me", "--include-self", "--since", "0"]);
+      const full = await run(f, ["read", "chat", "--as", "me", "--include-self", "--since", "0"]);
       expect(full.stdout).toMatch(new RegExp(`^#1 \\S+ <me> ${mine}\\n`));
       expect(full.stdout).not.toContain("<you>");
 
-      const json = run(f, ["read", "chat", "--as", "me", "--json", "--since", "0"]);
+      const json = await run(f, ["read", "chat", "--as", "me", "--json", "--since", "0"]);
       const records = JSON.parse(json.stdout) as Array<{ seq: number; from: string; body: string; self: boolean }>;
       expect(records.map((r) => [r.seq, r.self])).toEqual([[1, true], [2, false]]);
       expect(records[0]!.body).toBe(mine); // --json 不折叠
       // peer 视角：同一条消息 self=false，且不折叠
-      const peerView = run(f, ["read", "chat", "--as", "peer", "--since", "0"]);
+      const peerView = await run(f, ["read", "chat", "--as", "peer", "--since", "0"]);
       expect(peerView.stdout).toContain(`<me> ${mine}`);
       expect(peerView.stdout).toContain("#2 <you> short reply");
     } finally {
-      f.server.close();
+      f.close();
     }
-  });
+  }, T);
 });
 
 describe("唤醒目标排除发送者本人（#3）", () => {
   test("按名字：--as worker-a 的正文里 @worker-a 不唤醒 worker-a（活会话、真 socket）", async () => {
     const f = fixture();
     try {
-      const r = run(f, ["send", "chat", "reply and @worker-a me back", "--as", "worker-a"]);
+      const r = await run(f, ["send", "chat", "reply and @worker-a me back", "--as", "worker-a"]);
       expect(r.code).toBe(0);
       expect(r.stdout).toContain("you mentioned yourself; skipped");
       expect(r.stdout).not.toContain("delivered");
       await sleep(200);
       expect(f.frames.length).toBe(0);
     } finally {
-      f.server.close();
+      f.close();
     }
-  });
+  }, T);
 
   test("按 pid：祖先链上的本会话（tester）被 @ 也不回环", async () => {
     const f = fixture();
     try {
-      const r = run(f, ["send", "chat", "ping @tester", "--as", "someone-else"]);
+      const r = await run(f, ["send", "chat", "ping @tester", "--as", "someone-else"]);
       expect(r.code).toBe(0);
       expect(r.stdout).toContain("you mentioned yourself; skipped");
       await sleep(200);
       expect(f.frames.length).toBe(0);
     } finally {
-      f.server.close();
+      f.close();
     }
-  });
+  }, T);
 
   test("对照：@ 别人正常唤醒，帧里带正文与 Reply: 行", async () => {
     const f = fixture();
     try {
-      const r = run(f, ["send", "chat", "please look @worker-a", "--as", "tester"]);
+      const r = await run(f, ["send", "chat", "please look @worker-a", "--as", "tester"]);
       expect(r.stdout).toContain("wake: delivered to inbox → worker-a");
       const c = content(await f.nextFrame());
       expect(c).toContain("[ocs wake] tester mentioned you in #chat (seq 1)\n\nplease look @worker-a\n\n");
       expect(c).toContain('Reply: ocs send chat "<your reply>" --as worker-a --reply-to 1\n');
     } finally {
-      f.server.close();
+      f.close();
     }
-  });
+  }, T);
 });
 
 describe("--reply-to 唤醒被回复者（Reply: 行复制即达）", () => {
   test("不带 @ 也唤醒 seq 作者；note 首行带 reply to seq", async () => {
     const f = fixture();
     try {
-      expect(run(f, ["send", "chat", "question", "--as", "worker-a", "--no-wake"]).code).toBe(0);
-      const r = run(f, ["send", "chat", "<your reply>", "--as", "tester", "--reply-to", "1"]);
+      expect((await run(f, ["send", "chat", "question", "--as", "worker-a", "--no-wake"])).code).toBe(0);
+      const r = await run(f, ["send", "chat", "<your reply>", "--as", "tester", "--reply-to", "1"]);
       expect(r.stdout).toContain("wake: delivered to inbox → worker-a");
       const c = content(await f.nextFrame());
       expect(c).toContain("[ocs wake] tester mentioned you in #chat (seq 2, reply to seq 1)\n\n<your reply>\n\n");
       expect(c).toContain('Reply: ocs send chat "<your reply>" --as worker-a --reply-to 2\n');
     } finally {
-      f.server.close();
+      f.close();
     }
-  });
+  }, T);
 });
 
 describe("notify-when-idle（#5）端到端：真脱离终端的 watcher", () => {
   test("订阅→去重→对端翻 idle→恰好一条通知投到订阅方；watcher 退出", async () => {
     const f = fixture();
     try {
-      const r1 = run(f, ["notify-when-idle", "worker-a"]);
+      const r1 = await run(f, ["notify-when-idle", "worker-a"]);
       expect(r1.code).toBe(0);
       expect(r1.stdout).toContain("notify-when-idle: subscribed → worker-a");
       const subsDir = join(f.home, "idle-subs");
       const files = () => readdirSync(subsDir).filter((n) => n.endsWith(".json"));
       expect(files().length).toBe(1);
 
-      const r2 = run(f, ["notify-when-idle", "worker-a"]);
+      const r2 = await run(f, ["notify-when-idle", "worker-a"]);
       expect(r2.stdout).toContain("notify-when-idle: already subscribed → worker-a");
       expect(files().length).toBe(1);
 
-      const who = run(f, ["who"]);
+      const who = await run(f, ["who"]);
       expect(who.stdout).toContain("Pending idle notifications");
       expect(who.stdout).toContain("worker-a → notify tester when idle");
 
@@ -209,27 +226,26 @@ describe("notify-when-idle（#5）端到端：真脱离终端的 watcher", () =>
       expect(f.frames.length).toBe(0);
       f.setPeer("idle");
       const c = content(await f.nextFrame());
-      expect(c).toBe(
-        '<cross-session-message from-name="ocs" from-mode="prompting">\n' +
-          "[Cross-session idle notice] worker-a is now idle. (busy for 0s)\n" +
-          "</cross-session-message>",
+      // busy 时长从 watcher 首次观测到 busy 起算（fixture 不写 statusUpdatedAt），慢机器上会过 1s
+      expect(c).toMatch(
+        /^<cross-session-message from-name="ocs" from-mode="prompting">\n\[Cross-session idle notice\] worker-a is now idle\. \(busy for \d+s\)\n<\/cross-session-message>$/,
       );
       await sleep(300);
       expect(f.frames.length).toBe(1);
       const record = JSON.parse(readFileSync(join(subsDir, files()[0]!), "utf8")) as { state: string; watcherPid: number };
       expect(record.state).toBe("fired");
       expect(() => process.kill(record.watcherPid, 0)).toThrow(); // watcher 已退出
-      expect(run(f, ["who"]).stdout).not.toContain("Pending idle notifications");
+      expect((await run(f, ["who"])).stdout).not.toContain("Pending idle notifications");
     } finally {
-      f.server.close();
+      f.close();
     }
-  });
+  }, T);
 
   test("send --notify-when-idle：先发消息+唤醒，再订阅；对端已 idle 时立即通知", async () => {
     const f = fixture();
     try {
       f.setPeer("idle");
-      const r = run(f, ["send", "chat", "do it @worker-a", "--as", "tester", "--notify-when-idle"]);
+      const r = await run(f, ["send", "chat", "do it @worker-a", "--as", "tester", "--notify-when-idle"]);
       expect(r.code).toBe(0);
       expect(r.stdout).toContain("sent #chat seq 1");
       expect(r.stdout).toContain("wake: delivered to inbox → worker-a");
@@ -242,33 +258,33 @@ describe("notify-when-idle（#5）端到端：真脱离终端的 watcher", () =>
       await sleep(200);
       expect(f.frames.length).toBe(2);
     } finally {
-      f.server.close();
+      f.close();
     }
-  });
+  }, T);
 
-  test("不在 Claude 会话里：明确拒绝，且 send 不发出消息", () => {
+  test("不在 Claude 会话里：明确拒绝，且 send 不发出消息", async () => {
     const f = fixture({ withSelf: false });
     try {
-      const r = run(f, ["notify-when-idle", "worker-a"]);
+      const r = await run(f, ["notify-when-idle", "worker-a"]);
       expect(r.code).toBe(1);
       expect(r.stderr).toContain("run this from inside a Claude Code session");
-      const s = run(f, ["send", "chat", "hi @worker-a", "--as", "x", "--notify-when-idle"]);
+      const s = await run(f, ["send", "chat", "hi @worker-a", "--as", "x", "--notify-when-idle"]);
       expect(s.code).toBe(1);
       expect(s.stdout).not.toContain("sent");
       expect(existsSync(f.home)).toBe(false); // 一个字节都没落盘
     } finally {
-      f.server.close();
+      f.close();
     }
-  });
+  }, T);
 
-  test("目标不是活会话：报错", () => {
+  test("目标不是活会话：报错", async () => {
     const f = fixture();
     try {
-      const r = run(f, ["notify-when-idle", "ghost"]);
+      const r = await run(f, ["notify-when-idle", "ghost"]);
       expect(r.code).toBe(1);
       expect(r.stderr).toContain("ghost is not a live Claude session");
     } finally {
-      f.server.close();
+      f.close();
     }
-  });
+  }, T);
 });

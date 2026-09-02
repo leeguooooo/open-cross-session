@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,8 @@ import {
   listNativeSessions,
 } from "../src/claude-inject.ts";
 import {
+  findSelfClaudePid,
+  parentPidOf,
   selectWakeTargets,
   truncateUtf8,
   wakeNote,
@@ -242,4 +244,50 @@ describe("injectChannelMessage 端到端（真 UDS）", () => {
       f.server.close();
     }
   });
+});
+
+describe("findSelfClaudePid：ps 缺失也不许炸", () => {
+  // 祖先链用真子进程验证：测试进程自己写 sessions json，子进程（CLI）沿祖先链找到它。
+  // 不拿 process.ppid 当断言依据——容器里 bun test 的父进程就是 pid 1。
+  function whoami(pathEnv: string | undefined): { code: number | null; stdout: string; stderr: string } {
+    const dir = mkdtempSync(join(tmpdir(), "ocs-self-"));
+    const sessionsDir = join(dir, "sessions");
+    mkdirSync(sessionsDir, { mode: 0o700 });
+    writeFileSync(
+      join(sessionsDir, `${process.pid}.json`),
+      JSON.stringify({ pid: process.pid, sessionId: "s", name: "tester", status: "idle", messagingSocketPath: join(dir, "x.sock") }),
+    );
+    const proc = Bun.spawnSync([process.execPath, join(import.meta.dir, "..", "src", "cli.ts"), "whoami"], {
+      env: {
+        PATH: pathEnv ?? process.env.PATH ?? "",
+        HOME: dir,
+        [CLAUDE_NATIVE_SESSIONS_DIR_ENV]: sessionsDir,
+        OCS_LANG: "en",
+      },
+    });
+    return { code: proc.exitCode, stdout: proc.stdout.toString().trim(), stderr: proc.stderr.toString() };
+  }
+
+  test("parentPidOf 与 process.ppid 一致", () => {
+    expect(parentPidOf(process.pid)).toBe(process.ppid);
+  });
+
+  test("正常 PATH：CLI 沿祖先链认出本测试进程", () => {
+    const r = whoami(undefined);
+    expect(r.stderr).not.toContain("TypeError");
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe("tester");
+  }, 30_000);
+
+  test("PATH 指向空目录（无 ps）：不崩——有 /proc 的 Linux 照样认出，否则明确说认不出", () => {
+    const r = whoami(mkdtempSync(join(tmpdir(), "ocs-empty-bin-")));
+    expect(r.stderr).not.toContain("TypeError");
+    if (existsSync("/proc/self/stat")) {
+      expect(r.code).toBe(0);
+      expect(r.stdout).toBe("tester");
+    } else {
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain("cannot tell who you are");
+    }
+  }, 30_000);
 });
