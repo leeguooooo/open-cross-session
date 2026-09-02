@@ -47,7 +47,7 @@ import {
   wakeSessions,
 } from "./wake.ts";
 
-export const OCS_VERSION = "0.3.0";
+export const OCS_VERSION = "0.3.2";
 
 const LANG = detectLang();
 const M = messages(LANG);
