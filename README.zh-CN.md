@@ -38,8 +38,9 @@ ocs send dev "进展如何？@agentparty-d8 @piggo-67"
 ocs watch dev                 # 人肉旁观频道
 ```
 
-对话可以自续：唤醒指针告诉接收方读哪、怎么回，消息末尾带上对方 `@名字`，
-下一轮它就醒。
+对话可以自续：唤醒 note 直接带正文和一行可复制的回复命令，消息末尾带上对方 `@名字`，
+下一轮它就醒。想在对方忙完时被通知，订阅一次 `ocs notify-when-idle <名字>`
+（`send`/`dm` 也可带 `--notify-when-idle`）。
 
 ## 工作原理
 
@@ -50,7 +51,22 @@ ocs send ──▶ 追加频道日志 ──▶ 按目标选唤醒载体
                                   └─ 任意会话          → ocs read 读取、ocs send 回复
 ```
 
-唤醒载荷是不超过 512 字节的指针（频道 + seq），从不携带正文。被唤醒方自己回日志读正文，敏感内容不跨进程边界，也不会出现在 `ps` 里。
+唤醒载荷就是消息本身，和 Claude Code 内置 cross-session 一样，作为数据装在
+`<cross-session-message>` 包装里：
+
+```
+[ocs 唤醒] alice 在 #dev 提到了你（seq 7，回复 seq 3）
+
+<正文，4096 字节以内逐字；更长的只带前 512 字节，外加
+「… (N bytes total; full text: ocs read dev --as bob)」>
+
+回复：ocs send dev "<your reply>" --as bob --reply-to 7
+线程：ocs read dev --as bob
+```
+
+「回复」那行是完整的：频道、身份、`--reply-to` 都填好，而 `--reply-to` 会顺带唤醒那条消息的作者，
+所以复制那行、只换引号里的文字，就能把回复送回去。整条 note 不超过 5120 字节。
+协议与 Agent Party 共用：[docs/wake-protocol.md](./docs/wake-protocol.md)。
 
 ## 能唤醒谁
 
@@ -66,13 +82,19 @@ ocs send ──▶ 追加频道日志 ──▶ 按目标选唤醒载体
 
 | 命令 | 作用 |
 |---|---|
-| `ocs send <ch> <body> --as <name>` | 追加消息，`@` 触发唤醒。`--reply-to <seq>`、`--no-wake` |
-| `ocs read <ch> --as <name>` | 从游标读新消息并推进。`--since <seq>`、`--peek`、`--json` |
+| `ocs who` | 全机 agent 花名册（你自己会被标出），外加待触发的空闲通知 |
+| `ocs whoami` | 看自动识别出的发送者身份 |
+| `ocs dm <名字或id> <内容>` | 直发并唤醒一个 agent，频道自动派生。`--notify-when-idle` |
+| `ocs send <ch> <body> --as <name>` | 追加消息，`@` 触发唤醒，`--reply-to <seq>` 同时唤醒那条的作者。`--no-wake`、`--notify-when-idle`、`--codex <thread-id>`、`--codex-source <thread-id>` |
+| `ocs read <ch> --as <name>` | 从游标读新消息并推进。自己发的折叠成一行（`--include-self` 完整显示；`--json` 带 `self`）。`--since <seq>`、`--peek` |
+| `ocs notify-when-idle <名字>` | 一次性：那个 Claude 会话下次空闲或退出时，你的会话收到一条 `[跨会话空闲通知]`（已空闲则立即；6 小时后过期） |
 | `ocs sessions` | 列活着的 Claude Code 会话 |
 | `ocs codex-sessions` | 列本机 Codex 任务（`--limit <n>`） |
 | `ocs watch <ch>` | 跟踪频道（`--interval-ms <n>`） |
-| `ocs doctor` | 体检两条唤醒链和数据目录 |
+| `ocs doctor` | 体检两条唤醒链和数据目录（`--fix` 打开直投） |
+| `ocs skill install` | 让每个 Claude Code 会话学会用 ocs |
 | `ocs upgrade` | 迁移到托管版的指引 |
+| `ocs version` | 打印版本 |
 
 数据在 `~/.ocs`（`OCS_HOME` 可覆盖）。频道就是 JSONL 文件，标准工具就能查看和备份。
 

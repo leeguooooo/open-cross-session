@@ -8,7 +8,16 @@ import {
   injectChannelMessage,
   listNativeSessions,
 } from "../src/claude-inject.ts";
-import { selectWakeTargets, wakeNote, WAKE_NOTE_MAX_BYTES } from "../src/wake.ts";
+import {
+  selectWakeTargets,
+  truncateUtf8,
+  wakeNote,
+  wakeSessions,
+  WAKE_BODY_INLINE_MAX_BYTES,
+  WAKE_BODY_PREVIEW_BYTES,
+  WAKE_NOTE_MAX_BYTES,
+  WAKE_SKELETON_MAX_BYTES,
+} from "../src/wake.ts";
 
 // 造一个假的 ~/.claude/sessions 目录 + 真 Unix socket 服务端，端到端验证注入帧。
 interface Fixture {
@@ -58,11 +67,96 @@ function fixture(options: { pid?: number; name?: string; sessionId?: string } = 
   };
 }
 
-describe("wakeNote", () => {
-  test("恒 ≤512 字节（含长频道名/长名字）", () => {
-    const note = wakeNote("a".repeat(64), 999999, "n".repeat(64));
-    expect(Buffer.byteLength(note, "utf8")).toBeLessThanOrEqual(WAKE_NOTE_MAX_BYTES);
-    expect(note).toContain("ocs read");
+const bytes = (s: string) => Buffer.byteLength(s, "utf8");
+
+describe("wakeNote（协议 §1 骨架）", () => {
+  test("≤4096 字节正文逐字内联；Reply:/Thread: 行逐字精确；行序固定", () => {
+    const body = 'line one with "quotes" <tags> and @bob\nline two';
+    const note = wakeNote({ channel: "dev", seq: 7, from: "alice", body, receiver: "worker-a", replyTo: 3 });
+    expect(note).toBe(
+      "[ocs wake] alice mentioned you in #dev (seq 7, reply to seq 3)\n" +
+        "\n" +
+        `${body}\n` +
+        "\n" +
+        'Reply: ocs send dev "<your reply>" --as worker-a --reply-to 7\n' +
+        "Thread: ocs read dev --as worker-a",
+    );
+  });
+
+  test("刚好 4096 字节仍逐字内联；4097 字节截成前 512 字节 + 总字节数 + 读线程命令", () => {
+    const exact = "x".repeat(WAKE_BODY_INLINE_MAX_BYTES);
+    expect(wakeNote({ channel: "dev", seq: 1, from: "a", body: exact, receiver: "b" })).toContain(`\n\n${exact}\n\n`);
+
+    const over = "y".repeat(WAKE_BODY_INLINE_MAX_BYTES + 1);
+    const note = wakeNote({ channel: "dev", seq: 1, from: "a", body: over, receiver: "b" });
+    const inlined = note.split("\n")[2]!;
+    expect(bytes(inlined)).toBe(WAKE_BODY_PREVIEW_BYTES);
+    expect(note.split("\n")[3]).toBe(`… (${WAKE_BODY_INLINE_MAX_BYTES + 1} bytes total; full text: ocs read dev --as b)`);
+    expect(note).not.toContain("y".repeat(WAKE_BODY_PREVIEW_BYTES + 1));
+  });
+
+  test("截断落在字符边界：多字节字符与代理对不被切开", () => {
+    // 510 个 ASCII + 一个 4 字节 emoji 跨过 512 边界 → 前缀只剩 510 字节，emoji 整个不进。
+    const body = `${"a".repeat(510)}😀${"z".repeat(5000)}`;
+    const note = wakeNote({ channel: "dev", seq: 1, from: "a", body, receiver: "b" });
+    const inlined = note.split("\n")[2]!;
+    expect(inlined).toBe("a".repeat(510));
+    expect(bytes(inlined)).toBeLessThanOrEqual(WAKE_BODY_PREVIEW_BYTES);
+    // 3 字节汉字版：511 个 ASCII + 「中」 → 511
+    const zhBody = `${"a".repeat(511)}中${"z".repeat(5000)}`;
+    const zhInlined = wakeNote({ channel: "dev", seq: 1, from: "a", body: zhBody, receiver: "b" }).split("\n")[2]!;
+    expect(zhInlined).toBe("a".repeat(511));
+    expect(truncateUtf8("中文", 3)).toBe("中");
+    expect(truncateUtf8("中文", 5)).toBe("中");
+    expect(truncateUtf8("中文", 6)).toBe("中文");
+  });
+
+  test("4096 字节正文 + 64 字符频道/名字：整条 ≤5120，骨架 ≤1024，Reply/Thread 永不砍", () => {
+    const channel = "c".repeat(64);
+    const sender = "s".repeat(64);
+    const receiver = "r".repeat(64);
+    const body = "b".repeat(WAKE_BODY_INLINE_MAX_BYTES);
+    for (const lang of ["en", "zh"] as const) {
+      const note = wakeNote({ channel, seq: 999999, from: sender, body, receiver, replyTo: 999998, ago: "just now", lang });
+      expect(bytes(note)).toBeLessThanOrEqual(WAKE_NOTE_MAX_BYTES);
+      expect(bytes(note) - bytes(body)).toBeLessThanOrEqual(WAKE_SKELETON_MAX_BYTES);
+      expect(note).toContain(`ocs send ${channel} "<your reply>" --as ${receiver} --reply-to 999999`);
+      expect(note).toContain(`ocs read ${channel} --as ${receiver}`);
+    }
+  });
+
+  test("骨架超预算按阶梯降级：先砍 ago 再砍 sender，两行命令保留", () => {
+    // 骨架 = header + 5 个换行 + Reply 行 + Thread 行；header 不带 ago 时 = 41 + sender 长度。
+    // sender 895：不带 ago 恰好 1022 ≤ 1024，带 ago（+8）超 → 只砍 ago。
+    const keepSender = "h".repeat(895);
+    const note = wakeNote({ channel: "dev", seq: 1, from: keepSender, body: "hi", receiver: "b", ago: "1m ago" });
+    expect(bytes(note) - bytes("hi")).toBeLessThanOrEqual(WAKE_SKELETON_MAX_BYTES);
+    expect(note).not.toContain("1m ago");
+    expect(note).toContain(`[ocs wake] ${keepSender} mentioned you`);
+    expect(note).toContain('Reply: ocs send dev "<your reply>" --as b --reply-to 1');
+    expect(note).toContain("Thread: ocs read dev --as b");
+    // sender 1000：砍掉 ago 仍超 → 再砍 sender
+    const dropSender = "h".repeat(1000);
+    const note2 = wakeNote({ channel: "dev", seq: 1, from: dropSender, body: "hi", receiver: "b", ago: "1m ago" });
+    expect(bytes(note2) - bytes("hi")).toBeLessThanOrEqual(WAKE_SKELETON_MAX_BYTES);
+    expect(note2).not.toContain(dropSender);
+    expect(note2).toContain("[ocs wake] New mention in #dev (seq 1)");
+    expect(note2).toContain('Reply: ocs send dev "<your reply>" --as b --reply-to 1');
+    expect(note2).toContain("Thread: ocs read dev --as b");
+    // receiver 塞爆到连砍 sender 都不够 → 编程错误，明确抛出而不是产出超限 note
+    expect(() => wakeNote({ channel: "dev", seq: 1, from: "a", body: "hi", receiver: "r".repeat(1200) })).toThrow();
+  });
+
+  test("中文骨架", () => {
+    const note = wakeNote({ channel: "dev", seq: 7, from: "alice", body: "你好", receiver: "worker-a", replyTo: 3, lang: "zh" });
+    expect(note).toBe(
+      "[ocs 唤醒] alice 在 #dev 提到了你（seq 7，回复 seq 3）\n" +
+        "\n" +
+        "你好\n" +
+        "\n" +
+        '回复：ocs send dev "<your reply>" --as worker-a --reply-to 7\n' +
+        "线程：ocs read dev --as worker-a",
+    );
   });
 });
 
@@ -83,21 +177,35 @@ describe("listNativeSessions / selectWakeTargets", () => {
       f.server.close();
     }
   });
+
+  test("#3：发送者按名字也被排除（--as 的名字 @ 到自己不回环）", () => {
+    const f = fixture({ name: "super-admin-c7" });
+    try {
+      const byName = selectWakeTargets(["super-admin-c7"], { selfNames: ["super-admin-c7"], env: f.env });
+      expect(byName.targets).toEqual([]);
+      expect(byName.excludedSelf).toEqual([process.pid]);
+      const other = selectWakeTargets(["super-admin-c7"], { selfNames: ["someone-else"], env: f.env });
+      expect(other.targets.map((s) => s.name)).toEqual(["super-admin-c7"]);
+    } finally {
+      f.server.close();
+    }
+  });
 });
 
 describe("injectChannelMessage 端到端（真 UDS）", () => {
-  test("帧写达 socket：user 帧包 cross-session-message，指针正文完整", async () => {
+  test("帧写达 socket：包装内含正文逐字 + 精确的 Reply: 命令", async () => {
     const f = fixture({ name: "worker-a", sessionId: "sess-e2e" });
     try {
-      const result = await injectChannelMessage({
-        name: "worker-a",
-        pid: process.pid,
-        sessionId: "sess-e2e",
-        body: wakeNote("dev", 7, "alice"),
-        fromName: "alice",
+      const body = 'please review PR #12\nsecond line with "quotes"';
+      const [outcome] = await wakeSessions(listNativeSessions(f.env), {
+        channel: "dev",
+        seq: 7,
+        from: "alice",
+        body,
+        replyTo: 2,
         env: f.env,
       });
-      expect(result.ok).toBe(true);
+      expect(outcome!.result.ok).toBe(true);
       const raw = await f.received();
       const lines = raw.trimEnd().split("\n");
       expect(lines.length).toBe(1); // 无 peer token → 无 auth 行
@@ -106,9 +214,12 @@ describe("injectChannelMessage 端到端（真 UDS）", () => {
       expect(frame.priority).toBe("next");
       const message = frame.message as { role: string; content: string };
       expect(message.role).toBe("user");
-      expect(message.content).toContain('<cross-session-message from-name="alice" from-mode="prompting">');
-      expect(message.content).toContain("#dev");
-      expect(message.content).toContain("seq 7");
+      expect(message.content.startsWith('<cross-session-message from-name="alice" from-mode="prompting">\n')).toBe(true);
+      expect(message.content.endsWith("\n</cross-session-message>")).toBe(true);
+      expect(message.content).toContain("[ocs wake] alice mentioned you in #dev (seq 7, reply to seq 2)\n\n");
+      expect(message.content).toContain(`\n\n${body}\n\n`);
+      expect(message.content).toContain('\nReply: ocs send dev "<your reply>" --as worker-a --reply-to 7\n');
+      expect(message.content).toContain("\nThread: ocs read dev --as worker-a\n");
     } finally {
       f.server.close();
     }

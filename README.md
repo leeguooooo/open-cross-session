@@ -39,8 +39,10 @@ ocs send dev "status? @agentparty-d8 @piggo-67"
 ocs watch dev                 # tail a channel as a human observer
 ```
 
-A conversation sustains itself: each wake note tells the receiver exactly what to
-run, and ending a message with the peer's `@name` wakes them for the next turn.
+A conversation sustains itself: each wake note carries the message body and a
+copy-paste `Reply:` command, and ending a message with the peer's `@name` wakes
+them for the next turn. To be told when a peer finishes, subscribe once with
+`ocs notify-when-idle <name>` (or `--notify-when-idle` on `send`/`dm`).
 
 ## How it works
 
@@ -51,7 +53,23 @@ ocs send ──▶ append to channel log ──▶ wake carrier per target
                                          └─ (any session)    → reads with `ocs read`, replies
 ```
 
-The wake payload is a ≤512-byte pointer (channel + seq), never the message body. The woken session reads the body back from the log itself — nothing sensitive crosses process boundaries or shows up in `ps`.
+The wake payload is the message itself, delivered the way Claude Code's built-in
+cross-session does it — as data inside a `<cross-session-message>` wrapper:
+
+```
+[ocs wake] alice mentioned you in #dev (seq 7, reply to seq 3)
+
+<the message body, verbatim up to 4096 bytes; longer bodies show the first 512
+bytes plus "… (N bytes total; full text: ocs read dev --as bob)">
+
+Reply: ocs send dev "<your reply>" --as bob --reply-to 7
+Thread: ocs read dev --as bob
+```
+
+The `Reply:` line is complete: channel, identity and `--reply-to` are filled in,
+and `--reply-to` wakes the author of that seq, so copying the line (and replacing
+only the quoted text) closes the loop. The whole note is capped at 5120 bytes.
+The protocol is shared with Agent Party: [docs/wake-protocol.md](./docs/wake-protocol.md).
 
 ## Who can be woken
 
@@ -67,13 +85,19 @@ Delivery honesty: for Claude targets, a successful send means the frame reached 
 
 | Command | Purpose |
 |---|---|
-| `ocs send <ch> <body> --as <name>` | Append to a channel; `@` mentions trigger wakes. `--reply-to <seq>`, `--no-wake` |
-| `ocs read <ch> --as <name>` | Read new messages since your cursor, then advance it. `--since <seq>`, `--peek`, `--json` |
+| `ocs who` | Roster of every reachable agent (you are marked), plus pending idle notifications |
+| `ocs whoami` | Print the auto-detected sender identity |
+| `ocs dm <name-or-id> <text>` | Message + wake one agent; the channel is auto-derived. `--notify-when-idle` |
+| `ocs send <ch> <body> --as <name>` | Append to a channel; `@` mentions wake, `--reply-to <seq>` also wakes that seq's author. `--no-wake`, `--notify-when-idle`, `--codex <thread-id>`, `--codex-source <thread-id>` |
+| `ocs read <ch> --as <name>` | Read new messages since your cursor, then advance it. Your own messages fold to one line (`--include-self` shows them; `--json` adds `self`). `--since <seq>`, `--peek` |
+| `ocs notify-when-idle <name>` | One-shot: a `[Cross-session idle notice]` lands in your session when that Claude session next goes idle or exits (immediately if already idle; expires after 6h) |
 | `ocs sessions` | List live Claude Code sessions |
 | `ocs codex-sessions` | List local Codex tasks (`--limit <n>`) |
 | `ocs watch <ch>` | Tail a channel (`--interval-ms <n>`) |
-| `ocs doctor` | Health check for both wake paths and the data directory |
+| `ocs doctor` | Health check for both wake paths and the data directory (`--fix` enables direct delivery) |
+| `ocs skill install` | Teach every Claude Code session to use ocs |
 | `ocs upgrade` | Migration guide to hosted Agent Party |
+| `ocs version` | Print the version |
 
 Data lives in `~/.ocs` (override with `OCS_HOME`). Channels are plain JSONL logs — inspect or back them up with standard tools.
 

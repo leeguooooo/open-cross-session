@@ -1,7 +1,10 @@
-// 唤醒：把「频道有新消息」的指针注入目标 Claude 会话。
+// 唤醒：把「频道有新消息」连同正文注入目标 Claude 会话（docs/wake-protocol.md §1）。
 //
-// 承袭上游指针模式：注入载荷 ≤512 字节，只带 channel+seq 指针和一条读取命令，
-// 正文永远由被唤醒方回频道日志重读——防 ps 泄露、防截断、防注入正文被当指令。
+// 载荷从 v0.3.0 起带正文：正文是 cross-session-message 包装**里面的数据**，包装标签本身
+// 已把它标成跨会话内容（接收端按「Message from X」呈现，不当指令）；4096 字节的正文
+// 上限把注入帧钉在可控范围（超过只内联前 512 字节 + 总字节数 + 读线程命令），整条 note
+// 恒 ≤5120 字节。这与 Claude Code 内置 SendMessage 的「正文直达」对齐——过去只投一条
+// 「去跑 ocs read」的指针，收件方要多跑一跳才拿到正文，回复命令还得手拼。
 // 送达语义同上游：ok:true 只代表帧进了收件箱 socket，接收端 crossSessionInbound
 // 默认 hold（5 分钟无人 Deliver 即丢）。`ocs doctor` 负责引导用户把它设为 accept。
 
@@ -20,23 +23,92 @@ import {
   codexDesktopIpcAvailable,
 } from "./codex-ipc.ts";
 import { codexSessionsRoot, isCodexThreadId, listCodexSessions } from "./codex-sessions.ts";
+import { messages } from "./i18n.ts";
 
-export const WAKE_NOTE_MAX_BYTES = 512;
+/** 正文 UTF-8 字节数在此以内逐字内联（协议 §1）。 */
+export const WAKE_BODY_INLINE_MAX_BYTES = 4096;
+/** 超限时内联的前缀字节数（在字符边界截断）。 */
+export const WAKE_BODY_PREVIEW_BYTES = 512;
+/** 骨架（note 去掉正文）预算；超预算按降级阶梯先砍 ago 再砍 sender。 */
+export const WAKE_SKELETON_MAX_BYTES = 1024;
+/** 整条 note 上限 = 正文 4096 + 骨架 1024。 */
+export const WAKE_NOTE_MAX_BYTES = WAKE_BODY_INLINE_MAX_BYTES + WAKE_SKELETON_MAX_BYTES;
 
 export type WakeLang = "en" | "zh";
 
-export function wakeNote(channel: string, seq: number, from: string, lang: WakeLang = "en"): string {
-  const note = lang === "zh"
-    ? `[open-cross-session] 频道 #${channel} 有来自 ${from} 的新消息（seq ${seq}）。` +
-      `请运行 \`ocs read ${channel} --as <你的名字>\` 读取并处理；` +
-      `回复用 \`ocs send ${channel} "<正文>" --as <你的名字>\`。`
-    : `[open-cross-session] New message from ${from} in #${channel} (seq ${seq}). ` +
-      `Run \`ocs read ${channel} --as <your-name>\` to read and handle it; ` +
-      `reply with \`ocs send ${channel} "<text>" --as <your-name>\`.`;
-  if (Buffer.byteLength(note, "utf8") > WAKE_NOTE_MAX_BYTES) {
-    throw new Error("wake note exceeds 512 bytes"); // 构造恒定，超限属编程错误
+export interface WakeNoteInput {
+  channel: string;
+  seq: number;
+  /** 发送者（频道里的 from）。 */
+  from: string;
+  /** 消息正文，逐字（≤4096B）或前 512B 内联。 */
+  body: string;
+  /** 唤醒时已知的目标会话原生名——填进 Reply:/Thread: 的 `--as`，复制即用。 */
+  receiver: string;
+  replyTo?: number;
+  /** 可选的相对时间（"2m ago"）；ocs 的唤醒紧随 send，调用方一般不传。 */
+  ago?: string;
+  lang?: WakeLang;
+}
+
+/** 在 UTF-8 字节边界截断：不切开多字节字符（含代理对——UTF-8 里是一个 4 字节序列）。 */
+export function truncateUtf8(text: string, maxBytes: number): string {
+  const buf = Buffer.from(text, "utf8");
+  if (buf.length <= maxBytes) return text;
+  let end = maxBytes;
+  while (end > 0 && (buf[end]! & 0xc0) === 0x80) end--; // 退过 continuation 字节
+  return buf.subarray(0, end).toString("utf8");
+}
+
+export function wakeReplyCommand(channel: string, receiver: string, seq: number): string {
+  return `ocs send ${channel} "<your reply>" --as ${receiver} --reply-to ${seq}`;
+}
+
+export function wakeReadCommand(channel: string, receiver: string): string {
+  return `ocs read ${channel} --as ${receiver}`;
+}
+
+/**
+ * 唤醒 note（协议 §1 骨架，行序固定）：
+ *
+ *   [ocs wake] <sender> mentioned you in #<channel> (seq <N>[, reply to seq <M>][, <ago>])
+ *   <空行>
+ *   <body>
+ *   <空行>
+ *   Reply: ocs send <channel> "<your reply>" --as <receiver> --reply-to <N>
+ *   Thread: ocs read <channel> --as <receiver>
+ *
+ * 正文 >4096B 时 body 换成前 512B + `… (<total> bytes total; full text: <read command>)`。
+ * 骨架超 1024B 时先砍 ago、再砍 sender；Reply:/Thread: 永不砍。
+ */
+export function wakeNote(input: WakeNoteInput): string {
+  const M = messages(input.lang ?? "en");
+  const read = wakeReadCommand(input.channel, input.receiver);
+  const reply = wakeReplyCommand(input.channel, input.receiver, input.seq);
+  const total = Buffer.byteLength(input.body, "utf8");
+  const bodyPart = total <= WAKE_BODY_INLINE_MAX_BYTES
+    ? input.body
+    : `${truncateUtf8(input.body, WAKE_BODY_PREVIEW_BYTES)}\n… (${total} bytes total; full text: ${read})`;
+  const tail = `\n\n${M.wakeNoteReply(reply)}\n${M.wakeNoteThread(read)}`;
+  const ladder: Array<{ sender: string | null; ago?: string }> = [
+    { sender: input.from, ...(input.ago !== undefined ? { ago: input.ago } : {}) },
+    { sender: input.from },
+    { sender: null },
+  ];
+  for (const step of ladder) {
+    const header = M.wakeNoteHeader({
+      sender: step.sender,
+      channel: input.channel,
+      seq: input.seq,
+      ...(input.replyTo !== undefined ? { replyTo: input.replyTo } : {}),
+      ...(step.ago !== undefined ? { ago: step.ago } : {}),
+    });
+    const note = `${header}\n\n${bodyPart}${tail}`;
+    const skeleton = Buffer.byteLength(note, "utf8") - Buffer.byteLength(bodyPart, "utf8");
+    if (skeleton <= WAKE_SKELETON_MAX_BYTES) return note;
   }
-  return note;
+  // channel/名字都有 64 字符上限，走到这里只可能是编程错误（或畸形的会话名）。
+  throw new Error(`wake note skeleton exceeds ${WAKE_SKELETON_MAX_BYTES} bytes`);
 }
 
 export interface WakeTargetSelection {
@@ -85,20 +157,23 @@ export function findSelfClaudePid(
 
 /**
  * 目标选择：mentions 与本机活 Claude 原生会话名求交集。
- * - 排除 selfPids（发送方自己所在的会话，通常传 [process.ppid]）。
+ * - 排除 selfPids（发送方自己所在的会话，由 findSelfClaudePid 沿祖先链找到）。
+ * - 排除 selfNames（发送者的 from 名——`--as` 指定或自动识别的那个）。#3 现场：正文里
+ *   写「回复时 @我」把自己也叫醒了；按名字再排一次，祖先链识别失手时也不回环。
  * - 同名多会话不消歧、全部命中（本地个人场景下同名即同人多开，都该被叫醒）。
  */
 export function selectWakeTargets(
   mentions: readonly string[],
-  options: { selfPids?: readonly number[]; env?: NodeJS.ProcessEnv } = {},
+  options: { selfPids?: readonly number[]; selfNames?: readonly string[]; env?: NodeJS.ProcessEnv } = {},
 ): WakeTargetSelection {
   const selfPids = new Set(options.selfPids ?? []);
+  const selfNames = new Set(options.selfNames ?? []);
   const wanted = new Set(mentions);
   const targets: NativeClaudeSession[] = [];
   const excludedSelf: number[] = [];
   for (const session of listNativeSessions(options.env)) {
     if (session.name === null || !wanted.has(session.name)) continue;
-    if (selfPids.has(session.pid)) {
+    if (selfPids.has(session.pid) || selfNames.has(session.name)) {
       excludedSelf.push(session.pid);
       continue;
     }
@@ -112,17 +187,29 @@ export interface WakeOutcome {
   result: InjectResult;
 }
 
+/** 三条唤醒载体共用的输入：频道指针 + 正文 + reply_to。receiver 按目标逐个填。 */
+export interface WakeInput {
+  channel: string;
+  seq: number;
+  from: string;
+  body: string;
+  replyTo?: number;
+  lang?: WakeLang;
+  env?: NodeJS.ProcessEnv;
+}
+
 export async function wakeSessions(
   targets: readonly NativeClaudeSession[],
-  input: { channel: string; seq: number; from: string; lang?: WakeLang; env?: NodeJS.ProcessEnv },
+  input: WakeInput,
 ): Promise<WakeOutcome[]> {
   const outcomes: WakeOutcome[] = [];
   for (const session of targets) {
+    const receiver = session.name ?? `pid-${session.pid}`;
     const result = await injectChannelMessage({
-      name: session.name ?? `pid-${session.pid}`,
+      name: receiver,
       pid: session.pid,
       sessionId: session.sessionId,
-      body: wakeNote(input.channel, input.seq, input.from, input.lang),
+      body: wakeNote({ ...input, receiver }),
       fromName: input.from,
       env: input.env,
     });
@@ -183,14 +270,9 @@ export function pickCodexSourceThread(
  * 送达语义：ok 表示 renderer 接受了 turn（拿到 turnId）；unknown-outcome 表示帧已写出
  * 但结果未知——**绝不重放**（上游铁律），交由调用方自行核对。
  */
-export async function wakeCodexTask(input: {
+export async function wakeCodexTask(input: WakeInput & {
   targetThreadId: string;
   sourceThreadId?: string;
-  channel: string;
-  seq: number;
-  from: string;
-  lang?: WakeLang;
-  env?: NodeJS.ProcessEnv;
 }): Promise<CodexWakeResult> {
   const env = input.env ?? process.env;
   if (!isCodexThreadId(input.targetThreadId)) {
@@ -280,7 +362,8 @@ export async function wakeCodexTask(input: {
       }
       sourceThreadId = picked;
     }
-    const prompt = wakeNote(input.channel, input.seq, input.from, input.lang);
+    // Codex 任务没有 ocs 名字：Reply:/Thread: 里的 --as 用 dm 同款派生名 codex-<8hex>。
+    const prompt = wakeNote({ ...input, receiver: `codex-${input.targetThreadId.slice(0, 8)}` });
     const { turnId } = await client.startDelegatedTurn({
       targetThreadId: input.targetThreadId,
       sourceThreadId,

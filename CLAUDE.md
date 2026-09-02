@@ -8,9 +8,9 @@
 
 ```bash
 bun install
-bun test               # 20 用例：真 UDS 端到端 + 假 IPC 路由器全握手
+bun test               # 真 UDS 端到端 + 假 IPC 路由器全握手 + 真脱离终端的 idle watcher
 bunx tsc --noEmit
-bun src/cli.ts <cmd>   # 本地跑 CLI（send/read/sessions/codex-sessions/watch/doctor/upgrade）
+bun src/cli.ts <cmd>   # 本地跑 CLI（who/dm/send/read/notify-when-idle/sessions/watch/doctor/upgrade）
 ```
 
 发布：打 `v*` tag 推送 → release workflow 编三平台二进制附 GitHub Release。**不发 npm registry。**
@@ -23,7 +23,8 @@ bun src/cli.ts <cmd>   # 本地跑 CLI（send/read/sessions/codex-sessions/watch
 4. **Claude 注入 `ok:true` ≠ 已送达**：接收端 `crossSessionInbound` 默认 hold，5 分钟无人 Deliver 静默丢弃。绝不拿 ok 清欠账；doctor 引导用户设 accept。
 5. **Codex IPC unknown-outcome 绝不重放**（帧已写出但结果未知是一等错误）。IPC 是 ChatGPT.app 私有协议，宿主升级可能破，失败必须留降级余地。
 6. **vendored 文件不是 canonical**：`src/claude-inject.ts`、`src/codex-ipc.ts`、`src/codex-sessions.ts` 来自 AgentParty 主仓（`~/github.com/agentparty`，文件头有标注）。行为疑问对上游；修 bug 考虑回流上游。
-7. 唤醒载荷是 **≤512B 的 channel+seq 指针**，正文永远由被唤醒方 `ocs read` 回读。别把正文塞进注入帧。
+7. 唤醒载荷按 **docs/wake-protocol.md**（与 AgentParty 共用，正本在本仓库）：正文 ≤4096B 逐字内联、超过只带前 512B、整条 ≤5120B，`Reply:`/`Thread:` 两行永不砍。改数字/文案先改协议文档，两边同步。
+8. **notify-when-idle 是一次性的**：watcher 投递一条通知后必须退出；每次翻转都发会把订阅方打成筛子（测试钉着）。
 
 ## 路线（owner 已拍板）
 

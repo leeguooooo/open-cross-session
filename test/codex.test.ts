@@ -120,6 +120,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
       const result = await wakeCodexTask({
         targetThreadId: THREAD_B,
         channel: "dev",
+        body: "hello codex",
         seq: 9,
         from: "alice",
         env: router.env,
@@ -149,6 +150,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
         targetThreadId: THREAD_B,
         sourceThreadId: THREAD_A,
         channel: "dev",
+        body: "hello codex",
         seq: 1,
         from: "a",
         env: router.env,
@@ -171,6 +173,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
       const result = await wakeCodexTask({
         targetThreadId: THREAD_B,
         channel: "dev",
+        body: "hello codex",
         seq: 1,
         from: "a",
         env: router.env,
@@ -188,6 +191,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
       const r1 = await wakeCodexTask({
         targetThreadId: THREAD_B,
         channel: "dev",
+        body: "hello codex",
         seq: 1,
         from: "a",
         env: targetClosed.env,
@@ -203,6 +207,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
         targetThreadId: THREAD_B,
         sourceThreadId: THREAD_A,
         channel: "dev",
+        body: "hello codex",
         seq: 1,
         from: "a",
         env: sourceClosed.env,
@@ -219,6 +224,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
       targetThreadId: THREAD_B,
       sourceThreadId: THREAD_A,
       channel: "dev",
+      body: "hello codex",
       seq: 1,
       from: "a",
       env: { CODEX_HOME: mkdtempSync(join(tmpdir(), "ocs-noipc-")) },

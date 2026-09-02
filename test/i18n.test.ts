@@ -28,9 +28,16 @@ describe("messages 目录", () => {
 });
 
 describe("wakeNote 双语", () => {
-  test("两种语言都恒 ≤512 字节且含读取命令", () => {
+  test("两种语言都恒 ≤5120 字节且含回复/读取命令", () => {
     for (const lang of ["en", "zh"] as const) {
-      const note = wakeNote("a".repeat(64), 999999, "n".repeat(64), lang);
+      const note = wakeNote({
+        channel: "a".repeat(64),
+        seq: 999999,
+        from: "n".repeat(64),
+        body: "b".repeat(4096),
+        receiver: "r".repeat(64),
+        lang,
+      });
       expect(Buffer.byteLength(note, "utf8")).toBeLessThanOrEqual(WAKE_NOTE_MAX_BYTES);
       expect(note).toContain("ocs read");
       expect(note).toContain("ocs send");

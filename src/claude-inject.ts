@@ -2,7 +2,8 @@
 //
 // Vendored from AgentParty cli/src/claude-inbox-inject.ts（同一版权人，按 MIT 重新授权
 // 随本仓库分发；上游改动需手工同步——本文件不是 canonical，行为疑问以上游为准）。
-// 相对上游的改动：env 覆盖变量改名为 OCS_*；新增 listNativeSessions() 导出。
+// 相对上游的改动：env 覆盖变量改名为 OCS_*；新增 listNativeSessions() 导出；
+// NativeClaudeSession 多读一个 statusUpdatedAt（notify-when-idle 算「忙了多久」用）。
 //
 // 定位：本模块是「最后一公里」——
 // 把频道 @ 消息以 Claude Code 原生「Message from X」内联 UX 注入到本机已入册、当前 idle
@@ -99,6 +100,8 @@ export interface NativeClaudeSession {
   sessionId: string | null;
   name: string | null;
   status: string | null;
+  /** Claude 写的 status 翻转时间（ms epoch）；读不到为 null。 */
+  statusUpdatedAt: number | null;
   kind: string | null;
   messagingSocketPath: string;
   procStart: string | null;
@@ -129,6 +132,10 @@ function readNativeSession(dir: string, filename: string): NativeClaudeSession |
       sessionId: typeof value.sessionId === "string" ? value.sessionId : null,
       name: typeof value.name === "string" ? value.name : null,
       status: typeof value.status === "string" ? value.status : null,
+      statusUpdatedAt:
+        typeof value.statusUpdatedAt === "number" && Number.isFinite(value.statusUpdatedAt)
+          ? value.statusUpdatedAt
+          : null,
       kind: typeof value.kind === "string" ? value.kind : null,
       messagingSocketPath: sock,
       procStart:
@@ -457,7 +464,7 @@ export interface InjectChannelMessageInput {
   pid?: number;
   /** 目标会话 id（registry entry.session_id）：pid 寻址时做防复用比对。 */
   sessionId?: string | null;
-  /** 频道指针/摘要（≤512B），会被 cross-session-message 包装。 */
+  /** 唤醒 note（≤5120B，见 docs/wake-protocol.md），会被 cross-session-message 包装。 */
   body: string;
   /** 频道昵称（"Message from <fromName>"）。 */
   fromName: string;

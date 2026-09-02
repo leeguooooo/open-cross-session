@@ -62,7 +62,7 @@
 
 1. **Claude 侧**：`claude-inbox-inject.ts` — cc-socks Unix socket
    （`/tmp/cc-socks/<pid>.sock`）按 PID 寻址注入活会话，JSONL 帧，
-   ≤512B channel+seq 指针载荷（正文永远回频道重读）。
+   载荷按 docs/wake-protocol.md：正文 ≤4096B 逐字内联（超过带前 512B），Reply:/Thread: 命令填好。
 2. **Codex 侧**：`codex-desktop-ipc.ts`（#1012）— ChatGPT Desktop 自己的
    `~/.codex/ipc/ipc.sock`，用 `thread-follower-start-turn` + `codex_app`
    toolOutput 注入原生跨任务消息，UI 里保留原生来源链接。

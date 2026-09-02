@@ -19,6 +19,22 @@ interface Catalog {
   wakeSelfSkipped: string;
   wakeDelivered: (target: string) => string;
   wakeFailed: (target: string, reason: string) => string;
+  /** 唤醒 note 首行（docs/wake-protocol.md §1）。sender=null 是骨架超预算时的降级档。 */
+  wakeNoteHeader: (h: { sender: string | null; channel: string; seq: number; replyTo?: number; ago?: string }) => string;
+  wakeNoteReply: (command: string) => string;
+  wakeNoteThread: (command: string) => string;
+  /** 空闲通知三条文案（docs/wake-protocol.md §2，逐字）。 */
+  idleNoticeIdle: (target: string, duration: string) => string;
+  idleNoticeExited: (target: string) => string;
+  idleNoticeExpired: (target: string) => string;
+  idleSubscribed: (target: string, id: string) => string;
+  idleAlreadySubscribed: (target: string, id: string) => string;
+  idleTargetAlreadyIdle: (target: string) => string;
+  idleNoTarget: string;
+  idleTargetNotLive: (target: string) => string;
+  failNotInClaudeSession: string;
+  whoIdleSubsHeader: string;
+  whoIdleSubLine: (target: string, subscriber: string, expiresIn: string, id: string) => string;
   codexAccepted: (thread: string, turnId: string) => string;
   codexUnknownOutcome: (detail: string) => string;
   codexFailed: (reason: string, detail: string) => string;
@@ -48,6 +64,7 @@ interface Catalog {
   upgrade: string;
   failSendUsage: string;
   failReadUsage: string;
+  failNotifyUsage: string;
   failWatchUsage: string;
   failReplyTo: string;
   failSince: string;
@@ -82,15 +99,23 @@ const en: Catalog = {
 
 Usage:
   ocs who
-      Roster of every reachable agent: Claude sessions, Codex tasks, terminals.
-  ocs dm <name-or-id> <text> [--as <name>]
+      Roster of every reachable agent: Claude sessions, Codex tasks, terminals,
+      plus pending idle notifications.
+  ocs dm <name-or-id> <text> [--as <name>] [--notify-when-idle]
       Message + wake one agent. Channel is auto-derived; nothing to set up.
   ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake]
-           [--codex <thread-id>] [--codex-source <thread-id>]
+           [--notify-when-idle] [--codex <thread-id>] [--codex-source <thread-id>]
       Append to a channel. @<session-name> wakes a live Claude session;
       @<thread-id> or --codex targets an open ChatGPT Desktop task.
-  ocs read <channel> [--as <name>] [--since <seq>] [--json] [--peek]
+      --reply-to <seq> also wakes the author of that seq.
+      The wake note carries the body (≤4096 bytes) and a copy-paste Reply: line.
+  ocs read <channel> [--as <name>] [--since <seq>] [--json] [--peek] [--include-self]
       Read new messages since your cursor, then advance it (--peek: don't).
+      Your own messages fold to one line unless --include-self.
+  ocs notify-when-idle <session-name>
+      One-shot: get a notice in this session when that Claude session next goes
+      idle or exits (fires at once if already idle; expires after 6h).
+      Also available as --notify-when-idle on send/dm (send first, then subscribe).
   ocs whoami
       Print the auto-detected sender identity.
   ocs sessions | codex-sessions [--limit <n>]
@@ -113,6 +138,33 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   wakeSelfSkipped: " (you mentioned yourself; skipped)",
   wakeDelivered: (target) => `wake: delivered to inbox → ${target}`,
   wakeFailed: (target, reason) => `wake: failed → ${target}: ${reason}`,
+  wakeNoteHeader: ({ sender, channel, seq, replyTo, ago }) => {
+    const parts = [`seq ${seq}`];
+    if (replyTo !== undefined) parts.push(`reply to seq ${replyTo}`);
+    if (ago !== undefined) parts.push(ago);
+    return sender === null
+      ? `[ocs wake] New mention in #${channel} (${parts.join(", ")})`
+      : `[ocs wake] ${sender} mentioned you in #${channel} (${parts.join(", ")})`;
+  },
+  wakeNoteReply: (command) => `Reply: ${command}`,
+  wakeNoteThread: (command) => `Thread: ${command}`,
+  idleNoticeIdle: (target, duration) =>
+    `[Cross-session idle notice] ${target} is now idle. (busy for ${duration})`,
+  idleNoticeExited: (target) => `[Cross-session idle notice] ${target} exited before going idle.`,
+  idleNoticeExpired: (target) =>
+    `[Cross-session idle notice] ${target} did not go idle within 6h; subscription expired.`,
+  idleSubscribed: (target, id) =>
+    `notify-when-idle: subscribed → ${target} (one-shot, expires in 6h; id ${id})`,
+  idleAlreadySubscribed: (target, id) =>
+    `notify-when-idle: already subscribed → ${target} (id ${id}); not duplicated`,
+  idleTargetAlreadyIdle: (target) => `notify-when-idle: ${target} is already idle — notice is being delivered now`,
+  idleNoTarget: "notify-when-idle: no live Claude session to subscribe to (nothing was woken)",
+  idleTargetNotLive: (target) => `notify-when-idle: ${target} is not a live Claude session — run \`ocs who\``,
+  failNotInClaudeSession:
+    "notify-when-idle needs a session to notify: run this from inside a Claude Code session (no Claude ancestor found)",
+  whoIdleSubsHeader: "Pending idle notifications (one-shot; ocs notify-when-idle <name>)",
+  whoIdleSubLine: (target, subscriber, expiresIn, id) =>
+    `  ${target} → notify ${subscriber} when idle  (expires in ${expiresIn}, id ${id})`,
   codexAccepted: (thread, turnId) => `wake(codex): turn accepted → task ${thread} (turnId ${turnId})`,
   codexUnknownOutcome: (detail) => `wake(codex): outcome unknown (frame was written — do NOT resend): ${detail}`,
   codexFailed: (reason, detail) => `wake(codex): failed (${reason})${detail ? `: ${detail}` : ""}`,
@@ -151,6 +203,7 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
 Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-machine goes party.`,
   failSendUsage: "usage: ocs send <channel> <body> --as <name>",
   failReadUsage: "usage: ocs read <channel> --as <name>",
+  failNotifyUsage: "usage: ocs notify-when-idle <session-name>",
   failWatchUsage: "usage: ocs watch <channel>",
   failReplyTo: "--reply-to must be a positive integer seq",
   failSince: "--since must be a non-negative integer",
@@ -192,15 +245,23 @@ const zh: Catalog = {
 
 用法:
   ocs who
-      全机 agent 花名册：Claude 会话、Codex 任务、终端，都在一张表里
-  ocs dm <名字或id> <内容> [--as <name>]
+      全机 agent 花名册：Claude 会话、Codex 任务、终端，都在一张表里，
+      外加待触发的空闲通知
+  ocs dm <名字或id> <内容> [--as <name>] [--notify-when-idle]
       给一个 agent 发消息并唤醒；频道自动派生，什么都不用建
   ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake]
-           [--codex <thread-id>] [--codex-source <thread-id>]
+           [--notify-when-idle] [--codex <thread-id>] [--codex-source <thread-id>]
       往频道追加消息；@<会话名> 唤醒活 Claude 会话，@<thread-id>
       或 --codex 投给 ChatGPT Desktop 里开着的任务
-  ocs read <channel> [--as <name>] [--since <seq>] [--json] [--peek]
+      --reply-to <seq> 同时唤醒那条消息的作者
+      唤醒 note 直接带正文（≤4096 字节）和一行可直接复制的回复命令
+  ocs read <channel> [--as <name>] [--since <seq>] [--json] [--peek] [--include-self]
       从上次游标读新消息并推进游标；--peek 只读不推进
+      自己发的消息默认折叠成一行，--include-self 完整显示
+  ocs notify-when-idle <会话名>
+      一次性订阅：那个 Claude 会话下次空闲或退出时通知本会话
+      （订阅时已空闲则立即通知；6 小时后过期）
+      send/dm 也可带 --notify-when-idle（先发消息再订阅）
   ocs whoami
       看自动识别出的发送者身份
   ocs sessions | codex-sessions [--limit <n>]
@@ -222,6 +283,28 @@ const zh: Catalog = {
   wakeSelfSkipped: "（@ 到了自己，已跳过）",
   wakeDelivered: (target) => `wake: 已投递收件箱 → ${target}`,
   wakeFailed: (target, reason) => `wake: 失败 → ${target}: ${reason}`,
+  wakeNoteHeader: ({ sender, channel, seq, replyTo, ago }) => {
+    const parts = [`seq ${seq}`];
+    if (replyTo !== undefined) parts.push(`回复 seq ${replyTo}`);
+    if (ago !== undefined) parts.push(ago);
+    return sender === null
+      ? `[ocs 唤醒] #${channel} 提到了你（${parts.join("，")}）`
+      : `[ocs 唤醒] ${sender} 在 #${channel} 提到了你（${parts.join("，")}）`;
+  },
+  wakeNoteReply: (command) => `回复：${command}`,
+  wakeNoteThread: (command) => `线程：${command}`,
+  idleNoticeIdle: (target, duration) => `[跨会话空闲通知] ${target} 现在空闲了（忙了 ${duration}）。`,
+  idleNoticeExited: (target) => `[跨会话空闲通知] ${target} 在空闲前已退出。`,
+  idleNoticeExpired: (target) => `[跨会话空闲通知] ${target} 6 小时内没有空闲，订阅已过期。`,
+  idleSubscribed: (target, id) => `notify-when-idle: 已订阅 → ${target}（一次性，6 小时后过期；id ${id}）`,
+  idleAlreadySubscribed: (target, id) => `notify-when-idle: 已经订阅过 → ${target}（id ${id}），不重复`,
+  idleTargetAlreadyIdle: (target) => `notify-when-idle: ${target} 现在就是空闲的——通知正在投递`,
+  idleNoTarget: "notify-when-idle: 没有可订阅的活 Claude 会话（没有唤醒任何人）",
+  idleTargetNotLive: (target) => `notify-when-idle: ${target} 不是活着的 Claude 会话——跑 \`ocs who\` 看看`,
+  failNotInClaudeSession: "notify-when-idle 需要一个收通知的会话：请在 Claude Code 会话里运行（祖先进程里没找到 Claude）",
+  whoIdleSubsHeader: "待触发的空闲通知（一次性；ocs notify-when-idle <名字>）",
+  whoIdleSubLine: (target, subscriber, expiresIn, id) =>
+    `  ${target} 空闲时通知 ${subscriber}  （${expiresIn} 后过期，id ${id}）`,
   codexAccepted: (thread, turnId) => `wake(codex): turn 已接受 → task ${thread}（turnId ${turnId}）`,
   codexUnknownOutcome: (detail) => `wake(codex): 结果未知（帧已写出，勿重发）: ${detail}`,
   codexFailed: (reason, detail) => `wake(codex): 失败（${reason}）${detail ? `: ${detail}` : ""}`,
@@ -260,6 +343,7 @@ const zh: Catalog = {
 本地 ocs 与托管 party 可以并存：本机小事走 ocs，跨机协作走 party。`,
   failSendUsage: "用法: ocs send <channel> <body> --as <name>",
   failReadUsage: "用法: ocs read <channel> --as <name>",
+  failNotifyUsage: "用法: ocs notify-when-idle <会话名>",
   failWatchUsage: "用法: ocs watch <channel>",
   failReplyTo: "--reply-to 必须是正整数 seq",
   failSince: "--since 必须是非负整数",
