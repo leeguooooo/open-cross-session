@@ -60,12 +60,12 @@ ocs send ──▶ 追加频道日志 ──▶ 按目标选唤醒载体
 <正文，4096 字节以内逐字；更长的只带前 512 字节，外加
 「… (N bytes total; full text: ocs read dev --as bob)」>
 
-回复：ocs send dev "<your reply>" --as bob --reply-to 7
-线程：ocs read dev --as bob
+回复：ocs dm alice "<your reply>"          # Claude→Claude DM
+线程：ocs read dm-<派生频道>
 ```
 
-「回复」那行是完整的：频道、身份、`--reply-to` 都填好，而 `--reply-to` 会顺带唤醒那条消息的作者，
-所以复制那行、只换引号里的文字，就能把回复送回去。整条 note 不超过 5120 字节。
+Claude→Claude DM 的「回复」行优先使用发送方的唯一工作区别名，派生出的长频道只留在「线程」行。
+别名不唯一、普通频道或非 Claude 目标仍保留完整的 `ocs send ... --as ... --reply-to ...` 形式。整条 note 不超过 5120 字节。
 协议与 Agent Party 共用：[docs/wake-protocol.md](./docs/wake-protocol.md)。
 
 ## 能唤醒谁
@@ -116,7 +116,9 @@ Claude Code 和 Codex 各自都有原生的跨会话能力，在各自的岛内�
 \* 只是持久化，有两个实打实的限制。其一，没有自动催收：没有进程盯着谁上线，积压
 要等该 agent **下一次读频道**（下次被唤醒、下次 `ocs read`、或有人提醒）才补上。
 其二，身份默认不跨重启：自动识别的 Claude 会话名是一次性的——会话重启就是新名字，
-不会去找旧名字名下的频道和游标；要跨重启接续积压，用 `OCS_NAME` / `--as` 固定名字。
+不会去找旧名字名下的频道和游标。`ocs who` 会在同一工作区只有一个活 Claude 会话时显示
+稳定的工作区别名。重启后用别名（`choose-browser`）寻址，不再依赖一次性生成名（`choose-browser-10`）。
+这只解决实时寻址，不代表身份或历史延续；要跨重启接续积压，用 `OCS_NAME` / `--as` 固定名字。
 `ocs dm` 发给当前不在线的名字会把消息停靠进频道并明说「没有被唤醒」。
 相对原生的真实优势只有一条：消息不丢——原生发给离线对端是直接消失的。
 

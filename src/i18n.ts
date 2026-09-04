@@ -74,9 +74,12 @@ interface Catalog {
   whoCodexHeader: (ipc: boolean) => string;
   whoCmuxHeader: string;
   whoSelfTag: string;
+  whoWorkspaceAlias: (alias: string) => string;
   whoEmpty: string;
   whoCmuxHint: string;
   dmSent: (target: string, channel: string, seq: number) => string;
+  dmWorkspaceResolved: (requested: string, current: string, alias: string) => string;
+  dmWorkspaceAmbiguous: (target: string, names: string[]) => string;
   dmParked: (target: string, channel: string) => string;
   dmTargetNotFound: (target: string) => string;
   dmCmuxBusy: (ref: string) => string;
@@ -214,9 +217,14 @@ Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-m
     `Codex tasks (wake: ocs dm <thread-id>; Desktop IPC ${ipc ? "available" : "UNAVAILABLE — open ChatGPT Desktop"})`,
   whoCmuxHeader: "cmux terminal surfaces (wake: ocs dm surface:N)",
   whoSelfTag: "  ← you",
+  whoWorkspaceAlias: (alias) => `  alias=${alias} (stable across session restarts while unique)`,
   whoEmpty: "no reachable agents found — open a Claude Code session or a Codex task",
   whoCmuxHint: "cmux not detected: terminal TUIs are not listed (they can still join channels themselves)",
   dmSent: (target, channel, seq) => `dm → ${target} (channel ${channel}, seq ${seq})`,
+  dmWorkspaceResolved: (requested, current, alias) =>
+    `resolved ${requested} → ${current} via unique workspace alias ${alias}`,
+  dmWorkspaceAmbiguous: (target, names) =>
+    `workspace address ${target} is ambiguous: ${names.join(", ")} — use an exact live name from \`ocs who\``,
   dmParked: (target, channel) =>
     `${target} has no live session right now — NOT woken. The message is parked in channel ${channel} and will only be seen if that name reads it later (names are per-session unless pinned via OCS_NAME/--as)`,
   dmTargetNotFound: (target) =>
@@ -354,9 +362,14 @@ const zh: Catalog = {
     `Codex 任务（唤醒: ocs dm <thread-id>；Desktop IPC ${ipc ? "可用" : "不可用——先开 ChatGPT Desktop"}）`,
   whoCmuxHeader: "cmux 终端 surface（唤醒: ocs dm surface:N）",
   whoSelfTag: "  ← 你自己",
+  whoWorkspaceAlias: (alias) => `  别名=${alias}（唯一时可跨会话重启使用）`,
   whoEmpty: "没发现可达的 agent——开一个 Claude Code 会话或 Codex 任务",
   whoCmuxHint: "cmux 未检测到：终端 TUI 不在列表里（它们仍可自己进频道）",
   dmSent: (target, channel, seq) => `dm → ${target}（频道 ${channel}，seq ${seq}）`,
+  dmWorkspaceResolved: (requested, current, alias) =>
+    `通过唯一工作区别名 ${alias} 解析 ${requested} → ${current}`,
+  dmWorkspaceAmbiguous: (target, names) =>
+    `工作区地址 ${target} 不唯一：${names.join("、")}——请从 \`ocs who\` 里选精确的实时名字`,
   dmParked: (target, channel) =>
     `${target} 当前没有活会话——**没有被唤醒**。消息停靠在频道 ${channel}，只有这个名字将来主动读频道才看得到（会话名默认一次性，固定身份用 OCS_NAME/--as）`,
   dmTargetNotFound: (target) => `找不到目标: ${target}——跑 \`ocs who\` 看可达的 agent`,

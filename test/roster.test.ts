@@ -5,17 +5,20 @@ import { join } from "node:path";
 import { CLAUDE_NATIVE_SESSIONS_DIR_ENV } from "../src/claude-inject.ts";
 import {
   dmChannel,
+  buildRoster,
+  claudeWorkspaceAlias,
   findDmReplyChannel,
   resolveDmTarget,
   resolveSelfName,
   selfIdentity,
+  uniqueClaudeWorkspaceAlias,
   OCS_NAME_ENV,
 } from "../src/roster.ts";
 import { appendMessage, loadCursor, readMessages, saveCursor, OCS_HOME_ENV } from "../src/store.ts";
 
 const THREAD = "aaaaaaaa-1111-2222-3333-444444444444";
 
-function sessionsFixture(): NodeJS.ProcessEnv {
+function sessionsFixture(options: { name?: string; cwd?: string } = {}): NodeJS.ProcessEnv {
   const dir = mkdtempSync(join(tmpdir(), "ocs-roster-"));
   const sessionsDir = join(dir, "sessions");
   mkdirSync(sessionsDir, { mode: 0o700 });
@@ -24,7 +27,8 @@ function sessionsFixture(): NodeJS.ProcessEnv {
     JSON.stringify({
       pid: process.pid,
       sessionId: "sess-1",
-      name: "worker-a",
+      name: options.name ?? "worker-a",
+      cwd: options.cwd ?? "/work/worker",
       status: "idle",
       messagingSocketPath: join(dir, "inbox.sock"),
     }),
@@ -85,6 +89,86 @@ describe("resolveDmTarget", () => {
     expect(offline).toMatchObject({ kind: "claude", name: "ghost" });
     expect((offline as { claude?: unknown }).claude).toBeUndefined();
   });
+
+  test("工作区 basename 是跨重启短地址，不猜测重启前的一次性名字", () => {
+    const env = sessionsFixture({ name: "choose-browser-21", cwd: "/work/choose-browser" });
+    expect(resolveDmTarget("choose-browser", env)).toMatchObject({
+      kind: "claude",
+      name: "choose-browser-21",
+      workspaceAlias: "choose-browser",
+    });
+    const stale = resolveDmTarget("choose-browser-10", env);
+    expect(stale).toMatchObject({
+      kind: "claude",
+      name: "choose-browser-10",
+    });
+    expect((stale as { claude?: unknown }).claude).toBeUndefined();
+  });
+
+  test("同一工作区多个活会话时别名判歧义，不任选目标", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocs-roster-ambiguous-"));
+    const sessionsDir = join(dir, "sessions");
+    mkdirSync(sessionsDir, { mode: 0o700 });
+    const peer = Bun.spawn(["sleep", "30"], { stdio: ["ignore", "ignore", "ignore"] });
+    try {
+      for (const [pid, name] of [[process.pid, "choose-browser-21"], [peer.pid, "choose-browser-af"]] as const) {
+        writeFileSync(join(sessionsDir, `${pid}.json`), JSON.stringify({
+          pid,
+          sessionId: `sess-${pid}`,
+          name,
+          cwd: "/work/choose-browser",
+          status: "idle",
+          messagingSocketPath: join(dir, `${pid}.sock`),
+        }));
+      }
+      const env = { [CLAUDE_NATIVE_SESSIONS_DIR_ENV]: sessionsDir };
+      expect(resolveDmTarget("choose-browser", env)).toMatchObject({
+        ambiguousClaudeTargets: [
+          expect.stringContaining("choose-browser-21(pid "),
+          expect.stringContaining("choose-browser-af(pid "),
+        ],
+      });
+      const aliases = buildRoster(env).entries
+        .filter((entry) => entry.kind === "claude")
+        .map((entry) => entry.kind === "claude" ? entry.workspaceAlias : undefined);
+      expect(aliases).toEqual([undefined, undefined]);
+    } finally {
+      peer.kill();
+    }
+  });
+});
+
+test("claudeWorkspaceAlias 只接受绝对 cwd 的合法 basename", () => {
+  const base = {
+    pid: process.pid,
+    sessionId: "s",
+    name: "agentparty-eb",
+    status: "idle",
+    statusUpdatedAt: null,
+    kind: "interactive",
+    messagingSocketPath: "/tmp/unused.sock",
+    procStart: null,
+  };
+  expect(claudeWorkspaceAlias({ ...base, cwd: "/work/agentparty" })).toBe("agentparty");
+  expect(claudeWorkspaceAlias({ ...base, cwd: "relative/path" })).toBeNull();
+  expect(claudeWorkspaceAlias({ ...base, cwd: "/work/bad name" })).toBeNull();
+});
+
+test("工作区别名与另一活会话的精确名冲突时不得用于短 Reply", () => {
+  const self = {
+    pid: 101,
+    sessionId: "self",
+    name: "agentparty-eb",
+    cwd: "/work/agentparty",
+    status: "idle",
+    statusUpdatedAt: null,
+    kind: "interactive",
+    messagingSocketPath: "/tmp/self.sock",
+    procStart: null,
+  };
+  const collision = { ...self, pid: 202, sessionId: "other", name: "agentparty", cwd: "/work/other" };
+  expect(uniqueClaudeWorkspaceAlias(self, [self])).toBe("agentparty");
+  expect(uniqueClaudeWorkspaceAlias(self, [self, collision])).toBeNull();
 });
 
 describe("findDmReplyChannel（跨载体反向 dm 会话收敛，review 回归）", () => {

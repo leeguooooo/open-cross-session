@@ -31,7 +31,7 @@ interface Fixture {
   received: () => Promise<string>;
 }
 
-function fixture(options: { pid?: number; name?: string; sessionId?: string; sockName?: string } = {}): Fixture {
+function fixture(options: { pid?: number; name?: string; sessionId?: string; sockName?: string; cwd?: string } = {}): Fixture {
   const dir = mkdtempSync(join(tmpdir(), "ocs-wake-"));
   const sessionsDir = join(dir, "sessions");
   mkdirSync(sessionsDir, { mode: 0o700 });
@@ -57,6 +57,7 @@ function fixture(options: { pid?: number; name?: string; sessionId?: string; soc
       pid,
       sessionId: options.sessionId ?? "sess-1234",
       name: options.name ?? "worker-a",
+      cwd: options.cwd ?? "/work/worker",
       status: "idle",
       kind: "interactive",
       messagingSocketPath: sockPath,
@@ -162,6 +163,22 @@ describe("wakeNote（协议 §1 骨架）", () => {
         "线程：ocs read dev --as worker-a",
     );
   });
+
+  test("Claude DM 的 Reply 使用对方名字，Thread 保留完整频道但不再带 --as（#8 #9）", () => {
+    const channel = "dm-6045332524136dc61bd34ebf09051258ad0e2e7c--agent";
+    const note = wakeNote({
+      channel,
+      seq: 7,
+      from: "agentparty-eb",
+      body: "hello",
+      receiver: "super-admin-af",
+      dmReplyTarget: "agentparty-eb",
+    });
+    expect(note).toContain('Reply: ocs dm agentparty-eb "<your reply>"');
+    expect(note).toContain(`Thread: ocs read ${channel}`);
+    expect(note).not.toContain("--as super-admin-af");
+    expect(note).not.toContain("--reply-to 7");
+  });
 });
 
 describe("listNativeSessions / selectWakeTargets", () => {
@@ -177,6 +194,17 @@ describe("listNativeSessions / selectWakeTargets", () => {
       const excluded = selectWakeTargets(["worker-a"], { selfPids: [process.pid], env: f.env });
       expect(excluded.targets).toEqual([]);
       expect(excluded.excludedSelf).toEqual([process.pid]);
+    } finally {
+      f.server.close();
+    }
+  });
+
+  test("唯一工作区别名能唤醒当前会话，不猜测旧的一次性名字（#7）", () => {
+    const f = fixture({ name: "choose-browser-21", cwd: "/work/choose-browser" });
+    try {
+      expect(selectWakeTargets(["choose-browser"], { env: f.env }).targets.map((s) => s.name))
+        .toEqual(["choose-browser-21"]);
+      expect(selectWakeTargets(["choose-browser-10"], { env: f.env }).targets).toEqual([]);
     } finally {
       f.server.close();
     }

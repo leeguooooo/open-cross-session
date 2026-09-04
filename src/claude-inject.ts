@@ -101,6 +101,8 @@ export interface NativeClaudeSession {
   pid: number;
   sessionId: string | null;
   name: string | null;
+  /** Claude 启动时的工作目录；只用于本机花名册的可读别名，不参与 socket 身份校验。 */
+  cwd?: string | null;
   status: string | null;
   /** Claude 写的 status 翻转时间（ms epoch）；读不到为 null。 */
   statusUpdatedAt: number | null;
@@ -133,6 +135,7 @@ function readNativeSession(dir: string, filename: string): NativeClaudeSession |
       pid,
       sessionId: typeof value.sessionId === "string" ? value.sessionId : null,
       name: typeof value.name === "string" ? value.name : null,
+      cwd: typeof value.cwd === "string" && isAbsolute(value.cwd) ? value.cwd : null,
       status: typeof value.status === "string" ? value.status : null,
       statusUpdatedAt:
         typeof value.statusUpdatedAt === "number" && Number.isFinite(value.statusUpdatedAt)

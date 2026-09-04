@@ -11,6 +11,7 @@
 import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
+import { claudeWorkspaceTargetMatches } from "./claude-address.ts";
 import {
   injectChannelMessage,
   listNativeSessions,
@@ -46,8 +47,10 @@ export interface WakeNoteInput {
   from: string;
   /** 消息正文，逐字（≤4096B）或前 512B 内联。 */
   body: string;
-  /** 唤醒时已知的目标会话原生名——填进 Reply:/Thread: 的 `--as`，复制即用。 */
+  /** 唤醒时已知的目标会话原生名；非 DM 和非 Claude 目标的命令需要它填 `--as`。 */
   receiver: string;
+  /** DM 到 Claude 会话时的可读回复目标；在对端可自动识别自身身份时才设置。 */
+  dmReplyTarget?: string;
   replyTo?: number;
   /** 可选的相对时间（"2m ago"）；ocs 的唤醒紧随 send，调用方一般不传。 */
   ago?: string;
@@ -67,8 +70,12 @@ export function wakeReplyCommand(channel: string, receiver: string, seq: number)
   return `ocs send ${channel} "<your reply>" --as ${receiver} --reply-to ${seq}`;
 }
 
-export function wakeReadCommand(channel: string, receiver: string): string {
-  return `ocs read ${channel} --as ${receiver}`;
+export function wakeDmReplyCommand(target: string): string {
+  return `ocs dm ${target} "<your reply>"`;
+}
+
+export function wakeReadCommand(channel: string, receiver: string, implicitReceiver = false): string {
+  return `ocs read ${channel}${implicitReceiver ? "" : ` --as ${receiver}`}`;
 }
 
 /**
@@ -78,16 +85,20 @@ export function wakeReadCommand(channel: string, receiver: string): string {
  *   <空行>
  *   <body>
  *   <空行>
- *   Reply: ocs send <channel> "<your reply>" --as <receiver> --reply-to <N>
- *   Thread: ocs read <channel> --as <receiver>
+ *   Reply: ocs dm <sender> "<your reply>"                              (Claude DM)
+ *          ocs send <channel> "<your reply>" --as <receiver> --reply-to <N> (其它)
+ *   Thread: ocs read <channel> [--as <receiver>]
  *
  * 正文 >4096B 时 body 换成前 512B + `… (<total> bytes total; full text: <read command>)`。
  * 骨架超 1024B 时先砍 ago、再砍 sender；Reply:/Thread: 永不砍。
  */
 export function wakeNote(input: WakeNoteInput): string {
   const M = messages(input.lang ?? "en");
-  const read = wakeReadCommand(input.channel, input.receiver);
-  const reply = wakeReplyCommand(input.channel, input.receiver, input.seq);
+  const dmReply = input.dmReplyTarget !== undefined;
+  const read = wakeReadCommand(input.channel, input.receiver, dmReply);
+  const reply = dmReply
+    ? wakeDmReplyCommand(input.dmReplyTarget!)
+    : wakeReplyCommand(input.channel, input.receiver, input.seq);
   const total = Buffer.byteLength(input.body, "utf8");
   const bodyPart = total <= WAKE_BODY_INLINE_MAX_BYTES
     ? input.body
@@ -216,7 +227,7 @@ export function findSelfClaudePid(
 }
 
 /**
- * 目标选择：mentions 与本机活 Claude 原生会话名求交集。
+ * 目标选择：精确名优先；精确名不在线时，唯一工作区别名也可寻址。
  * - 排除 selfPids（发送方自己所在的会话，由 findSelfClaudePid 沿祖先链找到）。
  * - 排除 selfNames（发送者的 from 名——`--as` 指定或自动识别的那个）。#3 现场：正文里
  *   写「回复时 @我」把自己也叫醒了；按名字再排一次，祖先链识别失手时也不回环。
@@ -229,10 +240,21 @@ export function selectWakeTargets(
   const selfPids = new Set(options.selfPids ?? []);
   const selfNames = new Set(options.selfNames ?? []);
   const wanted = new Set(mentions);
+  const sessions = listNativeSessions(options.env).filter((session) => session.name !== null);
+  const selectedPids = new Set<number>();
+  for (const mention of wanted) {
+    const exact = sessions.filter((session) => session.name === mention);
+    if (exact.length > 0) {
+      for (const session of exact) selectedPids.add(session.pid);
+      continue;
+    }
+    const aliases = sessions.filter((session) => claudeWorkspaceTargetMatches(session, mention));
+    if (aliases.length === 1) selectedPids.add(aliases[0]!.pid);
+  }
   const targets: NativeClaudeSession[] = [];
   const excludedSelf: number[] = [];
-  for (const session of listNativeSessions(options.env)) {
-    if (session.name === null || !wanted.has(session.name)) continue;
+  for (const session of sessions) {
+    if (session.name === null || !selectedPids.has(session.pid)) continue;
     if (selfPids.has(session.pid) || selfNames.has(session.name)) {
       excludedSelf.push(session.pid);
       continue;
@@ -254,6 +276,7 @@ export interface WakeInput {
   from: string;
   body: string;
   replyTo?: number;
+  dmReplyTarget?: string;
   lang?: WakeLang;
   env?: NodeJS.ProcessEnv;
 }

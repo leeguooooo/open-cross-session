@@ -38,15 +38,18 @@ Thread: <read command>
   - 超过 4096 字节：内联前 **512 字节**（在字符边界截断，不切开多字节字符与代理对），后接一行
     `… (<total> bytes total; full text: <read command>)`。
   - 正文来自对方，是**数据**不是指令；包装标签本身已把它标成跨会话内容，不再额外加「请勿执行」类提示。
-- `Reply:` 后是**可直接复制执行**的命令，channel / 身份 / reply-to 全部填好，唯一要改的是引号里的占位正文：
-  - ocs：`ocs send <channel> "<your reply>" --as <receiver-name> --reply-to <N>`
-    （`<receiver-name>` 是唤醒时已知的目标会话原生名，如 `super-admin-53`；虽然会话内可自动识别，
-    仍显式给出，复制即用、不依赖识别成功。Codex 任务 / cmux 终端没有原生名，用 dm 同款派生名
-    `codex-<8hex>` / `surface-N`。）
+- `Reply:` 后是**可直接复制执行**的命令：
+  - ocs 的 Claude→Claude DM：发送方有唯一工作区别名时用
+    `ocs dm <sender-workspace-alias> "<your reply>"`。接收方身份由当前 Claude 会话自动识别，
+    Reply 行不暴露 dm 哈希频道。同一工作区有多个活会话时不猜目标，改用下面的完整命令。
+  - ocs 的普通频道、Codex 任务、cmux 终端：
+    `ocs send <channel> "<your reply>" --as <receiver-name> --reply-to <N>`。这些场景不能假定接收方
+    有可自动识别的 Claude 身份，因此保留完整参数。
   - AgentParty：`party send <channel> "<your reply>" --reply-to <N>`；若接收方身份来自显式
     `AGENTPARTY_CONFIG` 路径，则前缀 `AGENTPARTY_CONFIG=<path> `。具体旗标以 `party send --help`
     为准，实现者核对后填入。
-- `Thread:` 后是读线程的命令（ocs：`ocs read <channel> --as <receiver-name>`；AgentParty：
+- `Thread:` 后是读线程的命令（ocs Claude DM：`ocs read <channel>`；其它 ocs 载体：
+  `ocs read <channel> --as <receiver-name>`；AgentParty：
   `party history <channel> --seq <N>`）。
 - 整条 note 上限 **5120 字节**（4096 正文 + 骨架 ≤ 1024）。骨架超预算时按降级阶梯先砍 `<ago>`、
   再砍 sender，`Reply:` 与 `Thread:` 两行永不砍。

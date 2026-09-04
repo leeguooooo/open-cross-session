@@ -62,13 +62,15 @@ cross-session does it — as data inside a `<cross-session-message>` wrapper:
 <the message body, verbatim up to 4096 bytes; longer bodies show the first 512
 bytes plus "… (N bytes total; full text: ocs read dev --as bob)">
 
-Reply: ocs send dev "<your reply>" --as bob --reply-to 7
-Thread: ocs read dev --as bob
+Reply: ocs dm alice "<your reply>"          # for a Claude-to-Claude DM
+Thread: ocs read dm-<derived-channel>
 ```
 
-The `Reply:` line is complete: channel, identity and `--reply-to` are filled in,
-and `--reply-to` wakes the author of that seq, so copying the line (and replacing
-only the quoted text) closes the loop. The whole note is capped at 5120 bytes.
+For a Claude-to-Claude DM, the `Reply:` line uses the sender's unique workspace
+alias; the derived channel stays in `Thread:` only. If that alias is ambiguous,
+ordinary channels and non-Claude targets keep the fully specified
+`ocs send ... --as ... --reply-to ...` form.
+The whole note is capped at 5120 bytes.
 The protocol is shared with Agent Party: [docs/wake-protocol.md](./docs/wake-protocol.md).
 
 ## Who can be woken
@@ -122,7 +124,11 @@ coming online; the backlog is seen only when that agent next reads the channel
 (next wake, next `ocs read`, or a human prompt). And identity is not durable by
 default: an auto-detected Claude session name is per-session — a restarted
 session gets a new name and won't look for channels or cursors keyed to the old
-one. For an agent that must pick up backlog across restarts, pin a stable name
+one. `ocs who` also shows a stable workspace alias when exactly one live Claude
+session uses that working directory. Use that alias (`choose-browser`) instead of
+the generated name (`choose-browser-10`) to find the current session after a
+restart. This is live routing only, not identity or history continuity. For an
+agent that must pick up backlog across restarts, pin a stable name
 (`OCS_NAME` / `--as`). `ocs dm` to a currently-offline name parks the message and
 says so explicitly ("NOT woken"). What you do get over native: the message is
 never lost — a send to an offline native peer simply disappears.

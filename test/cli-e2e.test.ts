@@ -28,7 +28,7 @@ interface Fixture {
   close: () => void;
 }
 
-function fixture(options: { withSelf?: boolean } = {}): Fixture {
+function fixture(options: { withSelf?: boolean; selfCwd?: string; peerCwd?: string } = {}): Fixture {
   const dir = mkdtempSync(join(tmpdir(), "ocs-e2e-"));
   const sessionsDir = join(dir, "sessions");
   mkdirSync(sessionsDir, { mode: 0o700 });
@@ -53,14 +53,28 @@ function fixture(options: { withSelf?: boolean } = {}): Fixture {
   if (withSelf) {
     writeFileSync(
       join(sessionsDir, `${process.pid}.json`),
-      JSON.stringify({ pid: process.pid, sessionId: "self-sess", name: "tester", status: "busy", messagingSocketPath: sockPath }),
+      JSON.stringify({
+        pid: process.pid,
+        sessionId: "self-sess",
+        name: "tester",
+        cwd: options.selfCwd ?? "/work/tester",
+        status: "busy",
+        messagingSocketPath: sockPath,
+      }),
       { mode: 0o600 },
     );
   }
   const setPeer = (status: "busy" | "idle") =>
     writeFileSync(
       join(sessionsDir, `${peer.pid}.json`),
-      JSON.stringify({ pid: peer.pid, sessionId: "peer-sess", name: "worker-a", status, messagingSocketPath: sockPath }),
+      JSON.stringify({
+        pid: peer.pid,
+        sessionId: "peer-sess",
+        name: "worker-a",
+        cwd: options.peerCwd ?? "/work/worker",
+        status,
+        messagingSocketPath: sockPath,
+      }),
       { mode: 0o600 },
     );
   setPeer("busy");
@@ -69,6 +83,7 @@ function fixture(options: { withSelf?: boolean } = {}): Fixture {
   const inherited = { ...process.env } as Record<string, string>;
   delete inherited.CLAUDE_CODE_SESSION_ID;
   delete inherited.CLAUDE_CODE_MESSAGING_SOCKET;
+  delete inherited.OCS_NAME;
   return {
     env: {
       ...inherited,
@@ -201,6 +216,47 @@ describe("--reply-to 唤醒被回复者（Reply: 行复制即达）", () => {
       const c = content(await f.nextFrame());
       expect(c).toContain("[ocs wake] tester mentioned you in #chat (seq 2, reply to seq 1)\n\n<your reply>\n\n");
       expect(c).toContain('Reply: ocs send chat "<your reply>" --as worker-a --reply-to 2\n');
+    } finally {
+      f.close();
+    }
+  }, T);
+});
+
+describe("dm 唤醒提示（#8 #9）", () => {
+  test("会话内自动识别发送者时，Reply 只推荐 ocs dm <name>", async () => {
+    const f = fixture();
+    try {
+      const r = await run(f, ["dm", "worker-a", "hello"]);
+      expect(r.code).toBe(0);
+      const c = content(await f.nextFrame());
+      expect(c).toContain('Reply: ocs dm tester "<your reply>"\n');
+      expect(c).toMatch(/Thread: ocs read dm-[^\s]+\n/);
+      expect(c).not.toContain("--as worker-a");
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("显式 --as 可能不是可寻址的 Claude 名，保留完整 send 回复命令", async () => {
+    const f = fixture();
+    try {
+      const r = await run(f, ["dm", "worker-a", "hello", "--as", "stable-alias"]);
+      expect(r.code).toBe(0);
+      const c = content(await f.nextFrame());
+      expect(c).toMatch(/Reply: ocs send dm-[^\s]+ "<your reply>" --as worker-a --reply-to 1/);
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("发送方工作区有多个活会话时，不生成歧义 dm 地址，退回完整 send 命令", async () => {
+    const f = fixture({ peerCwd: "/work/tester" });
+    try {
+      const r = await run(f, ["dm", "worker-a", "hello"]);
+      expect(r.code).toBe(0);
+      const c = content(await f.nextFrame());
+      expect(c).toMatch(/Reply: ocs send dm-[^\s]+ "<your reply>" --as worker-a --reply-to 1/);
+      expect(c).not.toContain("Reply: ocs dm tester");
     } finally {
       f.close();
     }
