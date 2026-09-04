@@ -14,6 +14,9 @@ autoCleanupTempDirs();
 const THREAD_A = "aaaaaaaa-1111-2222-3333-444444444444";
 const THREAD_B = "bbbbbbbb-1111-2222-3333-444444444444";
 const THREAD_C = "cccccccc-1111-2222-3333-444444444444";
+// 冷启动 CLI 子进程可达数秒，负载下会撞上 bun 默认的 5s 单测预算（实测 5006.96ms
+// 超时红）。与 cli-e2e.test.ts 同样给 spawn CLI 的用例 60s。
+const T = 60_000;
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 
 function rolloutFixture(options: { withThreadC?: boolean } = {}): NodeJS.ProcessEnv {
@@ -187,7 +190,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
     } finally {
       router.close();
     }
-  });
+  }, T);
 
   test("ocs doctor 区分 router socket、当前 task ownership 与 rollout 历史", async () => {
     const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_B]) });
@@ -200,7 +203,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
     } finally {
       router.close();
     }
-  });
+  }, T);
 
   test("批量 owner 探测只返回被打开 renderer 认领的 task", async () => {
     const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_A]) });
@@ -266,7 +269,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
     } finally {
       router.close();
     }
-  });
+  }, T);
 
   test("Codex 唤醒失败返回 stored-only 与退出码 2，且已落盘消息不丢", async () => {
     const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_A]) });
@@ -293,7 +296,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
     } finally {
       router.close();
     }
-  });
+  }, T);
 
   test("Codex 唤醒结果未知返回退出码 3，且明确禁止重发", async () => {
     const router = fakeRouter({ startTurnWithoutId: true });
@@ -320,7 +323,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
     } finally {
       router.close();
     }
-  });
+  }, T);
 
   test("无效 Codex 短地址在消息落盘前失败", async () => {
     const router = fakeRouter();
@@ -343,7 +346,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
     } finally {
       router.close();
     }
-  });
+  }, T);
 
   test("source/target 不同 renderer 拒投（route-mismatch）", async () => {
     const router = fakeRouter({ ownerOf: (t) => (t === THREAD_B ? "renderer-1" : "renderer-2") });

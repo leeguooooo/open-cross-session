@@ -336,7 +336,13 @@ describe("resolveSelfName", () => {
   });
 
   test("Codex 会话直接使用宿主提供的 thread id，不再要求 --as", () => {
-    expect(resolveSelfName({ CODEX_THREAD_ID: THREAD.toUpperCase() })).toBe(THREAD);
+    // 必须把原生会话目录指到空目录：否则在 Claude 会话里跑这套测试时，
+    // findSelfClaudePid 会沿真实祖先链命中宿主会话并返回它的名字，
+    // CODEX_THREAD_ID 分支永远走不到（在开发机上稳定失败）。
+    expect(resolveSelfName({
+      CODEX_THREAD_ID: THREAD.toUpperCase(),
+      [CLAUDE_NATIVE_SESSIONS_DIR_ENV]: tempDir("ocs-no-sessions-"),
+    })).toBe(THREAD);
     expect(selfIdentity(THREAD)).toBe(`codex:${THREAD}`);
   });
 
