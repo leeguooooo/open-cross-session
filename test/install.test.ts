@@ -53,7 +53,7 @@ done
 printf '%s\\n' '#!/bin/sh' \\
   'case "$1" in' \\
   '  help) exit 0 ;;' \\
-  '  version) echo "ocs 0.4.1" ;;' \\
+  '  version) echo "ocs 0.4.2" ;;' \\
   '  skill) echo "$*" >> "$INSTALL_TEST_BINARY_LOG" ;;' \\
   'esac' > "$dest/ocs"
 chmod +x "$dest/ocs"
@@ -95,11 +95,11 @@ describe("curl installer skill setup", () => {
     expect(result.stderr).toBe("");
     expect(existsSync(join(f.installDir, "ocs"))).toBe(true);
     expect(readFileSync(f.npxLog, "utf8").trim()).toBe(
-      "-y skills@1.5.23 add https://github.com/leeguooooo/open-cross-session/tree/v0.4.1/skills/ocs " +
+      "-y skills@1.5.23 add https://github.com/leeguooooo/open-cross-session/tree/v0.4.2/skills/ocs " +
         "--skill ocs --global --agent claude-code --agent codex --agent pi --yes",
     );
     expect(readFileSync(f.binaryLog, "utf8").trim()).toBe("skill install");
-    expect(result.stdout).toContain("skill registered via skills CLI (source: v0.4.1)");
+    expect(result.stdout).toContain("skill registered via skills CLI (source: v0.4.2)");
   });
 
   test("skills CLI failure keeps the binary install and runs the embedded fallback", async () => {

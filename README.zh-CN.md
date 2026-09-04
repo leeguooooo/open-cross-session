@@ -97,13 +97,13 @@ Claude→Claude DM 的「回复」行优先使用发送方的唯一工作区别�
 | 目标 | 用法 | 前提 |
 |---|---|---|
 | 交互式 Claude Code 会话 | `@<会话名>` | 接收端在 `~/.claude/settings.json` 设 `"crossSessionInbound": "accept"`。默认值 `hold`：消息进待审队列，**5 分钟没人处理就被静默丢弃**。`ocs doctor` 会查这一项。 |
-| ChatGPT Desktop 任务 | `ocs dm codex-<8hex> …`、`@<thread-id>` 或 `--codex <thread-id>` | 任务要在 ChatGPT **Desktop 应用**里开着，且同一 renderer 下还有第二个打开的任务作消息来源（自动挑选，或 `--codex-source` 指定）。 |
+| ChatGPT Desktop 任务 | `ocs dm codex-<8hex> …`、`@<thread-id>` 或 `--codex <thread-id\|codex-8hex>` | 任务要在 ChatGPT **Desktop 应用**里开着，且同一 renderer 下还有第二个打开的任务作消息来源（自动挑选，或 `--codex-source` 指定）。 |
 | Pi TUI | `ocs dm pi-<8hex> …` 或 `@pi-<完整session-id>` | 先跑 `ocs skill install`，再重启 Pi。扩展会登记活着的 TUI；消息在 Pi 忙碌时排到当前任务结束后，不会打断这一轮。 |
 | cmux 里的 Claude/Codex TUI | `ocs dm surface:<n> …` | 可选能力。检测到 cmux 后，`ocs who` 会列出终端 surface，并可把唤醒 note 提交给空闲 surface；surface 忙碌时不会打扰。 |
 | 其他终端或 headless agent | `ocs read` / `ocs send` | 可以读写频道、保留历史和回复；如果所在 harness 没有受支持的载体，就不能被主动直投唤醒。 |
 | shell 前的人 | `ocs send` / `ocs read` / `ocs watch` | 不运行 agent 也能发消息、读取一次或持续旁观同一频道。 |
 
-送达语义按载体区分：Claude 目标发送成功，只代表帧到了对方收件箱 socket；`accept` 下进入对话，`hold` 下仍可能被丢。Pi 成功表示扩展已接收并排队。Desktop 或 Pi 的帧写出后若没收到响应，`ocs` 会报「结果未知」且不重发，避免重复投递。
+投递语义分两层：首行 `已落盘 #<channel> seq <n>` 只表示 append-only 日志提交成功，不代表已经唤醒。随后每个 wake 请求分别报告已接受、仅落盘或结果未知。退出码 2 表示消息已落盘但至少一次唤醒失败；退出码 3 表示已落盘且唤醒结果未知。两种情况都不要重发，应使用输出里的 channel/seq 查原消息。Claude 的“已投递收件箱”只代表帧到了 socket；`accept` 下进入对话，`hold` 下仍可能被丢。Pi 的“已排队”表示扩展已接收。
 
 Codex 侧，`ocs who` 只列当前被打开的 Desktop renderer 认领的 task；`ocs codex-sessions`
 只是 rollout 历史，不是在线状态。发给已关闭 task 的 DM 仍会写入 append-only 日志并明确标为停靠，
@@ -117,7 +117,7 @@ Codex 侧，`ocs who` 只列当前被打开的 Desktop renderer 认领的 task�
 | `ocs whoami` | 看自动识别出的发送者身份 |
 | `ocs dm <名字或id> <内容>` | 直发并唤醒一个 agent；唯一 Claude 工作区重启后继续使用同一频道。`--inherit <旧dm频道>` 一次性绑定 v0.3.4 前的历史；`--notify-when-idle` |
 | `ocs inbox` | 只列能安全归属给当前身份的未读线程；`--json` 供自动化使用 |
-| `ocs send <ch> <body>` | 追加消息，`@` 触发唤醒，`--reply-to <seq>` 同时唤醒那条的作者；`--as` 只用于覆盖自动身份。另支持 `--no-wake`、`--notify-when-idle`、`--codex`、`--codex-source` |
+| `ocs send <ch> <body>` | 追加消息，`@` 触发唤醒，`--reply-to <seq>` 同时唤醒那条的作者；`--as` 只用于覆盖自动身份。`--codex` 与 `--codex-source` 接受完整 thread ID，也接受 `ocs who` 给出的唯一 `codex-<8hex>` 短地址。另支持 `--no-wake`、`--notify-when-idle` |
 | `ocs read <ch>` | 从游标读新消息并推进。自己发的折叠成一行（`--include-self` 完整显示；`--json` 带 `self`）；`--as` 覆盖身份。另支持 `--since`、`--peek` |
 | `ocs notify-when-idle <名字>` | 一次性：那个 Claude 会话下次空闲或退出时，你的会话收到一条 `[跨会话空闲通知]`（已空闲则立即；6 小时后过期） |
 | `ocs sessions` | 列活着的 Claude Code 会话 |
@@ -164,6 +164,21 @@ v0.3.4 之前的历史可用 `--inherit` 绑定一次；工作区不唯一、旧
 诚实建议：claude↔claude 的快速直发用原生更顺——ocs 的 Claude 载体本来就骑在
 原生收件箱 socket 上。当对话跨厂商、超过两方、需要消息在一边离线时不丢、或要留
 可审计记录时，用 ocs。
+
+## 跨机器：保持 OCS 本地化
+
+OCS 刻意不提供公网监听、远程 shell、凭据存储或通用任务执行器。需要托管的跨机器协作时用 Agent Party。两台个人机器已有免密 SSH 时，继续由用户的 SSH config 负责认证与 host key 校验，控制端直接调用目标机器上的本地工具：
+
+```bash
+ssh workbox ocs who --verbose
+ssh workbox ocs dm codex-<8hex> "检查当前失败"
+
+# 远端 agent/runtime 管理属于 Herdr，不在 OCS 重造。
+ssh workbox herdr agent list
+ssh workbox herdr agent prompt reviewer "跑测试并总结失败" --wait --timeout 120000
+```
+
+SSH 免密方向决定角色。如果只有机器 B 能连接机器 A，那么 B 就是控制端，A 就是 `workbox`；不需要反向登录或新增 OCS adapter。面向人的指令应给远端 agent 带上 SSH 主机命名空间（例如 `workbox/reviewer`），避免与本机同名 agent 混淆。
 
 ## 本地版与托管版
 

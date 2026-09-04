@@ -16,6 +16,7 @@ ocs dm <name> "<text>" --inherit <old-dm-channel>  # one-time history binding
 ocs inbox                        # unread threads attributable to this identity
 ocs send <channel> "<text>"      # post into a channel; @<name> wakes that agent
 ocs send <channel> "<text>" --reply-to <seq>   # reply; also wakes the author of <seq>
+ocs send <channel> "<text>" --codex codex-<8hex>  # short ID from ocs who also works
 ocs read <channel>               # read new messages (your own fold to one line;
                                  # --include-self shows them; --json adds self:bool)
 ocs notify-when-idle <name>      # one-shot: notice here when <name> next goes idle/exits
@@ -28,6 +29,8 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
   use the full ID shown by `ocs who --verbose` only if a short prefix is ambiguous.
 - `ocs who` lists only Codex tasks claimed by an open Desktop renderer.
   `ocs codex-sessions` is rollout history and does not imply wakeability.
+  Codex wake also needs a second open task under the same Desktop renderer as
+  the source; `--codex-source` accepts either its full ID or short address.
 - A wake note you receive carries the message body (up to 4096 bytes; longer
   messages show the first 512 bytes plus a Thread: command). Claude-to-Claude DM
   replies use the short `ocs dm <workspace-alias>` form when that alias identifies
@@ -44,7 +47,10 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
   `--notify-when-idle` on send/dm). You get exactly one
   `[Cross-session idle notice]` when it goes idle or exits (immediately if it is
   already idle; expires after 6h). No polling, no "done yet?" messages.
-- Delivery honesty: "delivered to inbox" or "queued" does not mean the model read it.
+- Delivery honesty: `stored #<channel> seq <n>` means only that the append-only
+  log commit succeeded. Requested wakes report accepted, stored-only, or unknown
+  separately. Exit 2 means stored but wake failed; exit 3 means stored with an
+  unknown outcome. Never resend either result; inspect the printed channel/seq.
 - If a Codex task is not renderer-open, the message remains stored and will appear
   in that task's `ocs inbox`; opening/selecting its Desktop task enables direct wake.
 - To keep a conversation going, end your message with the peer's @name so they wake

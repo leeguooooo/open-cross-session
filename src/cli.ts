@@ -77,7 +77,7 @@ import {
   wakeSessions,
 } from "./wake.ts";
 
-export const OCS_VERSION = "0.4.1";
+export const OCS_VERSION = "0.4.2";
 
 const LANG = detectLang();
 const M = messages(LANG);
@@ -193,6 +193,31 @@ function fail(message: string): never {
   process.exit(1);
 }
 
+type StoredDeliveryFailure = "failed" | "unknown";
+
+/**
+ * The channel append is already committed when wake delivery runs. Preserve
+ * that distinction in the process status so automation can stop without
+ * retrying the stored message.
+ */
+function markStoredDeliveryFailure(outcome: StoredDeliveryFailure): void {
+  const code = outcome === "unknown" ? 3 : 2;
+  process.exitCode = Math.max(Number(process.exitCode ?? 0), code);
+}
+
+/** Resolve the full UUID or the exact short address printed by `ocs who`. */
+function resolveCodexFlagAddress(flag: "codex" | "codex-source", value: string): string {
+  if (isCodexThreadId(value)) return value.toLowerCase();
+  const resolved = resolveDmTarget(value);
+  if (resolved?.ambiguousCodexTargets !== undefined) {
+    fail(M.dmCodexAmbiguous(value, resolved.ambiguousCodexTargets));
+  }
+  if (resolved?.kind === "codex-task" && resolved.threadId !== undefined) {
+    return resolved.threadId;
+  }
+  fail(M.failCodexAddress(flag, value));
+}
+
 function printMessage(m: { seq: number; ts: string; from: string; body: string }): void {
   console.log(`#${m.seq} ${m.ts} <${m.from}> ${m.body}`);
 }
@@ -235,6 +260,16 @@ async function cmdSend(parsed: Parsed): Promise<void> {
   const [channel, ...bodyParts] = parsed.positional;
   if (channel === undefined || bodyParts.length === 0) fail(M.failSendUsage);
   const from = senderName(parsed);
+  // Address syntax/ambiguity is validated before append: malformed flags must
+  // never create a message that could not possibly be delivered.
+  const codexFlagValue = parsed.flags.get("codex");
+  const codexFlag = typeof codexFlagValue === "string"
+    ? resolveCodexFlagAddress("codex", codexFlagValue)
+    : undefined;
+  const codexSourceValue = parsed.flags.get("codex-source");
+  const codexSource = typeof codexSourceValue === "string"
+    ? resolveCodexFlagAddress("codex-source", codexSourceValue)
+    : undefined;
   const replyTo = parsed.flags.get("reply-to");
   let replyToSeq: number | undefined;
   if (replyTo !== undefined) {
@@ -263,7 +298,7 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     body: bodyParts.join(" "),
     ...(replyToSeq !== undefined ? { reply_to: replyToSeq } : {}),
   });
-  console.log(M.sent(channel, message.seq));
+  console.log(M.stored(channel, message.seq));
 
   if (parsed.flags.has("no-wake")) return;
 
@@ -278,12 +313,10 @@ async function cmdSend(parsed: Parsed): Promise<void> {
   const { claudeNames, codexThreads, piTargets } = splitWakeMentions(wakeAddresses);
 
   // Codex 侧：--codex <thread-id> 或 @<thread-id>，走 ChatGPT Desktop 原生跨任务通信
-  const codexFlag = parsed.flags.get("codex");
-  const codexTargets = [
-    ...(typeof codexFlag === "string" ? [codexFlag] : []),
-    ...codexThreads.filter((t) => t !== codexFlag),
-  ];
-  const codexSource = parsed.flags.get("codex-source");
+  const codexTargets = [...new Set([
+    ...(codexFlag !== undefined ? [codexFlag] : []),
+    ...codexThreads.map((thread) => thread.toLowerCase()).filter((thread) => thread !== codexFlag),
+  ])];
   const wakeInput = {
     channel,
     seq: message.seq,
@@ -295,7 +328,7 @@ async function cmdSend(parsed: Parsed): Promise<void> {
   for (const target of codexTargets) {
     const result = await wakeCodexTask({
       targetThreadId: target,
-      ...(typeof codexSource === "string" ? { sourceThreadId: codexSource } : {}),
+      ...(codexSource !== undefined ? { sourceThreadId: codexSource } : {}),
       ...wakeInput,
     });
     if (result.ok) {
@@ -303,8 +336,10 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     } else if (result.reason === "unknown-outcome") {
       // 上游铁律：帧已写出但结果未知——如实报告、绝不重放
       console.log(M.codexUnknownOutcome(result.detail ?? ""));
+      markStoredDeliveryFailure("unknown");
     } else {
       console.log(M.codexFailed(result.reason, result.detail ?? ""));
+      markStoredDeliveryFailure("failed");
     }
   }
 
@@ -317,10 +352,12 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     const resolved = resolveDmTarget(target);
     if (resolved?.ambiguousPiTargets !== undefined) {
       console.log(M.piWakeAmbiguous(target, resolved.ambiguousPiTargets));
+      markStoredDeliveryFailure("failed");
       continue;
     }
     if (resolved?.kind !== "pi" || resolved.piSession === undefined) {
       console.log(M.piWakeUnavailable(target));
+      markStoredDeliveryFailure("failed");
       continue;
     }
     const result = await wakePiSession(
@@ -330,8 +367,10 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     if (result.ok) console.log(M.piWakeAccepted(target));
     else if (result.reason === "unknown-outcome") {
       console.log(M.piWakeUnknownOutcome(target, result.detail ?? ""));
+      markStoredDeliveryFailure("unknown");
     } else {
       console.log(M.piWakeFailed(target, result.reason, result.detail ?? ""));
+      markStoredDeliveryFailure("failed");
     }
   }
 
@@ -347,9 +386,14 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     selfPids: selfPid === null ? [] : [selfPid],
     selfNames: [from],
   });
+  if (selection.targets.length > 0 && selection.unmatchedNames.length > 0) {
+    console.log(M.wakeNoMatch(selection.unmatchedNames.join(" @")));
+    markStoredDeliveryFailure("failed");
+  }
   if (selection.targets.length === 0) {
     const hint = selection.excludedSelf.length > 0 ? M.wakeSelfSkipped : "";
     console.log(`${M.wakeNoMatch(wakeNames.join(" @"))}${hint}`);
+    if (selection.unmatchedNames.length > 0) markStoredDeliveryFailure("failed");
     if (idleSubscriber !== null) subscribeIdle(idleSubscriber, []);
     return;
   }
@@ -360,6 +404,7 @@ async function cmdSend(parsed: Parsed): Promise<void> {
       console.log(M.wakeDelivered(target));
     } else {
       console.log(M.wakeFailed(target, outcome.result.reason));
+      markStoredDeliveryFailure("failed");
     }
   }
   if (idleSubscriber !== null) subscribeIdle(idleSubscriber, selection.targets);
@@ -497,13 +542,21 @@ async function cmdDm(parsed: Parsed): Promise<void> {
     });
     const label = `${resolved.claude.name ?? "?"}(pid ${resolved.claude.pid})`;
     if (outcome!.result.ok) console.log(M.wakeDelivered(label));
-    else console.log(M.wakeFailed(label, outcome!.result.reason));
+    else {
+      console.log(M.wakeFailed(label, outcome!.result.reason));
+      markStoredDeliveryFailure("failed");
+    }
     if (idleSubscriber !== null) subscribeIdle(idleSubscriber, [resolved.claude]);
   } else if (resolved.kind === "codex-task" && resolved.threadId !== undefined) {
     const result = await wakeCodexTask({ targetThreadId: resolved.threadId, ...wakeInput });
     if (result.ok) console.log(M.codexAccepted(result.targetThreadId, result.turnId));
-    else if (result.reason === "unknown-outcome") console.log(M.codexUnknownOutcome(result.detail ?? ""));
-    else console.log(M.codexFailed(result.reason, result.detail ?? ""));
+    else if (result.reason === "unknown-outcome") {
+      console.log(M.codexUnknownOutcome(result.detail ?? ""));
+      markStoredDeliveryFailure("unknown");
+    } else {
+      console.log(M.codexFailed(result.reason, result.detail ?? ""));
+      markStoredDeliveryFailure("failed");
+    }
     if (idleSubscriber !== null) subscribeIdle(idleSubscriber, []);
   } else if (resolved.kind === "pi" && resolved.piSessionId !== undefined) {
     if (resolved.piSession === undefined) {
@@ -518,16 +571,23 @@ async function cmdDm(parsed: Parsed): Promise<void> {
     if (result.ok) console.log(M.piWakeAccepted(resolved.name));
     else if (result.reason === "unknown-outcome") {
       console.log(M.piWakeUnknownOutcome(resolved.name, result.detail ?? ""));
+      markStoredDeliveryFailure("unknown");
     } else {
       console.log(M.piWakeFailed(resolved.name, result.reason, result.detail ?? ""));
+      markStoredDeliveryFailure("failed");
     }
     if (idleSubscriber !== null) subscribeIdle(idleSubscriber, []);
   } else if (resolved.kind === "cmux" && resolved.cmuxRef !== undefined) {
     // cmux surface 没有 ocs 名字：Reply:/Thread: 的 --as 用 dm 同款派生名 surface-N。
     const result = wakeCmuxSurface(resolved.cmuxRef, wakeNote({ ...wakeInput, receiver: resolved.name }));
     if (result.ok) console.log(M.dmCmuxWoken(result.ref));
-    else if (result.reason === "busy") console.log(M.dmCmuxBusy(resolved.cmuxRef));
-    else console.log(M.dmCmuxFailed(resolved.cmuxRef, result.detail ?? result.reason));
+    else if (result.reason === "busy") {
+      console.log(M.dmCmuxBusy(resolved.cmuxRef));
+      markStoredDeliveryFailure("failed");
+    } else {
+      console.log(M.dmCmuxFailed(resolved.cmuxRef, result.detail ?? result.reason));
+      markStoredDeliveryFailure("failed");
+    }
     if (idleSubscriber !== null) subscribeIdle(idleSubscriber, []);
   }
 }
@@ -883,6 +943,7 @@ ocs dm <name> "<text>" --inherit <old-dm-channel>  # one-time history binding
 ocs inbox                        # unread threads attributable to this identity
 ocs send <channel> "<text>"      # post into a channel; @<name> wakes that agent
 ocs send <channel> "<text>" --reply-to <seq>   # reply; also wakes the author of <seq>
+ocs send <channel> "<text>" --codex codex-<8hex>  # short ID from ocs who also works
 ocs read <channel>               # read new messages (your own fold to one line;
                                  # --include-self shows them; --json adds self:bool)
 ocs notify-when-idle <name>      # one-shot: notice here when <name> next goes idle/exits
@@ -895,6 +956,8 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
   use the full ID shown by \`ocs who --verbose\` only if a short prefix is ambiguous.
 - \`ocs who\` lists only Codex tasks claimed by an open Desktop renderer.
   \`ocs codex-sessions\` is rollout history and does not imply wakeability.
+  Codex wake also needs a second open task under the same Desktop renderer as
+  the source; \`--codex-source\` accepts either its full ID or short address.
 - A wake note you receive carries the message body (up to 4096 bytes; longer
   messages show the first 512 bytes plus a Thread: command). Claude-to-Claude DM
   replies use the short \`ocs dm <workspace-alias>\` form when that alias identifies
@@ -911,7 +974,10 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
   \`--notify-when-idle\` on send/dm). You get exactly one
   \`[Cross-session idle notice]\` when it goes idle or exits (immediately if it is
   already idle; expires after 6h). No polling, no "done yet?" messages.
-- Delivery honesty: "delivered to inbox" or "queued" does not mean the model read it.
+- Delivery honesty: \`stored #<channel> seq <n>\` means only that the append-only
+  log commit succeeded. Requested wakes report accepted, stored-only, or unknown
+  separately. Exit 2 means stored but wake failed; exit 3 means stored with an
+  unknown outcome. Never resend either result; inspect the printed channel/seq.
 - If a Codex task is not renderer-open, the message remains stored and will appear
   in that task's \`ocs inbox\`; opening/selecting its Desktop task enables direct wake.
 - To keep a conversation going, end your message with the peer's @name so they wake

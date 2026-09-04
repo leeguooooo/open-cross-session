@@ -104,13 +104,13 @@ The protocol is shared with Agent Party: [docs/wake-protocol.md](./docs/wake-pro
 | Target | How | Requirement |
 |---|---|---|
 | Interactive Claude Code session | `@<session name>` | Receiver sets `"crossSessionInbound": "accept"` in `~/.claude/settings.json`. The default is `hold`: the message waits for manual approval and is **silently dropped after 5 minutes**. `ocs doctor` checks this. |
-| ChatGPT Desktop task | `ocs dm codex-<8hex> …`, `@<thread-id>`, or `--codex <thread-id>` | The task must be open in the ChatGPT **Desktop app**, with a second open task under the same renderer as the message source (auto-picked, or `--codex-source`). |
+| ChatGPT Desktop task | `ocs dm codex-<8hex> …`, `@<thread-id>`, or `--codex <thread-id\|codex-8hex>` | The task must be open in the ChatGPT **Desktop app**, with a second open task under the same renderer as the message source (auto-picked, or `--codex-source`). |
 | Pi TUI | `ocs dm pi-<8hex> …` or `@pi-<full-session-id>` | Run `ocs skill install`, then restart Pi. The installed extension registers the live TUI and queues inbound messages as follow-ups, so a busy turn is not interrupted. |
 | Claude/Codex terminal TUI in cmux | `ocs dm surface:<n> …` | Optional: when cmux is detected, `ocs who` lists terminal surfaces and can submit the wake note to an idle surface. A busy surface is left untouched. |
 | Other terminal or headless agent | `ocs read` / `ocs send` | Full channel participation, persistence, and replies, but no unsolicited direct wake unless its harness exposes a supported carrier. |
 | Human at a shell | `ocs send` / `ocs read` / `ocs watch` | Can post, read once, or tail the same channels without running an agent. |
 
-Delivery honesty: for Claude targets, a successful send means the frame reached the target's inbox socket — with `accept` it enters the conversation; with `hold` it may still be dropped. Pi success means its extension accepted and queued the message. For Desktop and Pi, an unknown outcome after writing a frame is reported and **never retried**, avoiding double delivery.
+Delivery honesty: the first line says `stored #<channel> seq <n>` once the append-only log commit succeeds; it does not claim wake delivery. Each requested wake then reports accepted, stored-only, or unknown separately. Exit 2 means the message is stored but at least one wake failed; exit 3 means the message is stored and a wake outcome is unknown. In either case, do **not** resend: use the printed channel and seq to inspect the existing message. For Claude targets, accepted means the frame reached the target's inbox socket — with `accept` it enters the conversation; with `hold` it may still be dropped. Pi acceptance means its extension queued the message.
 
 For Codex, `ocs who` includes only tasks currently claimed by an open Desktop
 renderer. `ocs codex-sessions` is rollout history, not presence. A DM to a task
@@ -125,7 +125,7 @@ the target can recover it with `ocs inbox`, but it is not described as woken.
 | `ocs whoami` | Print the auto-detected sender identity |
 | `ocs dm <name-or-id> <text>` | Message + wake one agent; unique Claude workspaces keep one channel across restarts. `--inherit <old-dm-channel>` binds pre-v0.3.4 history once; `--notify-when-idle` |
 | `ocs inbox` | List unread threads that can be safely attributed to the current identity; `--json` for automation |
-| `ocs send <ch> <body>` | Append to a channel; `@` mentions wake, `--reply-to <seq>` also wakes that seq's author. `--as` is only an override. Also supports `--no-wake`, `--notify-when-idle`, `--codex`, `--codex-source` |
+| `ocs send <ch> <body>` | Append to a channel; `@` mentions wake, `--reply-to <seq>` also wakes that seq's author. `--as` is only an override. `--codex` and `--codex-source` accept a full thread ID or the unambiguous `codex-<8hex>` printed by `ocs who`. Also supports `--no-wake` and `--notify-when-idle` |
 | `ocs read <ch>` | Read new messages since your cursor, then advance it. Your own messages fold to one line (`--include-self` shows them; `--json` adds `self`). `--as` overrides identity; also supports `--since`, `--peek` |
 | `ocs notify-when-idle <name>` | One-shot: a `[Cross-session idle notice]` lands in your session when that Claude session next goes idle or exits (immediately if already idle; expires after 6h) |
 | `ocs sessions` | List live Claude Code sessions |
@@ -184,6 +184,27 @@ Honest guidance: for a quick claude↔claude direct message, native is smoother 
 ocs's Claude carrier literally rides on the native inbox socket. Use ocs when the
 conversation crosses vendors, needs more than two participants, needs messages to
 survive one side being offline, or should leave an auditable trail.
+
+## Cross-machine: keep OCS local
+
+OCS deliberately has no public listener, remote shell, credential store, or job
+runner. For hosted cross-machine coordination, use Agent Party. When two personal
+machines already have passwordless SSH, keep authentication and host-key checking
+in the user's SSH config and invoke the target machine's local tools directly:
+
+```bash
+ssh workbox ocs who --verbose
+ssh workbox ocs dm codex-<8hex> "review the current failure"
+
+# Remote agent/runtime control remains Herdr's job, not OCS's.
+ssh workbox herdr agent list
+ssh workbox herdr agent prompt reviewer "run tests and summarize failures" --wait --timeout 120000
+```
+
+The SSH direction determines the roles. If only machine B can connect to machine
+A, then B is the controller and A is `workbox`; no reverse login or OCS adapter is
+needed. Prefix remote targets with the SSH host in human-facing instructions (for
+example `workbox/reviewer`) so they cannot be confused with same-named local agents.
 
 ## Local vs hosted
 
