@@ -14,7 +14,7 @@ export function detectLang(env: NodeJS.ProcessEnv = process.env): Lang {
 
 interface Catalog {
   help: string;
-  sent: (channel: string, seq: number) => string;
+  stored: (channel: string, seq: number) => string;
   wakeNoMatch: (names: string) => string;
   wakeSelfSkipped: string;
   wakeDelivered: (target: string) => string;
@@ -130,6 +130,7 @@ interface Catalog {
   failNoSelfName: string;
   failName: (name: string) => string;
   failFlagRequired: (flag: string) => string;
+  failCodexAddress: (flag: string, value: string) => string;
   failMissingValue: (flag: string) => string;
   failUnknownFlag: (flag: string) => string;
   failExtraArgs: (args: string) => string;
@@ -149,11 +150,15 @@ Usage:
   ocs inbox [--as <name>] [--json]
       List unread threads attributable to this identity; reading still uses the existing ocs read command.
   ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake]
-           [--notify-when-idle] [--codex <thread-id>] [--codex-source <thread-id>]
+           [--notify-when-idle] [--codex <thread-id|codex-8hex>]
+           [--codex-source <thread-id|codex-8hex>]
       Append to a channel. @<session-name> wakes a live Claude session;
       @pi-<session-id> wakes Pi; @<thread-id> or --codex targets ChatGPT Desktop.
       --reply-to <seq> also wakes the author of that seq.
       The wake note carries the body (≤4096 bytes) and a copy-paste Reply: line.
+      Codex wake needs the target open plus a second open task owned by the same Desktop renderer.
+      Exit 2 = stored but wake failed; exit 3 = stored and outcome unknown. Do not resend either:
+      the stored #channel/seq is the correlation key.
   ocs read <channel> [--as <name>] [--since <seq>] [--json] [--peek] [--include-self]
       Read new messages since your cursor, then advance it (--peek: don't).
       Your own messages fold to one line unless --include-self.
@@ -178,11 +183,12 @@ Usage:
 
 --as is optional inside Claude, Codex, and Pi sessions (auto-detected; OCS_NAME also works).
 Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
-  sent: (channel, seq) => `sent #${channel} seq ${seq}`,
+  stored: (channel, seq) => `stored #${channel} seq ${seq}`,
   wakeNoMatch: (names) => `wake: no live Claude session matches @${names}`,
   wakeSelfSkipped: " (you mentioned yourself; skipped)",
   wakeDelivered: (target) => `wake: delivered to inbox → ${target}`,
-  wakeFailed: (target, reason) => `wake: failed → ${target}: ${reason}`,
+  wakeFailed: (target, reason) =>
+    `wake: stored-only → ${target}: ${reason} (message is already stored; do not resend)`,
   wakeNoteHeader: ({ sender, channel, seq, replyTo, ago }) => {
     const parts = [`seq ${seq}`];
     if (replyTo !== undefined) parts.push(`reply to seq ${replyTo}`);
@@ -212,12 +218,13 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
     `  ${target} → notify ${subscriber} when idle  (expires in ${expiresIn}, id ${id})`,
   codexAccepted: (thread, turnId) => `wake(codex): turn accepted → task ${thread} (turnId ${turnId})`,
   codexUnknownOutcome: (detail) => `wake(codex): outcome unknown (frame was written — do NOT resend): ${detail}`,
-  codexFailed: (reason, detail) => `wake(codex): failed (${reason})${detail ? `: ${detail}` : ""}`,
+  codexFailed: (reason, detail) =>
+    `wake(codex): stored-only (${reason})${detail ? `: ${detail}` : ""} (message is already stored; do not resend)`,
   piWakeAccepted: (target) => `wake(pi): queued → ${target}`,
   piWakeUnknownOutcome: (target, detail) =>
     `wake(pi): outcome unknown for ${target} (frame was written — do NOT resend)${detail ? `: ${detail}` : ""}`,
   piWakeFailed: (target, reason, detail) =>
-    `wake(pi): failed → ${target} (${reason})${detail ? `: ${detail}` : ""}`,
+    `wake(pi): stored-only → ${target} (${reason})${detail ? `: ${detail}` : ""} (message is already stored; do not resend)`,
   piWakeUnavailable: (target) =>
     `wake(pi): ${target} is not a live registered Pi TUI — run \`ocs skill install\`, then restart Pi`,
   piWakeSelfSkipped: (target) => `wake(pi): ${target} is this Pi session; skipped`,
@@ -306,7 +313,7 @@ Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-m
   whoCurrentProject: "  [this project]",
   whoEmpty: "no reachable agents found — open a Claude Code, Codex, or Pi session",
   whoCmuxHint: "cmux not detected: terminal TUIs are not listed (they can still join channels themselves)",
-  dmSent: (target, channel, seq) => `dm → ${target} (channel ${channel}, seq ${seq})`,
+  dmSent: (target, channel, seq) => `dm stored → ${target} (channel ${channel}, seq ${seq})`,
   dmWorkspaceResolved: (requested, current, alias) =>
     `resolved ${requested} → ${current} via unique workspace alias ${alias}`,
   dmWorkspaceAmbiguous: (target, names) =>
@@ -338,6 +345,8 @@ Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-m
     "cannot infer sender name (not inside a registered Claude/Codex/Pi session). Pass --as <name> or export OCS_NAME",
   failName: (name) => `invalid name: ${name}`,
   failFlagRequired: (flag) => `--${flag} <value> is required`,
+  failCodexAddress: (flag, value) =>
+    `--${flag} must be a full thread id or an unambiguous codex-<8hex> address from \`ocs who\`: ${value}`,
   failMissingValue: (flag) => `--${flag} requires a value`,
   failUnknownFlag: (flag) => `unknown flag: --${flag}`,
   failExtraArgs: (args) => `unexpected extra arguments: ${args}`,
@@ -357,11 +366,15 @@ const zh: Catalog = {
   ocs inbox [--as <name>] [--json]
       列出能可靠归属给当前身份的未读线程；读取仍复用现有 ocs read 命令
   ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake]
-           [--notify-when-idle] [--codex <thread-id>] [--codex-source <thread-id>]
+           [--notify-when-idle] [--codex <thread-id|codex-8hex>]
+           [--codex-source <thread-id|codex-8hex>]
       往频道追加消息；@<会话名> 唤醒活 Claude 会话，@pi-<session-id>
       唤醒 Pi；@<thread-id> 或 --codex 投给 ChatGPT Desktop 任务
       --reply-to <seq> 同时唤醒那条消息的作者
       唤醒 note 直接带正文（≤4096 字节）和一行可直接复制的回复命令
+      Codex 唤醒要求目标 task 已打开，并且同一 Desktop renderer 下另有一个已打开的 source task
+      退出码 2 = 消息已落盘但唤醒失败；退出码 3 = 已落盘且结果未知。两者都不要重发：
+      已落盘的 #channel/seq 就是追查键
   ocs read <channel> [--as <name>] [--since <seq>] [--json] [--peek] [--include-self]
       从上次游标读新消息并推进游标；--peek 只读不推进
       自己发的消息默认折叠成一行，--include-self 完整显示
@@ -386,11 +399,11 @@ const zh: Catalog = {
 
 在 Claude、Codex、Pi 会话里 --as 可省略（自动识别；OCS_NAME 也行）。
 数据目录: ~/.ocs（OCS_HOME 可覆盖）。语言: OCS_LANG=en|zh。`,
-  sent: (channel, seq) => `已发送 #${channel} seq ${seq}`,
+  stored: (channel, seq) => `已落盘 #${channel} seq ${seq}`,
   wakeNoMatch: (names) => `wake: 没有匹配 @${names} 的活 Claude 会话`,
   wakeSelfSkipped: "（@ 到了自己，已跳过）",
   wakeDelivered: (target) => `wake: 已投递收件箱 → ${target}`,
-  wakeFailed: (target, reason) => `wake: 失败 → ${target}: ${reason}`,
+  wakeFailed: (target, reason) => `wake: 仅落盘 → ${target}: ${reason}（消息已经落盘，请勿重发）`,
   wakeNoteHeader: ({ sender, channel, seq, replyTo, ago }) => {
     const parts = [`seq ${seq}`];
     if (replyTo !== undefined) parts.push(`回复 seq ${replyTo}`);
@@ -415,12 +428,13 @@ const zh: Catalog = {
     `  ${target} 空闲时通知 ${subscriber}  （${expiresIn} 后过期，id ${id}）`,
   codexAccepted: (thread, turnId) => `wake(codex): turn 已接受 → task ${thread}（turnId ${turnId}）`,
   codexUnknownOutcome: (detail) => `wake(codex): 结果未知（帧已写出，勿重发）: ${detail}`,
-  codexFailed: (reason, detail) => `wake(codex): 失败（${reason}）${detail ? `: ${detail}` : ""}`,
+  codexFailed: (reason, detail) =>
+    `wake(codex): 仅落盘（${reason}）${detail ? `: ${detail}` : ""}（消息已经落盘，请勿重发）`,
   piWakeAccepted: (target) => `wake(pi): 已排队 → ${target}`,
   piWakeUnknownOutcome: (target, detail) =>
     `wake(pi): ${target} 结果未知（帧已写出，勿重发）${detail ? `: ${detail}` : ""}`,
   piWakeFailed: (target, reason, detail) =>
-    `wake(pi): 失败 → ${target}（${reason}）${detail ? `: ${detail}` : ""}`,
+    `wake(pi): 仅落盘 → ${target}（${reason}）${detail ? `: ${detail}` : ""}（消息已经落盘，请勿重发）`,
   piWakeUnavailable: (target) =>
     `wake(pi): ${target} 不是已登记的活 Pi TUI——先跑 \`ocs skill install\`，再重启 Pi`,
   piWakeSelfSkipped: (target) => `wake(pi): ${target} 是当前 Pi 会话，已跳过`,
@@ -506,7 +520,7 @@ const zh: Catalog = {
   whoCurrentProject: "  [当前项目]",
   whoEmpty: "没发现可达的 agent——开一个 Claude Code、Codex 或 Pi 会话",
   whoCmuxHint: "cmux 未检测到：终端 TUI 不在列表里（它们仍可自己进频道）",
-  dmSent: (target, channel, seq) => `dm → ${target}（频道 ${channel}，seq ${seq}）`,
+  dmSent: (target, channel, seq) => `dm 已落盘 → ${target}（频道 ${channel}，seq ${seq}）`,
   dmWorkspaceResolved: (requested, current, alias) =>
     `通过唯一工作区别名 ${alias} 解析 ${requested} → ${current}`,
   dmWorkspaceAmbiguous: (target, names) =>
@@ -533,6 +547,8 @@ const zh: Catalog = {
   failNoSelfName: "推断不出发送者名字（不在已登记的 Claude/Codex/Pi 会话里）。用 --as <name> 或 export OCS_NAME",
   failName: (name) => `名字不合法: ${name}`,
   failFlagRequired: (flag) => `--${flag} <value> 是必填项`,
+  failCodexAddress: (flag, value) =>
+    `--${flag} 必须是完整 thread id，或 \`ocs who\` 给出的唯一 codex-<8hex> 短地址：${value}`,
   failMissingValue: (flag) => `--${flag} 后面必须带值`,
   failUnknownFlag: (flag) => `未知参数: --${flag}`,
   failExtraArgs: (args) => `多余的参数: ${args}`,

@@ -470,7 +470,7 @@ describe("notify-when-idle（#5）端到端：真脱离终端的 watcher", () =>
       f.setPeer("idle");
       const r = await run(f, ["send", "chat", "do it @worker-a", "--as", "tester", "--notify-when-idle"]);
       expect(r.code).toBe(0);
-      expect(r.stdout).toContain("sent #chat seq 1");
+      expect(r.stdout).toContain("stored #chat seq 1");
       expect(r.stdout).toContain("wake: delivered to inbox → worker-a");
       expect(r.stdout).toContain("notify-when-idle: subscribed → worker-a");
       expect(r.stdout).toContain("already idle");

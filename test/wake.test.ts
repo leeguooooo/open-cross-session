@@ -207,10 +207,12 @@ describe("listNativeSessions / selectWakeTargets", () => {
 
       const hit = selectWakeTargets(["worker-a", "ghost"], { env: f.env });
       expect(hit.targets.map((s) => s.name)).toEqual(["worker-a"]);
+      expect(hit.unmatchedNames).toEqual(["ghost"]);
 
       const excluded = selectWakeTargets(["worker-a"], { selfPids: [process.pid], env: f.env });
       expect(excluded.targets).toEqual([]);
       expect(excluded.excludedSelf).toEqual([process.pid]);
+      expect(excluded.unmatchedNames).toEqual([]);
     } finally {
       f.server.close();
     }

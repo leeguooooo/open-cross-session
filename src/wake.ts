@@ -139,6 +139,8 @@ export interface WakeTargetSelection {
   targets: NativeClaudeSession[];
   /** 被排除的自身会话 pid（防自我唤醒回环）。 */
   excludedSelf: number[];
+  /** 没有任何精确名或唯一工作区别名命中的 mention。 */
+  unmatchedNames: string[];
 }
 
 /**
@@ -256,14 +258,19 @@ export function selectWakeTargets(
   const wanted = new Set(mentions);
   const sessions = listNativeSessions(options.env).filter((session) => session.name !== null);
   const selectedPids = new Set<number>();
+  const matchedNames = new Set<string>();
   for (const mention of wanted) {
     const exact = sessions.filter((session) => session.name === mention);
     if (exact.length > 0) {
+      matchedNames.add(mention);
       for (const session of exact) selectedPids.add(session.pid);
       continue;
     }
     const aliases = sessions.filter((session) => claudeWorkspaceTargetMatches(session, mention));
-    if (aliases.length === 1) selectedPids.add(aliases[0]!.pid);
+    if (aliases.length === 1) {
+      matchedNames.add(mention);
+      selectedPids.add(aliases[0]!.pid);
+    }
   }
   const targets: NativeClaudeSession[] = [];
   const excludedSelf: number[] = [];
@@ -275,7 +282,11 @@ export function selectWakeTargets(
     }
     targets.push(session);
   }
-  return { targets, excludedSelf };
+  return {
+    targets,
+    excludedSelf,
+    unmatchedNames: [...wanted].filter((mention) => !matchedNames.has(mention)),
+  };
 }
 
 export interface WakeOutcome {

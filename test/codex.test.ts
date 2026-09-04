@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexSessionsRoot, listCodexSessions } from "../src/codex-sessions.ts";
 import { discoverCodexDesktopOwners } from "../src/codex-ipc.ts";
+import { readMessages } from "../src/store.ts";
 import { pickCodexSourceThread, splitWakeMentions, wakeCodexTask } from "../src/wake.ts";
 import { autoCleanupTempDirs, tempDir } from "./tmp";
 
@@ -83,6 +84,7 @@ function fakeRouter(
     ownerOf?: (threadId: string) => string;
     withThreadC?: boolean;
     ignoreOwnerFor?: ReadonlySet<string>;
+    startTurnWithoutId?: boolean;
   } = {},
 ): FakeRouter {
   const codexHome = rolloutFixture({ withThreadC: options.withThreadC ?? false }).CODEX_HOME!;
@@ -113,7 +115,13 @@ function fakeRouter(
           reply({ handledByClientId: ownerOf(params.conversationId as string) });
         } else if (message.method === "thread-follower-start-turn") {
           startTurnRequests.push(params);
-          reply({ result: { result: { turn: { id: "turn-42" } } } });
+          reply({
+            result: {
+              result: {
+                turn: options.startTurnWithoutId ? {} : { id: "turn-42" },
+              },
+            },
+          });
         }
       }
     });
@@ -227,6 +235,107 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
       expect(String(toolOutput.output)).toContain("#dev");
       expect(String(toolOutput.output)).toContain("seq 9");
       expect(String(toolOutput.output)).toContain(THREAD_A); // source 钉进 envelope
+    } finally {
+      router.close();
+    }
+  });
+
+  test("send 的 --codex / --codex-source 直接接受 who 展示的短地址", async () => {
+    const router = fakeRouter();
+    try {
+      const result = await runCli(router, [
+        "send",
+        "dev",
+        "hello codex",
+        "--as",
+        "alice",
+        "--codex",
+        "codex-bbbbbbbb",
+        "--codex-source",
+        "codex-aaaaaaaa",
+      ]);
+
+      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(result.stdout).toContain("stored #dev seq 1");
+      expect(result.stdout).toContain(`turn accepted → task ${THREAD_B}`);
+      expect(router.startTurnRequests.length).toBe(1);
+    } finally {
+      router.close();
+    }
+  });
+
+  test("Codex 唤醒失败返回 stored-only 与退出码 2，且已落盘消息不丢", async () => {
+    const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_A]) });
+    const home = tempDir("ocs-codex-stored-only-");
+    try {
+      const result = await runCli(router, [
+        "send",
+        "dev",
+        "persist once",
+        "--as",
+        "alice",
+        "--codex",
+        "codex-bbbbbbbb",
+      ], { OCS_HOME: home });
+
+      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 2, stderr: "" });
+      expect(result.stdout).toContain("stored #dev seq 1");
+      expect(result.stdout).toContain("wake(codex): stored-only (no-source)");
+      expect(result.stdout).toContain("message is already stored; do not resend");
+      expect(readMessages("dev", { env: { OCS_HOME: home } })).toMatchObject([
+        { seq: 1, from: "alice", body: "persist once" },
+      ]);
+      expect(router.startTurnRequests).toEqual([]);
+    } finally {
+      router.close();
+    }
+  });
+
+  test("Codex 唤醒结果未知返回退出码 3，且明确禁止重发", async () => {
+    const router = fakeRouter({ startTurnWithoutId: true });
+    const home = tempDir("ocs-codex-unknown-outcome-");
+    try {
+      const result = await runCli(router, [
+        "send",
+        "dev",
+        "persist exactly once",
+        "--as",
+        "alice",
+        "--codex",
+        "codex-bbbbbbbb",
+        "--codex-source",
+        "codex-aaaaaaaa",
+      ], { OCS_HOME: home });
+
+      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 3, stderr: "" });
+      expect(result.stdout).toContain("stored #dev seq 1");
+      expect(result.stdout).toContain("wake(codex): outcome unknown");
+      expect(result.stdout).toContain("do NOT resend");
+      expect(readMessages("dev", { env: { OCS_HOME: home } })).toHaveLength(1);
+      expect(router.startTurnRequests).toHaveLength(1);
+    } finally {
+      router.close();
+    }
+  });
+
+  test("无效 Codex 短地址在消息落盘前失败", async () => {
+    const router = fakeRouter();
+    const home = tempDir("ocs-codex-invalid-short-");
+    try {
+      const result = await runCli(router, [
+        "send",
+        "dev",
+        "must not persist",
+        "--as",
+        "alice",
+        "--codex",
+        "codex-deadbeef",
+      ], { OCS_HOME: home });
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("must be a full thread id or an unambiguous codex-<8hex>");
+      expect(result.stdout).toBe("");
+      expect(readMessages("dev", { env: { OCS_HOME: home } })).toEqual([]);
     } finally {
       router.close();
     }

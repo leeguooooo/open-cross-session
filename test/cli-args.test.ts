@@ -29,11 +29,11 @@ function runCli(args: string[]): { code: number; stderr: string; stdout: string 
 }
 
 describe("命令级参数 schema", () => {
-  test("--codex 缺值：报错退出，绝不打印 sent", () => {
+  test("--codex 缺值：报错退出，绝不打印 stored", () => {
     const r = runCli(["send", "chat", "hello", "--as", "a", "--codex"]);
     expect(r.code).toBe(1);
     expect(r.stderr).toContain("--codex requires a value");
-    expect(r.stdout).not.toContain("sent");
+    expect(r.stdout).not.toContain("stored");
   });
 
   test("未知 flag 报错", () => {
@@ -51,7 +51,7 @@ describe("命令级参数 schema", () => {
   test("合法 send 正常走通", () => {
     const r = runCli(["send", "chat", "hello world", "--as", "a", "--no-wake"]);
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("sent #chat seq 1");
+    expect(r.stdout).toContain("stored #chat seq 1");
   });
 
   test("常见的 --help 与 who --json 都是有效命令", () => {

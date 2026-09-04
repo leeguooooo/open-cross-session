@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.2
+
+- 发送输出明确区分 `stored` 与 wake 结果；唤醒失败返回退出码 2、结果未知返回退出码 3，并提醒消息已落盘、不可重发
+- `send --codex` 与 `--codex-source` 直接接受 `ocs who` 展示的 `codex-<8hex>` 短地址；无效或歧义地址在消息落盘前失败
+- CLI help、README 与安装 skill 补齐 ChatGPT Desktop 的第二个同 renderer source task 前置条件
+- 明确跨机器边界：托管协作用 Agent Party；已有免密 SSH 时由控制端直接调用 workbox 上的本地 OCS/Herdr，不在 OCS 增加远程 runtime
+- 测试临时目录统一按用例清理，删除失败会保留路径重试并使测试可见地失败；全量测试不再净增 `ocs-*` 残留
+
 ## v0.4.1
 
 - Codex roster 只展示被 ChatGPT Desktop renderer 实际认领的 open task，不再把本地 rollout 历史误报成可达
