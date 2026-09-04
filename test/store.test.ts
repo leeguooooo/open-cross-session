@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, unlinkSync } from "node:fs";
+import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { autoCleanupTempDirs, tempDir } from "./tmp";
+
+autoCleanupTempDirs();
 import {
   appendDmMessage,
   appendMessage,
@@ -16,7 +19,7 @@ import {
 } from "../src/store.ts";
 
 function freshEnv(): NodeJS.ProcessEnv {
-  return { [OCS_HOME_ENV]: mkdtempSync(join(tmpdir(), "ocs-store-")) };
+  return { [OCS_HOME_ENV]: tempDir("ocs-store-") };
 }
 
 describe("stable DM channel bindings (#10)", () => {

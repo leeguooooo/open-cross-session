@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexSessionsRoot, listCodexSessions } from "../src/codex-sessions.ts";
 import { discoverCodexDesktopOwners } from "../src/codex-ipc.ts";
 import { pickCodexSourceThread, splitWakeMentions, wakeCodexTask } from "../src/wake.ts";
+import { autoCleanupTempDirs, tempDir } from "./tmp";
+
+autoCleanupTempDirs();
 
 const THREAD_A = "aaaaaaaa-1111-2222-3333-444444444444";
 const THREAD_B = "bbbbbbbb-1111-2222-3333-444444444444";
@@ -13,7 +16,7 @@ const THREAD_C = "cccccccc-1111-2222-3333-444444444444";
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 
 function rolloutFixture(options: { withThreadC?: boolean } = {}): NodeJS.ProcessEnv {
-  const codexHome = mkdtempSync(join(tmpdir(), "ocs-codex-"));
+  const codexHome = tempDir("ocs-codex-");
   const day = join(codexHome, "sessions", "2026", "08", "31");
   mkdirSync(day, { recursive: true });
   const meta = (cwd: string) =>
@@ -41,7 +44,7 @@ describe("codex-sessions（rollout 发现）", () => {
     const env = rolloutFixture();
     expect(pickCodexSourceThread(THREAD_B, env)).toBe(THREAD_A);
     expect(pickCodexSourceThread(THREAD_A, env)).toBe(THREAD_B);
-    expect(pickCodexSourceThread(THREAD_A, { CODEX_HOME: mkdtempSync(join(tmpdir(), "ocs-empty-")) })).toBeNull();
+    expect(pickCodexSourceThread(THREAD_A, { CODEX_HOME: tempDir("ocs-empty-") })).toBeNull();
   });
 });
 
@@ -128,7 +131,7 @@ async function runCli(
   const env = {
     ...process.env,
     ...router.env,
-    OCS_HOME: mkdtempSync(join(tmpdir(), "ocs-codex-cli-")),
+    OCS_HOME: tempDir("ocs-codex-cli-"),
     OCS_LANG: "en",
     ...extraEnv,
   } as Record<string, string>;
@@ -341,7 +344,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
       body: "hello codex",
       seq: 1,
       from: "a",
-      env: { CODEX_HOME: mkdtempSync(join(tmpdir(), "ocs-noipc-")) },
+      env: { CODEX_HOME: tempDir("ocs-noipc-") },
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("unavailable");

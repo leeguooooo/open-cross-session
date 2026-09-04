@@ -9,13 +9,16 @@ import {
   type InboxIdentityContext,
 } from "../src/inbox.ts";
 import { appendMessage, readRoutedMessages, saveCursor } from "../src/store.ts";
+import { autoCleanupTempDirs, tempDir } from "./tmp";
+
+autoCleanupTempDirs();
 
 const ALICE = `workspace:${"a".repeat(64)}`;
 const BOB = `workspace:${"b".repeat(64)}`;
 const MALLORY = `workspace:${"c".repeat(64)}`;
 
 function fixture(): { env: NodeJS.ProcessEnv; bob: InboxIdentityContext } {
-  const home = mkdtempSync(join(tmpdir(), "ocs-inbox-"));
+  const home = tempDir("ocs-inbox-");
   return {
     env: { OCS_HOME: home },
     bob: {

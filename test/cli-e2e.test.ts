@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLAUDE_NATIVE_SESSIONS_DIR_ENV } from "../src/claude-inject.ts";
 import { IDLE_POLL_MS_ENV } from "../src/idle.ts";
 import { appendMessage, loadCursor, readMessages, readRoutedMessages, OCS_HOME_ENV } from "../src/store.ts";
+import { autoCleanupTempDirs, tempDir } from "./tmp";
+
+autoCleanupTempDirs();
 
 // 真 CLI 进程 + 真 UDS + 真脱离终端的 watcher。
 // 订阅方/发送方会话 = 本测试进程（CLI 的祖先，findSelfClaudePid 命中，名 tester）；
@@ -29,7 +32,7 @@ interface Fixture {
 }
 
 function fixture(options: { withSelf?: boolean; selfCwd?: string; peerCwd?: string } = {}): Fixture {
-  const dir = mkdtempSync(join(tmpdir(), "ocs-e2e-"));
+  const dir = tempDir("ocs-e2e-");
   const sessionsDir = join(dir, "sessions");
   mkdirSync(sessionsDir, { mode: 0o700 });
   const sockPath = join(dir, "inbox.sock");
