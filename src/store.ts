@@ -15,7 +15,7 @@
 // 认领——unlink 式抢占有双抢竞态（两个等待者都 unlink，第二个 unlink 掉的是首位
 // 抢占成功者刚建的新锁，结果双持锁 → seq 重复 → 同样的永久遮蔽）。
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   linkSync,
@@ -382,6 +382,7 @@ interface DmChannelBinding {
   v: 1;
   stable_channel: string;
   channel: string;
+  inherited_from?: string;
   created_at: string;
 }
 
@@ -422,17 +423,131 @@ function readDmBinding(stableChannel: string, env?: NodeJS.ProcessEnv): DmChanne
     throw new Error(`invalid DM binding: ${path}`);
   }
   const binding = value as Record<string, unknown>;
-  const keys = Object.keys(binding).sort();
+  const keys = Object.keys(binding).sort().join(",");
   if (
-    keys.join(",") !== "channel,created_at,stable_channel,v" ||
+    keys !== "channel,created_at,stable_channel,v" &&
+    keys !== "channel,created_at,inherited_from,stable_channel,v"
+  ) throw new Error(`invalid DM binding: ${path}`);
+  if (
     binding.v !== 1 ||
     binding.stable_channel !== stableChannel ||
     typeof binding.channel !== "string" ||
     !CHANNEL_RE.test(binding.channel) ||
     !binding.channel.startsWith("dm-") ||
+    (binding.inherited_from !== undefined &&
+      (typeof binding.inherited_from !== "string" ||
+        !CHANNEL_RE.test(binding.inherited_from) ||
+        !binding.inherited_from.startsWith("dm-"))) ||
     typeof binding.created_at !== "string"
   ) throw new Error(`invalid DM binding: ${path}`);
   return binding as unknown as DmChannelBinding;
+}
+
+function legacyNameMatches(name: string, alias: string): boolean {
+  if (name === alias) return true;
+  const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^${escaped}-[0-9a-f]{2}$`, "i").test(name);
+}
+
+function validateDmParticipants(
+  channel: string,
+  messages: readonly OcsMessage[],
+  aliases: readonly [string, string],
+  requireBoth = true,
+): void {
+  if (messages.length === 0) throw new Error(`inherited DM channel ${channel} is missing or empty`);
+  const participants = new Set(messages.map((message) => message.from));
+  if (requireBoth) {
+    for (const alias of aliases) {
+      if (![...participants].some((name) => legacyNameMatches(name, alias))) {
+        throw new Error(`inherited DM channel ${channel} has no messages from workspace ${alias}`);
+      }
+    }
+  }
+  const unexpected = [...participants].filter((name) =>
+    !aliases.some((alias) => legacyNameMatches(name, alias))
+  );
+  if (unexpected.length > 0) {
+    throw new Error(`inherited DM channel ${channel} contains unexpected participants: ${unexpected.join(", ")}`);
+  }
+}
+
+function mergedDmChannel(stableChannel: string, inheritedChannel: string, payload: string): string {
+  const hash = createHash("sha256")
+    .update(`${stableChannel}\u0000${inheritedChannel}\u0000${payload}`)
+    .digest("hex")
+    .slice(0, 40);
+  return `dm-${hash}--merged-history`;
+}
+
+function resequence(messages: readonly OcsMessage[], firstSeq: number): OcsMessage[] {
+  const seqs = new Map(messages.map((message, index) => [message.seq, firstSeq + index]));
+  return messages.map((message, index) => {
+    const replyTo = message.reply_to === undefined ? undefined : seqs.get(message.reply_to);
+    return {
+      ...message,
+      seq: firstSeq + index,
+      ...(replyTo === undefined ? { reply_to: undefined } : { reply_to: replyTo }),
+    };
+  });
+}
+
+/**
+ * 旧频道和新稳定频道都已有消息时，不覆盖任何一边。把两份快照写入确定性合并频道，
+ * 旧历史在前、新历史在后，reply_to 只在各自原频道内重映射。合并频道名包含快照内容摘要：
+ * 崩溃后源频道又有追加时，重试会生成新快照，不会被上次未绑定的文件永久卡住。
+ */
+function materializeMergedDmChannel(
+  stableChannel: string,
+  inheritedChannel: string,
+  aliases: readonly [string, string],
+  env?: NodeJS.ProcessEnv,
+): string {
+  const channels = [...new Set([stableChannel, inheritedChannel])].sort();
+  const unlocks: Array<() => void> = [];
+  try {
+    for (const channel of channels) {
+      unlocks.push(acquireLock(join(channelsDir(env), `${channel}.lock`), env ?? process.env));
+    }
+    const inherited = readMessages(inheritedChannel, { env });
+    const stable = readMessages(stableChannel, { env });
+    validateDmParticipants(inheritedChannel, inherited, aliases);
+    validateDmParticipants(stableChannel, stable, aliases, false);
+    const merged = [
+      ...resequence(inherited, 1),
+      ...resequence(stable, inherited.length + 1),
+    ];
+    const payload = `${merged.map((message) => JSON.stringify(message)).join("\n")}\n`;
+    const mergedChannel = mergedDmChannel(stableChannel, inheritedChannel, payload);
+    unlocks.push(acquireLock(join(channelsDir(env), `${mergedChannel}.lock`), env ?? process.env));
+    const path = channelLogPath(mergedChannel, env);
+    let existing: string | null = null;
+    try {
+      existing = readFileSync(path, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (existing !== null) {
+      if (existing !== payload) {
+        throw new Error(`merged DM channel ${mergedChannel} failed its content-addressed integrity check`);
+      }
+      return mergedChannel;
+    }
+    const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(tmp, payload, { flag: "wx", mode: 0o600 });
+      linkSync(tmp, path);
+    } finally {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        // 已清理
+      }
+    }
+    return mergedChannel;
+  } finally {
+    for (const unlock of unlocks.reverse()) unlock();
+  }
 }
 
 function writeDmBinding(binding: DmChannelBinding, env?: NodeJS.ProcessEnv): void {
@@ -504,42 +619,32 @@ export function appendDmMessage(input: AppendDmInput): AppendDmResult {
       if (!CHANNEL_RE.test(inheritChannel) || !inheritChannel.startsWith("dm-")) {
         throw new Error(`invalid inherited DM channel: ${inheritChannel}`);
       }
-      if (binding !== null && binding.channel !== inheritChannel) {
+      if (
+        binding !== null &&
+        binding.channel !== inheritChannel &&
+        binding.inherited_from !== inheritChannel
+      ) {
         throw new Error(
           `stable DM channel is already bound to ${binding.channel}; refusing to replace it with ${inheritChannel}`,
         );
       }
       if (binding === null && inheritChannel !== stableChannel) {
-        if (lastSeq(stableChannel, input.env) > 0) {
-          throw new Error(`stable DM channel ${stableChannel} already has messages; refusing to split its history`);
-        }
         const inheritedMessages = readMessages(inheritChannel, { env: input.env });
-        if (inheritedMessages.length === 0) {
-          throw new Error(`inherited DM channel ${inheritChannel} is missing or empty`);
-        }
-        const participants = new Set(inheritedMessages.map((message) => message.from));
-        const legacyMatches = (name: string, alias: string): boolean => {
-          if (name === alias) return true;
-          const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-          return new RegExp(`^${escaped}-[0-9a-f]{2}$`, "i").test(name);
-        };
-        for (const alias of input.expectedLegacyAliases) {
-          if (![...participants].some((name) => legacyMatches(name, alias))) {
-            throw new Error(`inherited DM channel ${inheritChannel} has no messages from workspace ${alias}`);
-          }
-        }
-        const unexpected = [...participants].filter((name) =>
-          !input.expectedLegacyAliases!.some((alias) => legacyMatches(name, alias))
-        );
-        if (unexpected.length > 0) {
-          throw new Error(
-            `inherited DM channel ${inheritChannel} contains unexpected participants: ${unexpected.join(", ")}`,
-          );
-        }
+        validateDmParticipants(inheritChannel, inheritedMessages, input.expectedLegacyAliases);
+        const stableHasMessages = lastSeq(stableChannel, input.env) > 0;
+        const channel = stableHasMessages
+          ? materializeMergedDmChannel(
+              stableChannel,
+              inheritChannel,
+              input.expectedLegacyAliases,
+              input.env,
+            )
+          : inheritChannel;
         binding = {
           v: 1,
           stable_channel: stableChannel,
-          channel: inheritChannel,
+          channel,
+          inherited_from: inheritChannel,
           created_at: new Date().toISOString(),
         };
         writeDmBinding(binding, input.env);

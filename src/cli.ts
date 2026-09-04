@@ -51,7 +51,7 @@ import {
   wakeSessions,
 } from "./wake.ts";
 
-export const OCS_VERSION = "0.3.4";
+export const OCS_VERSION = "0.3.5";
 
 const LANG = detectLang();
 const M = messages(LANG);
@@ -357,6 +357,7 @@ async function cmdDm(parsed: Parsed): Promise<void> {
   }
   const { channel, message } = appended;
   if (appended.bindingCreated && typeof inheritFlag === "string") {
+    saveCursor(channel, from, message.seq);
     console.log(M.dmInherited(inheritFlag, channel));
   }
   console.log(M.dmSent(target, channel, message.seq));

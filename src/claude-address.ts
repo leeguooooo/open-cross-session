@@ -82,8 +82,9 @@ function workspaceAnchor(session: NativeClaudeSession): WorkspaceAnchor | null {
   if (cached !== undefined) return cached;
   const remoteRaw = git(session.cwd, ["config", "--get", "remote.origin.url"]);
   const remote = remoteRaw === null ? null : normalizeRemote(remoteRaw);
-  const top = git(session.cwd, ["rev-parse", "--show-toplevel"]);
-  const commonRaw = git(session.cwd, ["rev-parse", "--git-common-dir"]);
+  // 有 remote 时 alias/material 已全部确定，不再额外启两个 git 进程。
+  const top = remote === null ? git(session.cwd, ["rev-parse", "--show-toplevel"]) : null;
+  const commonRaw = remote === null ? git(session.cwd, ["rev-parse", "--git-common-dir"]) : null;
   const common = commonRaw === null
     ? null
     : canonicalPath(isAbsolute(commonRaw) ? commonRaw : resolve(session.cwd, commonRaw));

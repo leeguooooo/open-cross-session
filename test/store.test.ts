@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -49,28 +49,31 @@ describe("stable DM channel bindings (#10)", () => {
     expect(readMessages("dm-stable-pair", { env })).toEqual([]);
   });
 
-  test("稳定新频道已有消息时拒绝继承，已落盘绑定也不得改指", () => {
+  test("稳定新频道已有消息时非破坏性合并，已落盘绑定不得改指", () => {
     const env = freshEnv();
     appendMessage({ channel: "dm-old-a", from: "a-aa", body: "old a", env });
     appendMessage({ channel: "dm-old-a", from: "b-bb", body: "old b", env });
     appendMessage({ channel: "dm-old-b", from: "a-cc", body: "old a2", env });
     appendMessage({ channel: "dm-old-b", from: "b-dd", body: "old b2", env });
-    appendDmMessage({
-      stableChannel: "dm-stable-used",
-      fallbackChannel: "dm-fallback",
-      from: "a",
-      body: "new",
-      env,
-    });
-    expect(() => appendDmMessage({
+    appendMessage({ channel: "dm-stable-used", from: "a-ee", body: "new a", env });
+    appendMessage({ channel: "dm-stable-used", from: "b-ff", body: "new b", reply_to: 1, env });
+    const merged = appendDmMessage({
       stableChannel: "dm-stable-used",
       fallbackChannel: "dm-fallback",
       inheritChannel: "dm-old-a",
       expectedLegacyAliases: ["a", "b"],
-      from: "a",
-      body: "must fail",
+      from: "a-new",
+      body: "after merge",
       env,
-    })).toThrow("already has messages");
+    });
+    expect(merged.channel).toMatch(/^dm-[0-9a-f]{40}--merged-history$/);
+    expect(merged.message.seq).toBe(5);
+    const mergedMessages = readMessages(merged.channel, { env });
+    expect(mergedMessages.map((message) => message.body))
+      .toEqual(["old a", "old b", "new a", "new b", "after merge"]);
+    expect(mergedMessages[3]!.reply_to).toBe(3);
+    expect(readMessages("dm-old-a", { env }).map((message) => message.body)).toEqual(["old a", "old b"]);
+    expect(readMessages("dm-stable-used", { env }).map((message) => message.body)).toEqual(["new a", "new b"]);
 
     appendDmMessage({
       stableChannel: "dm-stable-bound",
@@ -129,6 +132,37 @@ describe("stable DM channel bindings (#10)", () => {
       body: "no",
       env,
     })).toThrow("unexpected participants: mallory-cc");
+  });
+
+  test("合并快照落盘但绑定丢失后，源频道增长仍可重试，不会永久冲突", () => {
+    const env = freshEnv();
+    appendMessage({ channel: "dm-old-crash", from: "a-aa", body: "old a", env });
+    appendMessage({ channel: "dm-old-crash", from: "b-bb", body: "old b", env });
+    appendMessage({ channel: "dm-stable-crash", from: "a-cc", body: "new a", env });
+    const first = appendDmMessage({
+      stableChannel: "dm-stable-crash",
+      fallbackChannel: "dm-fallback",
+      inheritChannel: "dm-old-crash",
+      expectedLegacyAliases: ["a", "b"],
+      from: "a-dd",
+      body: "first command",
+      env,
+    });
+    const binding = join(env[OCS_HOME_ENV]!, "dm-bindings", "dm-stable-crash.json");
+    unlinkSync(binding);
+    appendMessage({ channel: "dm-stable-crash", from: "b-ee", body: "new b", env });
+    const retried = appendDmMessage({
+      stableChannel: "dm-stable-crash",
+      fallbackChannel: "dm-fallback",
+      inheritChannel: "dm-old-crash",
+      expectedLegacyAliases: ["a", "b"],
+      from: "a-ff",
+      body: "retry command",
+      env,
+    });
+    expect(retried.channel).not.toBe(first.channel);
+    expect(readMessages(retried.channel, { env }).map((message) => message.body))
+      .toEqual(["old a", "old b", "new a", "new b", "retry command"]);
   });
 });
 

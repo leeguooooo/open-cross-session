@@ -133,8 +133,11 @@ keeps the same DM channel and can be recovered from the local index while the pe
 is offline. Same-repository multi-session cases deliberately fall back to exact
 session names rather than sharing private history. Use `OCS_NAME` / `--as` when
 you need an explicit role identity. History created before v0.3.4 can be attached
-once with `--inherit`; ocs refuses ambiguous workspaces, one-sided histories, or
-rebinding a conversation that already has messages.
+once with `--inherit`; ocs refuses ambiguous workspaces, one-sided histories, and
+third participants. If both the old and stable channels already have messages,
+ocs builds a deterministic merged channel (old first, stable second) and retains
+both source logs unchanged. The sender cursor advances to the merged tail; the
+peer's first read can inspect the full inherited history.
 
 Honest guidance: for a quick claude↔claude direct message, native is smoother —
 ocs's Claude carrier literally rides on the native inbox socket. Use ocs when the

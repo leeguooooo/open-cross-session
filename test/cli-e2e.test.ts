@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLAUDE_NATIVE_SESSIONS_DIR_ENV } from "../src/claude-inject.ts";
 import { IDLE_POLL_MS_ENV } from "../src/idle.ts";
-import { appendMessage, readMessages, OCS_HOME_ENV } from "../src/store.ts";
+import { appendMessage, loadCursor, readMessages, OCS_HOME_ENV } from "../src/store.ts";
 
 // 真 CLI 进程 + 真 UDS + 真脱离终端的 watcher。
 // 订阅方/发送方会话 = 本测试进程（CLI 的祖先，findSelfClaudePid 命中，名 tester）；
@@ -271,6 +271,7 @@ describe("dm 唤醒提示（#8 #9）", () => {
       expect({ code: inherited.code, stderr: inherited.stderr }).toEqual({ code: 0, stderr: "" });
       expect(inherited.stdout).toContain("DM history inherited: dm-old-history → dm-old-history");
       expect(inherited.stdout).toContain("channel dm-old-history, seq 3");
+      expect(loadCursor("dm-old-history", "tester", f.env)).toBe(3);
       const firstWake = content(await f.nextFrame());
       expect(firstWake).toContain("Thread: ocs read dm-old-history");
 
@@ -294,17 +295,14 @@ describe("dm 唤醒提示（#8 #9）", () => {
         run(f, ["dm", "worker-a", "inherit write", "--inherit", "dm-old-race"]),
         run(f, ["dm", "worker-a", "ordinary write"]),
       ]);
+      expect({ code: inherit.code, stderr: inherit.stderr }).toEqual({ code: 0, stderr: "" });
       expect(ordinary.code).toBe(0);
-      if (inherit.code === 0) {
-        expect(inherit.stdout).toContain("channel dm-old-race");
-        expect(ordinary.stdout).toContain("channel dm-old-race");
-        expect(readMessages("dm-old-race", { env: f.env }).map((message) => message.body).sort())
-          .toEqual(["inherit write", "old one", "old two", "ordinary write"].sort());
-      } else {
-        expect(inherit.stderr).toContain("already has messages");
-        expect(readMessages("dm-old-race", { env: f.env }).map((message) => message.body))
-          .toEqual(["old one", "old two"]);
-      }
+      const continued = await run(f, ["dm", "worker-a", "continued write"]);
+      expect({ code: continued.code, stderr: continued.stderr }).toEqual({ code: 0, stderr: "" });
+      const channel = /channel (dm-[^,\s)]+)/.exec(continued.stdout)?.[1];
+      expect(channel).toBeDefined();
+      expect(readMessages(channel!, { env: f.env }).map((message) => message.body).sort())
+        .toEqual(["continued write", "inherit write", "old one", "old two", "ordinary write"].sort());
     } finally {
       f.close();
     }
