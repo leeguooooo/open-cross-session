@@ -44,6 +44,10 @@ interface Catalog {
   piWakeUnavailable: (target: string) => string;
   piWakeSelfSkipped: (target: string) => string;
   piWakeAmbiguous: (target: string, matches: string[]) => string;
+  dmCodexAmbiguous: (target: string, matches: string[]) => string;
+  inboxEmpty: string;
+  inboxHeader: (threads: number) => string;
+  inboxLine: (unread: number, lastFrom: string, lastAt: string) => string;
   noNewMessages: (channel: string, since: number) => string;
   noClaudeSessions: string;
   noCodexRollouts: string;
@@ -55,6 +59,11 @@ interface Catalog {
   doctorInboundFixed: (backup: string | null) => string;
   doctorInboundFixFailed: (error: string) => string;
   doctorInboundBad: (value: string) => string;
+  doctorSkills: string;
+  doctorSkillsOk: string;
+  doctorSkillsMissing: (n: number) => string;
+  doctorSkillsFixed: string;
+  doctorSkillsFixFailed: (detail: string) => string;
   doctorCodex: string;
   doctorIpcOk: (path: string) => string;
   doctorIpcMissing: (path: string) => string;
@@ -63,6 +72,7 @@ interface Catalog {
   doctorNoRollouts: string;
   doctorPi: string;
   doctorPiExtensionOk: (path: string) => string;
+  doctorPiExtensionFixed: (path: string) => string;
   doctorPiExtensionMissing: (path: string) => string;
   doctorPiSessions: (n: number) => string;
   doctorNoPiSessions: string;
@@ -72,8 +82,12 @@ interface Catalog {
   doctorData: string;
   doctorDataExists: (path: string) => string;
   doctorDataAuto: (path: string) => string;
+  doctorDataFixed: (path: string) => string;
+  doctorDataUnsafe: (path: string, mode: string) => string;
+  doctorDataNotDirectory: (path: string) => string;
   upgrade: string;
   failSendUsage: string;
+  failDmUsage: string;
   failReadUsage: string;
   failNotifyUsage: string;
   failWatchUsage: string;
@@ -87,7 +101,7 @@ interface Catalog {
   whoCmuxHeader: string;
   whoSelfTag: string;
   whoDataHome: (path: string) => string;
-  whoWorkspaceAlias: (alias: string) => string;
+  whoCurrentProject: string;
   whoEmpty: string;
   whoCmuxHint: string;
   dmSent: (target: string, channel: string, seq: number) => string;
@@ -96,6 +110,7 @@ interface Catalog {
   dmWorkspaceWarning: (detail: string) => string;
   dmInherited: (requested: string, channel: string) => string;
   dmConversationFailed: (detail: string) => string;
+  dmCursorWarning: (detail: string) => string;
   dmParked: (target: string, channel: string) => string;
   dmParkedNew: (target: string, channel: string) => string;
   dmParkedStable: (target: string, channel: string) => string;
@@ -120,12 +135,14 @@ const en: Catalog = {
   help: `ocs — cross-agent, cross-session coordination on one machine. No server.
 
 Usage:
-  ocs who
+  ocs who [--verbose | --json]
       Roster of every reachable agent: Claude sessions, Codex tasks, Pi sessions, terminals,
-      plus pending idle notifications.
+      plus pending idle notifications. Same-project peers come first; --verbose shows raw IDs/paths.
   ocs dm <name-or-id> <text> [--as <name>] [--inherit <old-dm-channel>] [--notify-when-idle]
       Message + wake one agent. Channel is auto-derived; nothing to set up.
       --inherit binds one pre-v0.3.4 DM history channel; both Claude workspaces must be live and unique.
+  ocs inbox [--as <name>] [--json]
+      List unread threads attributable to this identity; reading still uses the existing ocs read command.
   ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake]
            [--notify-when-idle] [--codex <thread-id>] [--codex-source <thread-id>]
       Append to a channel. @<session-name> wakes a live Claude session;
@@ -146,15 +163,15 @@ Usage:
   ocs watch <channel> [--interval-ms <n>]
       Tail a channel (Ctrl+C to stop).
   ocs doctor [--fix]
-      Health-check all wake paths; --fix sets crossSessionInbound=accept
-      (backs up the file first).
+      Health-check all wake paths; --fix safely repairs agent skills, the Pi extension,
+      data-directory permissions, and crossSessionInbound (backing up settings first).
   ocs skill install
-      Install the ocs skill for Claude and Pi, plus Pi's direct-wake extension.
+      Install the ocs skill for Claude, Codex, and Pi, plus Pi's direct-wake extension.
   ocs upgrade
       Migration guide to hosted Agent Party (cross-machine channels).
   ocs version | help
 
---as is optional inside Claude and Pi sessions (auto-detected; OCS_NAME also works).
+--as is optional inside Claude, Codex, and Pi sessions (auto-detected; OCS_NAME also works).
 Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   sent: (channel, seq) => `sent #${channel} seq ${seq}`,
   wakeNoMatch: (names) => `wake: no live Claude session matches @${names}`,
@@ -201,6 +218,12 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   piWakeSelfSkipped: (target) => `wake(pi): ${target} is this Pi session; skipped`,
   piWakeAmbiguous: (target, matches) =>
     `wake(pi): ${target} is open in multiple Pi processes: ${matches.join(", ")} — close the duplicate session`,
+  dmCodexAmbiguous: (target, matches) =>
+    `Codex address ${target} is ambiguous: ${matches.join(", ")} — use the full thread id from \`ocs who --verbose\``,
+  inboxEmpty: "inbox: no unread threads for this identity",
+  inboxHeader: (threads) => `Inbox: ${threads} unread thread(s)`,
+  inboxLine: (unread, lastFrom, lastAt) =>
+    `  ${unread} unread · last from ${lastFrom} at ${lastAt}`,
   noNewMessages: (channel, since) => `#${channel}: no messages with seq > ${since}`,
   noClaudeSessions: "no live Claude sessions (or ~/.claude/sessions unreadable)",
   noCodexRollouts: "no Codex rollouts found (~/.codex/sessions empty or unreadable)",
@@ -215,6 +238,12 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   doctorInboundBad: (value) =>
     `crossSessionInbound = ${value} — injected messages queue for manual approval and are silently dropped after 5 minutes. ` +
     'Run `ocs doctor --fix` to set "accept" (backs up the file), or edit ~/.claude/settings.json yourself',
+  doctorSkills: "Agent skills",
+  doctorSkillsOk: "version-matched ocs skill installed for Claude, Codex, and Pi",
+  doctorSkillsMissing: (n) =>
+    `${n} agent skill installation(s) missing or outdated — run \`ocs doctor --fix\``,
+  doctorSkillsFixed: "updated the ocs skill for Claude, Codex, and Pi",
+  doctorSkillsFixFailed: (detail) => `integration repair failed: ${detail}`,
   doctorCodex: "Codex / ChatGPT Desktop side",
   doctorIpcOk: (path) => `Desktop IPC available (${path})`,
   doctorIpcMissing: (path) => `Desktop IPC unavailable (${path} missing or wrong perms) — is ChatGPT Desktop running?`,
@@ -223,6 +252,7 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   doctorNoRollouts: "no Codex rollouts (have you run codex?)",
   doctorPi: "Pi side",
   doctorPiExtensionOk: (path) => `direct-wake extension installed (${path})`,
+  doctorPiExtensionFixed: (path) => `direct-wake extension repaired (${path}); restart open Pi sessions`,
   doctorPiExtensionMissing: (path) =>
     `direct-wake extension missing or outdated (${path}) — run \`ocs skill install\``,
   doctorPiSessions: (n) => `${n} live Pi TUI session(s) registered`,
@@ -233,6 +263,10 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   doctorData: "Data directory",
   doctorDataExists: (path) => `${path} exists`,
   doctorDataAuto: (path) => `${path} will be created on first send`,
+  doctorDataFixed: (path) => `${path} exists with owner-only permissions`,
+  doctorDataUnsafe: (path, mode) =>
+    `${path} permissions are ${mode}; other local users may access ocs state — run \`ocs doctor --fix\``,
+  doctorDataNotDirectory: (path) => `${path} is not a usable data directory`,
   upgrade: `From local to hosted Agent Party (cross-machine, cross-org channels, same habits):
 
   1. Install:   curl -fsSL https://agentparty.leeguoo.com/install.sh | sh
@@ -240,8 +274,9 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   3. History:   optionally export with \`ocs read <channel> --as migrator --peek --json\` and replay via party send
 
 Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-machine goes party.`,
-  failSendUsage: "usage: ocs send <channel> <body> --as <name>",
-  failReadUsage: "usage: ocs read <channel> --as <name>",
+  failSendUsage: "usage: ocs send <channel> <body> [--as <name>]",
+  failDmUsage: "usage: ocs dm <name-or-id> <body> [--as <name>]",
+  failReadUsage: "usage: ocs read <channel> [--as <name>]",
   failNotifyUsage: "usage: ocs notify-when-idle <session-name>",
   failWatchUsage: "usage: ocs watch <channel>",
   failReplyTo: "--reply-to must be a positive integer seq",
@@ -250,12 +285,12 @@ Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-m
   failLimit: "--limit must be a positive integer",
   whoClaudeHeader: "Claude Code sessions (wake: @name / ocs dm <name>)",
   whoCodexHeader: (ipc) =>
-    `Codex tasks (wake: ocs dm <thread-id>; Desktop IPC ${ipc ? "available" : "UNAVAILABLE — open ChatGPT Desktop"})`,
-  whoPiHeader: "Pi sessions (wake: @pi-<session-id> / ocs dm pi-<session-id>)",
+    `Codex tasks (wake: ocs dm codex-<short-id>; Desktop IPC ${ipc ? "available" : "UNAVAILABLE — open ChatGPT Desktop"})`,
+  whoPiHeader: "Pi sessions (wake: ocs dm pi-<short-id>; @ mentions use the full session id)",
   whoCmuxHeader: "cmux terminal surfaces (wake: ocs dm surface:N)",
   whoSelfTag: "  ← you",
   whoDataHome: (path) => `OCS data home: ${path} (sessions must share this directory for DM continuity)`,
-  whoWorkspaceAlias: (alias) => `  alias=${alias} (stable across session restarts while unique)`,
+  whoCurrentProject: "  [this project]",
   whoEmpty: "no reachable agents found — open a Claude Code, Codex, or Pi session",
   whoCmuxHint: "cmux not detected: terminal TUIs are not listed (they can still join channels themselves)",
   dmSent: (target, channel, seq) => `dm → ${target} (channel ${channel}, seq ${seq})`,
@@ -266,6 +301,8 @@ Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-m
   dmWorkspaceWarning: (detail) => `workspace continuity disabled: ${detail}`,
   dmInherited: (requested, channel) => `DM history inherited: ${requested} → ${channel}`,
   dmConversationFailed: (detail) => `cannot resolve DM conversation: ${detail}`,
+  dmCursorWarning: (detail) =>
+    `warning: message is stored, but the sender cursor could not be advanced (${detail}); delivery will continue`,
   dmParked: (target, channel) =>
     `${target} has no live session right now — NOT woken. The message is in ${channel}, but only that exact name can read it; a restarted session with a new name will not discover it. Run \`ocs who\` to find a live workspace alias, or pin OCS_NAME/--as.`,
   dmParkedNew: (target, channel) =>
@@ -281,11 +318,11 @@ Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-m
   dmCmuxWoken: (ref) => `woke terminal ${ref} via cmux`,
   dmCmuxFailed: (ref, detail) => `cmux wake failed for ${ref}: ${detail}`,
   whoamiUnknown:
-    "cannot tell who you are: not inside a registered Claude/Pi session, and OCS_NAME is unset. Pass --as <name> or export OCS_NAME",
+    "cannot tell who you are: not inside a registered Claude/Codex/Pi session, and OCS_NAME is unset. Pass --as <name> or export OCS_NAME",
   skillInstalled: (path) => `skill installed: ${path}`,
   piExtensionInstalled: (path) => `Pi direct-wake extension installed: ${path} — restart open Pi sessions`,
   failNoSelfName:
-    "cannot infer sender name (not inside a registered Claude/Pi session). Pass --as <name> or export OCS_NAME",
+    "cannot infer sender name (not inside a registered Claude/Codex/Pi session). Pass --as <name> or export OCS_NAME",
   failName: (name) => `invalid name: ${name}`,
   failFlagRequired: (flag) => `--${flag} <value> is required`,
   failMissingValue: (flag) => `--${flag} requires a value`,
@@ -298,12 +335,14 @@ const zh: Catalog = {
   help: `ocs — 跨 agent 的 cross-session，本机直连，零服务器
 
 用法:
-  ocs who
+  ocs who [--verbose | --json]
       全机 agent 花名册：Claude 会话、Codex 任务、Pi 会话、终端，都在一张表里，
-      外加待触发的空闲通知
+      外加待触发的空闲通知；当前项目优先，--verbose 显示底层 ID/路径
   ocs dm <名字或id> <内容> [--as <name>] [--inherit <旧dm频道>] [--notify-when-idle]
       给一个 agent 发消息并唤醒；频道自动派生，什么都不用建
       --inherit 一次性绑定 v0.3.4 之前的 DM 历史；双方 Claude 工作区必须在线且唯一
+  ocs inbox [--as <name>] [--json]
+      列出能可靠归属给当前身份的未读线程；读取仍复用现有 ocs read 命令
   ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake]
            [--notify-when-idle] [--codex <thread-id>] [--codex-source <thread-id>]
       往频道追加消息；@<会话名> 唤醒活 Claude 会话，@pi-<session-id>
@@ -324,14 +363,15 @@ const zh: Catalog = {
   ocs watch <channel> [--interval-ms <n>]
       跟踪频道新消息（Ctrl+C 退出）
   ocs doctor [--fix]
-      体检全部唤醒链；--fix 一键把 crossSessionInbound 设为 accept（写前备份）
+      体检全部唤醒链；--fix 安全修复三端 skill、Pi 扩展、数据目录权限，
+      并在备份后把 crossSessionInbound 设为 accept
   ocs skill install
-      给 Claude、Pi 安装 ocs skill，并安装 Pi 直投扩展
+      给 Claude、Codex、Pi 安装 ocs skill，并安装 Pi 直投扩展
   ocs upgrade
       迁移到托管版 Agent Party（跨机器、跨组织频道）
   ocs version | help
 
-在 Claude、Pi 会话里 --as 可省略（自动识别；OCS_NAME 也行）。
+在 Claude、Codex、Pi 会话里 --as 可省略（自动识别；OCS_NAME 也行）。
 数据目录: ~/.ocs（OCS_HOME 可覆盖）。语言: OCS_LANG=en|zh。`,
   sent: (channel, seq) => `已发送 #${channel} seq ${seq}`,
   wakeNoMatch: (names) => `wake: 没有匹配 @${names} 的活 Claude 会话`,
@@ -373,6 +413,12 @@ const zh: Catalog = {
   piWakeSelfSkipped: (target) => `wake(pi): ${target} 是当前 Pi 会话，已跳过`,
   piWakeAmbiguous: (target, matches) =>
     `wake(pi): ${target} 同时被多个 Pi 进程打开：${matches.join("、")}——请关闭重复会话`,
+  dmCodexAmbiguous: (target, matches) =>
+    `Codex 地址 ${target} 不唯一：${matches.join("、")}——请从 \`ocs who --verbose\` 复制完整 thread id`,
+  inboxEmpty: "inbox：当前身份没有未读线程",
+  inboxHeader: (threads) => `收件箱：${threads} 个未读线程`,
+  inboxLine: (unread, lastFrom, lastAt) =>
+    `  ${unread} 条未读 · 最后一条来自 ${lastFrom}（${lastAt}）`,
   noNewMessages: (channel, since) => `#${channel}: 没有 seq > ${since} 的新消息`,
   noClaudeSessions: "没有活着的 Claude 会话（或 ~/.claude/sessions 不可读）",
   noCodexRollouts: "没有找到 Codex rollout（~/.codex/sessions 为空或不可读）",
@@ -387,6 +433,11 @@ const zh: Catalog = {
   doctorInboundBad: (value) =>
     `crossSessionInbound = ${value} — 注入会进待审队列，5 分钟无人处理即静默丢弃。` +
     "跑 `ocs doctor --fix` 一键设为 accept（写前自动备份），或手动改 ~/.claude/settings.json",
+  doctorSkills: "Agent 技能",
+  doctorSkillsOk: "Claude、Codex、Pi 都已安装版本匹配的 ocs skill",
+  doctorSkillsMissing: (n) => `${n} 处 agent skill 缺失或版本过旧——运行 \`ocs doctor --fix\``,
+  doctorSkillsFixed: "已更新 Claude、Codex、Pi 的 ocs skill",
+  doctorSkillsFixFailed: (detail) => `集成修复失败：${detail}`,
   doctorCodex: "Codex / ChatGPT Desktop 侧",
   doctorIpcOk: (path) => `Desktop IPC 可用（${path}）`,
   doctorIpcMissing: (path) => `Desktop IPC 不可用（${path} 缺失或权限不对）——ChatGPT Desktop 开着吗？`,
@@ -395,6 +446,7 @@ const zh: Catalog = {
   doctorNoRollouts: "没有 Codex rollout（跑过 codex 吗？）",
   doctorPi: "Pi 侧",
   doctorPiExtensionOk: (path) => `直投扩展已安装（${path}）`,
+  doctorPiExtensionFixed: (path) => `直投扩展已修复（${path}）；已打开的 Pi 会话需要重启`,
   doctorPiExtensionMissing: (path) => `直投扩展缺失或过期（${path}）——跑 \`ocs skill install\``,
   doctorPiSessions: (n) => `${n} 个活着的 Pi TUI 会话已登记`,
   doctorNoPiSessions: "没有活着的 Pi TUI 会话（安装扩展后重启 Pi）",
@@ -404,6 +456,9 @@ const zh: Catalog = {
   doctorData: "数据目录",
   doctorDataExists: (path) => `${path} 存在`,
   doctorDataAuto: (path) => `${path} 首次 send 时自动创建`,
+  doctorDataFixed: (path) => `${path} 已存在且仅当前用户可访问`,
+  doctorDataUnsafe: (path, mode) => `${path} 权限是 ${mode}，其他本机用户可能访问 ocs 状态——运行 \`ocs doctor --fix\``,
+  doctorDataNotDirectory: (path) => `${path} 不是可用的数据目录`,
   upgrade: `单机版到托管版 Agent Party（跨机器、跨组织频道，同一套使用习惯）：
 
   1. 安装:  curl -fsSL https://agentparty.leeguoo.com/install.sh | sh
@@ -411,8 +466,9 @@ const zh: Catalog = {
   3. 迁历史: ocs read <channel> --as migrator --peek --json 导出后用 party send 回放（可选）
 
 本地 ocs 与托管 party 可以并存：本机小事走 ocs，跨机协作走 party。`,
-  failSendUsage: "用法: ocs send <channel> <body> --as <name>",
-  failReadUsage: "用法: ocs read <channel> --as <name>",
+  failSendUsage: "用法: ocs send <channel> <body> [--as <name>]",
+  failDmUsage: "用法: ocs dm <名字或id> <内容> [--as <name>]",
+  failReadUsage: "用法: ocs read <channel> [--as <name>]",
   failNotifyUsage: "用法: ocs notify-when-idle <会话名>",
   failWatchUsage: "用法: ocs watch <channel>",
   failReplyTo: "--reply-to 必须是正整数 seq",
@@ -421,12 +477,12 @@ const zh: Catalog = {
   failLimit: "--limit 必须是正整数",
   whoClaudeHeader: "Claude Code 会话（唤醒: @名字 / ocs dm <名字>）",
   whoCodexHeader: (ipc) =>
-    `Codex 任务（唤醒: ocs dm <thread-id>；Desktop IPC ${ipc ? "可用" : "不可用——先开 ChatGPT Desktop"}）`,
-  whoPiHeader: "Pi 会话（唤醒: @pi-<session-id> / ocs dm pi-<session-id>）",
+    `Codex 任务（唤醒: ocs dm codex-<短id>；Desktop IPC ${ipc ? "可用" : "不可用——先开 ChatGPT Desktop"}）`,
+  whoPiHeader: "Pi 会话（唤醒: ocs dm pi-<短id>；@ 提及仍使用完整 session id）",
   whoCmuxHeader: "cmux 终端 surface（唤醒: ocs dm surface:N）",
   whoSelfTag: "  ← 你自己",
   whoDataHome: (path) => `OCS 数据目录：${path}（要继续同一 DM 历史，各会话必须共用此目录）`,
-  whoWorkspaceAlias: (alias) => `  别名=${alias}（唯一时可跨会话重启使用）`,
+  whoCurrentProject: "  [当前项目]",
   whoEmpty: "没发现可达的 agent——开一个 Claude Code、Codex 或 Pi 会话",
   whoCmuxHint: "cmux 未检测到：终端 TUI 不在列表里（它们仍可自己进频道）",
   dmSent: (target, channel, seq) => `dm → ${target}（频道 ${channel}，seq ${seq}）`,
@@ -437,6 +493,7 @@ const zh: Catalog = {
   dmWorkspaceWarning: (detail) => `工作区历史延续已停用：${detail}`,
   dmInherited: (requested, channel) => `已继承 DM 历史：${requested} → ${channel}`,
   dmConversationFailed: (detail) => `无法解析 DM 会话：${detail}`,
+  dmCursorWarning: (detail) => `警告：消息已写入，但发送方 cursor 推进失败（${detail}）；仍继续投递`,
   dmParked: (target, channel) =>
     `${target} 当前没有活会话——**没有被唤醒**。消息在 ${channel}，但只有这个精确名字能读；重启后换了名字的会话不会发现它。请运行 \`ocs who\` 查找实时工作区别名，或用 OCS_NAME/--as 固定名字。`,
   dmParkedNew: (target, channel) =>
@@ -449,10 +506,10 @@ const zh: Catalog = {
   dmCmuxBusy: (ref) => `${ref} 正在跑一轮，不打断。消息已在频道里，它下轮会读到；也可稍后重试`,
   dmCmuxWoken: (ref) => `已经由 cmux 唤醒终端 ${ref}`,
   dmCmuxFailed: (ref, detail) => `cmux 唤醒 ${ref} 失败: ${detail}`,
-  whoamiUnknown: "认不出你是谁：不在已登记的 Claude/Pi 会话里，OCS_NAME 也没设。用 --as <name> 或 export OCS_NAME",
+  whoamiUnknown: "认不出你是谁：不在已登记的 Claude/Codex/Pi 会话里，OCS_NAME 也没设。用 --as <name> 或 export OCS_NAME",
   skillInstalled: (path) => `技能已安装: ${path}`,
   piExtensionInstalled: (path) => `Pi 直投扩展已安装: ${path}——已打开的 Pi 会话需要重启`,
-  failNoSelfName: "推断不出发送者名字（不在已登记的 Claude/Pi 会话里）。用 --as <name> 或 export OCS_NAME",
+  failNoSelfName: "推断不出发送者名字（不在已登记的 Claude/Codex/Pi 会话里）。用 --as <name> 或 export OCS_NAME",
   failName: (name) => `名字不合法: ${name}`,
   failFlagRequired: (flag) => `--${flag} <value> 是必填项`,
   failMissingValue: (flag) => `--${flag} 后面必须带值`,

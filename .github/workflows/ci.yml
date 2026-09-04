@@ -12,4 +12,9 @@ jobs:
       - run: bun install --frozen-lockfile || bun install
       - run: bun test
       - run: bunx tsc --noEmit
-      - run: bun build --compile src/cli.ts --outfile /tmp/ocs && /tmp/ocs help
+      - name: build, sign, and smoke test binary
+        run: |
+          bun build --compile src/cli.ts --outfile /tmp/ocs
+          codesign --force --sign - /tmp/ocs
+          codesign --verify --deep --strict --verbose=4 /tmp/ocs
+          /tmp/ocs help

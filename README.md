@@ -46,12 +46,13 @@ session, tell Claude Code, Codex, or Pi things like *"find another agent to revi
 this"* — it discovers peers and talks to them on its own. Under the hood:
 
 ```bash
-ocs doctor --fix              # one-time: verify wake paths, enable Claude direct delivery
-ocs skill install             # repair/update skills and the Pi wake extension
+ocs doctor --fix              # one-time: safely repair setup, then re-check every wake path
+ocs skill install             # explicit skill/Pi-extension reinstall (normally unnecessary)
 
-ocs who                       # roster of every reachable agent (you are marked)
-ocs dm agentparty-d8 "can you review this diff?"    # message + wake one agent
+ocs who                       # same-project peers first; you are marked
+ocs dm codex-01a06a98 "can you review this diff?"   # short, copyable target
                               # channel auto-derived, your identity auto-detected
+ocs inbox                     # resume unread threads after a restart
 
 # one-time migration for DM history created before v0.3.4
 ocs dm agentparty "continuing in the old thread" --inherit dm-<old-channel>
@@ -84,7 +85,7 @@ cross-session does it — as data inside a `<cross-session-message>` wrapper:
 [ocs wake] alice mentioned you in #dev (seq 7, reply to seq 3)
 
 <the message body, verbatim up to 4096 bytes; longer bodies show the first 512
-bytes plus "… (N bytes total; full text: ocs read dev --as bob)">
+bytes plus "… (N bytes total; full text: ocs read dev)">
 
 Reply: ocs dm alice "<your reply>"          # for a Claude-to-Claude DM
 Thread: ocs read dm-<derived-channel>
@@ -92,8 +93,9 @@ Thread: ocs read dm-<derived-channel>
 
 For a Claude-to-Claude DM, the `Reply:` line uses the sender's unique workspace
 alias; the derived channel stays in `Thread:` only. If that alias is ambiguous,
-ordinary channels and non-Claude targets keep the fully specified
-`ocs send ... --as ... --reply-to ...` form.
+the note falls back to `ocs send <channel> ... --reply-to ...`. Live Claude,
+Codex, and Pi targets infer their own identity, so only unverifiable headless or
+cmux targets need an explicit `--as`.
 The whole note is capped at 5120 bytes.
 The protocol is shared with Agent Party: [docs/wake-protocol.md](./docs/wake-protocol.md).
 
@@ -102,8 +104,8 @@ The protocol is shared with Agent Party: [docs/wake-protocol.md](./docs/wake-pro
 | Target | How | Requirement |
 |---|---|---|
 | Interactive Claude Code session | `@<session name>` | Receiver sets `"crossSessionInbound": "accept"` in `~/.claude/settings.json`. The default is `hold`: the message waits for manual approval and is **silently dropped after 5 minutes**. `ocs doctor` checks this. |
-| ChatGPT Desktop task | `@<thread-id>` or `--codex <thread-id>` | The task must be open in the ChatGPT **Desktop app**, with a second open task under the same renderer as the message source (auto-picked, or `--codex-source`). |
-| Pi TUI | `@pi-<session-id>` or `ocs dm pi-<session-id> …` | Run `ocs skill install`, then restart Pi. The installed extension registers the live TUI and queues inbound messages as follow-ups, so a busy turn is not interrupted. |
+| ChatGPT Desktop task | `ocs dm codex-<8hex> …`, `@<thread-id>`, or `--codex <thread-id>` | The task must be open in the ChatGPT **Desktop app**, with a second open task under the same renderer as the message source (auto-picked, or `--codex-source`). |
+| Pi TUI | `ocs dm pi-<8hex> …` or `@pi-<full-session-id>` | Run `ocs skill install`, then restart Pi. The installed extension registers the live TUI and queues inbound messages as follow-ups, so a busy turn is not interrupted. |
 | Claude/Codex terminal TUI in cmux | `ocs dm surface:<n> …` | Optional: when cmux is detected, `ocs who` lists terminal surfaces and can submit the wake note to an idle surface. A busy surface is left untouched. |
 | Other terminal or headless agent | `ocs read` / `ocs send` | Full channel participation, persistence, and replies, but no unsolicited direct wake unless its harness exposes a supported carrier. |
 | Human at a shell | `ocs send` / `ocs read` / `ocs watch` | Can post, read once, or tail the same channels without running an agent. |
@@ -114,16 +116,17 @@ Delivery honesty: for Claude targets, a successful send means the frame reached 
 
 | Command | Purpose |
 |---|---|
-| `ocs who` | Roster of every reachable agent (you are marked), plus pending idle notifications |
+| `ocs who` | Roster of every reachable agent, with same-project peers first and yourself marked; `--verbose` shows raw IDs/paths, `--json` is machine-readable |
 | `ocs whoami` | Print the auto-detected sender identity |
 | `ocs dm <name-or-id> <text>` | Message + wake one agent; unique Claude workspaces keep one channel across restarts. `--inherit <old-dm-channel>` binds pre-v0.3.4 history once; `--notify-when-idle` |
-| `ocs send <ch> <body> --as <name>` | Append to a channel; `@` mentions wake, `--reply-to <seq>` also wakes that seq's author. `--no-wake`, `--notify-when-idle`, `--codex <thread-id>`, `--codex-source <thread-id>` |
-| `ocs read <ch> --as <name>` | Read new messages since your cursor, then advance it. Your own messages fold to one line (`--include-self` shows them; `--json` adds `self`). `--since <seq>`, `--peek` |
+| `ocs inbox` | List unread threads that can be safely attributed to the current identity; `--json` for automation |
+| `ocs send <ch> <body>` | Append to a channel; `@` mentions wake, `--reply-to <seq>` also wakes that seq's author. `--as` is only an override. Also supports `--no-wake`, `--notify-when-idle`, `--codex`, `--codex-source` |
+| `ocs read <ch>` | Read new messages since your cursor, then advance it. Your own messages fold to one line (`--include-self` shows them; `--json` adds `self`). `--as` overrides identity; also supports `--since`, `--peek` |
 | `ocs notify-when-idle <name>` | One-shot: a `[Cross-session idle notice]` lands in your session when that Claude session next goes idle or exits (immediately if already idle; expires after 6h) |
 | `ocs sessions` | List live Claude Code sessions |
 | `ocs codex-sessions` | List local Codex tasks (`--limit <n>`) |
 | `ocs watch <ch>` | Tail a channel (`--interval-ms <n>`) |
-| `ocs doctor` | Health check for Claude, Codex, Pi, and the data directory (`--fix` enables Claude direct delivery) |
+| `ocs doctor` | Health check for Claude, Codex, Pi, skills, and the data directory; `--fix` repairs safe local setup and re-checks it |
 | `ocs skill install` | Repair/update the bundled skill for Claude Code, Codex, and Pi, plus Pi's direct-wake extension |
 | `ocs upgrade` | Migration guide to hosted Agent Party |
 | `ocs version` | Print the version |
@@ -153,7 +156,7 @@ bridge between them, plus what neither provides:
 | Setup | built into Claude Code | built into ChatGPT Desktop | one static binary; no daemon, account, or API key | hosted or self-hosted service |
 
 \* Persistence has no auto-nudge: nothing watches for sessions coming online, so
-the peer sees backlog on its next `ocs read`, wake, or human prompt. Claude's
+the peer sees backlog on its next `ocs inbox`, `ocs read`, wake, or human prompt. Claude's
 generated session name still changes after restart, but a unique workspace alias
 maps to a salted local identity. Git repositories use their normalized origin so
 worktrees converge; non-Git workspaces use their launch directory. That identity
@@ -166,6 +169,11 @@ third participants. If both the old and stable channels already have messages,
 ocs builds a deterministic merged channel (old first, stable second) and retains
 both source logs unchanged. The sender cursor advances to the merged tail; the
 peer's first read can inspect the full inherited history.
+New DMs append an opaque namespaced route sidecar in the same log so `ocs inbox`
+can attribute unread messages without reversing private channel hashes. Old clients
+ignore the sidecar and still read the unchanged message frame. Legacy DM
+records without that metadata appear only when an existing cursor already proves
+participation; ocs does not guess and expose unrelated private threads.
 
 Honest guidance: for a quick claude↔claude direct message, native is smoother —
 ocs's Claude carrier literally rides on the native inbox socket. Use ocs when the

@@ -43,12 +43,13 @@ curl 安装时会自动装好 skill。重启已打开的 Pi 会话后，对 Clau
 「找个 agent 帮你看看这段」，它会发现同伴并发送消息。常用命令：
 
 ```bash
-ocs doctor --fix              # 一次性：体检唤醒链、打开 Claude 直投
-ocs skill install             # 修复或更新 skill 与 Pi 唤醒扩展
+ocs doctor --fix              # 一次性：安全修复安装，再复检全部唤醒链
+ocs skill install             # 显式重装 skill/Pi 扩展（通常不需要再单独跑）
 
-ocs who                       # 全机 agent 花名册（你自己会被标出来）
-ocs dm agentparty-d8 "帮我审下这个 diff"    # 直发并唤醒一个 agent
+ocs who                       # 当前项目优先的全机花名册（你自己会被标出）
+ocs dm codex-01a06a98 "帮我审下这个 diff"   # 短地址，可直接复制
                               # 频道自动派生，你的身份自动识别
+ocs inbox                     # 重启后续接未读线程
 
 # 一次性接续 v0.3.4 之前的 DM 历史
 ocs dm agentparty "继续旧话题" --inherit dm-<旧频道>
@@ -80,14 +81,15 @@ ocs send ──▶ 追加频道日志 ──▶ 按目标选唤醒载体
 [ocs 唤醒] alice 在 #dev 提到了你（seq 7，回复 seq 3）
 
 <正文，4096 字节以内逐字；更长的只带前 512 字节，外加
-「… (N bytes total; full text: ocs read dev --as bob)」>
+「… (N bytes total; full text: ocs read dev)」>
 
 回复：ocs dm alice "<your reply>"          # Claude→Claude DM
 线程：ocs read dm-<派生频道>
 ```
 
 Claude→Claude DM 的「回复」行优先使用发送方的唯一工作区别名，派生出的长频道只留在「线程」行。
-别名不唯一、普通频道或非 Claude 目标仍保留完整的 `ocs send ... --as ... --reply-to ...` 形式。整条 note 不超过 5120 字节。
+别名不唯一时退回 `ocs send <频道> ... --reply-to ...`。活 Claude、Codex、Pi 会自动识别自身，
+只有无法验证身份的 headless/cmux 目标才保留 `--as`。整条 note 不超过 5120 字节。
 协议与 Agent Party 共用：[docs/wake-protocol.md](./docs/wake-protocol.md)。
 
 ## 能唤醒谁
@@ -95,8 +97,8 @@ Claude→Claude DM 的「回复」行优先使用发送方的唯一工作区别�
 | 目标 | 用法 | 前提 |
 |---|---|---|
 | 交互式 Claude Code 会话 | `@<会话名>` | 接收端在 `~/.claude/settings.json` 设 `"crossSessionInbound": "accept"`。默认值 `hold`：消息进待审队列，**5 分钟没人处理就被静默丢弃**。`ocs doctor` 会查这一项。 |
-| ChatGPT Desktop 任务 | `@<thread-id>` 或 `--codex <thread-id>` | 任务要在 ChatGPT **Desktop 应用**里开着，且同一 renderer 下还有第二个打开的任务作消息来源（自动挑选，或 `--codex-source` 指定）。 |
-| Pi TUI | `@pi-<session-id>` 或 `ocs dm pi-<session-id> …` | 先跑 `ocs skill install`，再重启 Pi。扩展会登记活着的 TUI；消息在 Pi 忙碌时排到当前任务结束后，不会打断这一轮。 |
+| ChatGPT Desktop 任务 | `ocs dm codex-<8hex> …`、`@<thread-id>` 或 `--codex <thread-id>` | 任务要在 ChatGPT **Desktop 应用**里开着，且同一 renderer 下还有第二个打开的任务作消息来源（自动挑选，或 `--codex-source` 指定）。 |
+| Pi TUI | `ocs dm pi-<8hex> …` 或 `@pi-<完整session-id>` | 先跑 `ocs skill install`，再重启 Pi。扩展会登记活着的 TUI；消息在 Pi 忙碌时排到当前任务结束后，不会打断这一轮。 |
 | cmux 里的 Claude/Codex TUI | `ocs dm surface:<n> …` | 可选能力。检测到 cmux 后，`ocs who` 会列出终端 surface，并可把唤醒 note 提交给空闲 surface；surface 忙碌时不会打扰。 |
 | 其他终端或 headless agent | `ocs read` / `ocs send` | 可以读写频道、保留历史和回复；如果所在 harness 没有受支持的载体，就不能被主动直投唤醒。 |
 | shell 前的人 | `ocs send` / `ocs read` / `ocs watch` | 不运行 agent 也能发消息、读取一次或持续旁观同一频道。 |
@@ -107,16 +109,17 @@ Claude→Claude DM 的「回复」行优先使用发送方的唯一工作区别�
 
 | 命令 | 作用 |
 |---|---|
-| `ocs who` | 全机 agent 花名册（你自己会被标出），外加待触发的空闲通知 |
+| `ocs who` | 全机花名册，当前项目优先并标出你自己；`--verbose` 显示底层 ID/路径，`--json` 供程序读取 |
 | `ocs whoami` | 看自动识别出的发送者身份 |
 | `ocs dm <名字或id> <内容>` | 直发并唤醒一个 agent；唯一 Claude 工作区重启后继续使用同一频道。`--inherit <旧dm频道>` 一次性绑定 v0.3.4 前的历史；`--notify-when-idle` |
-| `ocs send <ch> <body> --as <name>` | 追加消息，`@` 触发唤醒，`--reply-to <seq>` 同时唤醒那条的作者。`--no-wake`、`--notify-when-idle`、`--codex <thread-id>`、`--codex-source <thread-id>` |
-| `ocs read <ch> --as <name>` | 从游标读新消息并推进。自己发的折叠成一行（`--include-self` 完整显示；`--json` 带 `self`）。`--since <seq>`、`--peek` |
+| `ocs inbox` | 只列能安全归属给当前身份的未读线程；`--json` 供自动化使用 |
+| `ocs send <ch> <body>` | 追加消息，`@` 触发唤醒，`--reply-to <seq>` 同时唤醒那条的作者；`--as` 只用于覆盖自动身份。另支持 `--no-wake`、`--notify-when-idle`、`--codex`、`--codex-source` |
+| `ocs read <ch>` | 从游标读新消息并推进。自己发的折叠成一行（`--include-self` 完整显示；`--json` 带 `self`）；`--as` 覆盖身份。另支持 `--since`、`--peek` |
 | `ocs notify-when-idle <名字>` | 一次性：那个 Claude 会话下次空闲或退出时，你的会话收到一条 `[跨会话空闲通知]`（已空闲则立即；6 小时后过期） |
 | `ocs sessions` | 列活着的 Claude Code 会话 |
 | `ocs codex-sessions` | 列本机 Codex 任务（`--limit <n>`） |
 | `ocs watch <ch>` | 跟踪频道（`--interval-ms <n>`） |
-| `ocs doctor` | 体检 Claude、Codex、Pi 唤醒链和数据目录（`--fix` 打开 Claude 直投） |
+| `ocs doctor` | 体检 Claude、Codex、Pi、三端 skill 和数据目录；`--fix` 安全修复本地安装并复检 |
 | `ocs skill install` | 修复或更新 Claude Code、Codex、Pi 的内置 skill，并安装 Pi 直投扩展 |
 | `ocs upgrade` | 迁移到托管版的指引 |
 | `ocs version` | 打印版本 |
@@ -143,13 +146,16 @@ Claude Code 和 Codex 各自都有原生的跨会话能力，在各自的岛内�
 | 跨载体回复引用 | 各自内部格式 | 各自内部格式 | ✅ 统一 `seq` + `--reply-to` | ✅ 频道回执与账本 |
 | 部署 | Claude Code 内置 | ChatGPT Desktop 内置 | 单个静态二进制，不要 daemon、账号或 API key | 托管或私有部署 |
 
-\* 持久化不包含自动催收：没有进程盯着谁上线，对方要等下次 `ocs read`、被唤醒或有人提醒时才会读到积压。
+\* 持久化不包含自动催收：没有进程盯着谁上线，对方要等下次 `ocs inbox`、`ocs read`、被唤醒或有人提醒时才会读到积压。
 Claude 的生成会话名重启后仍会变，但唯一工作区别名会对应一个加盐的本机身份。Git 仓库使用规范化远程地址，
 因此不同 worktree 能落到同一 DM 历史；非 Git 工作区使用启动目录。该身份记在本机索引里，对方离线时也能续写原频道。
 同一仓库多会话时会退回精确会话名，不共用私信。需要显式角色身份时使用 `OCS_NAME` / `--as`。
 v0.3.4 之前的历史可用 `--inherit` 绑定一次；工作区不唯一、旧频道只有单方发言、或出现第三个参与者时会拒绝。
 旧频道和稳定频道都已有消息时，ocs 会按「旧历史在前、稳定历史在后」生成确定性合并频道，两个原频道保留不动。
 发起方的游标会直接推到合并频道末尾，对方首次读取时仍可查看全部继承历史。
+新的 DM 会在同一日志追加不透明的命名空间 route sidecar，让 `ocs inbox` 无需反推私信频道哈希即可认领未读；
+旧客户端会忽略 sidecar，但仍能读取保持原样的消息帧。
+旧 DM 若没有这项元数据，只有已有 cursor 能证明曾参与时才会列出；ocs 不猜测，也不暴露无关私信。
 
 诚实建议：claude↔claude 的快速直发用原生更顺——ocs 的 Claude 载体本来就骑在
 原生收件箱 socket 上。当对话跨厂商、超过两方、需要消息在一边离线时不丢、或要留

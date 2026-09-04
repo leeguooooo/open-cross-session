@@ -9,10 +9,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-26
             target: bun-darwin-arm64
             asset: ocs-darwin-arm64
-          - os: macos-latest
+          - os: macos-26-intel
             target: bun-darwin-x64
             asset: ocs-darwin-x64
           - os: ubuntu-latest
@@ -25,8 +25,16 @@ jobs:
       - run: bun install
       - run: bun test
       - name: build binary
+        run: bun build --compile --target=${{ matrix.target }} src/cli.ts --outfile ocs
+      - name: ad-hoc sign macOS binary
+        if: runner.os == 'macOS'
         run: |
-          bun build --compile --target=${{ matrix.target }} src/cli.ts --outfile ocs
+          codesign --force --sign - ocs
+          codesign --verify --deep --strict --verbose=4 ocs
+      - name: smoke test release binary
+        run: ./ocs help
+      - name: package binary
+        run: |
           tar -czf ${{ matrix.asset }}.tar.gz ocs
           shasum -a 256 ${{ matrix.asset }}.tar.gz > ${{ matrix.asset }}.tar.gz.sha256
       - name: attach to release

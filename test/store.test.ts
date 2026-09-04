@@ -10,6 +10,7 @@ import {
   lastSeq,
   loadCursor,
   readMessages,
+  readRoutedMessages,
   saveCursor,
   OCS_HOME_ENV,
 } from "../src/store.ts";
@@ -55,8 +56,23 @@ describe("stable DM channel bindings (#10)", () => {
     appendMessage({ channel: "dm-old-a", from: "b-bb", body: "old b", env });
     appendMessage({ channel: "dm-old-b", from: "a-cc", body: "old a2", env });
     appendMessage({ channel: "dm-old-b", from: "b-dd", body: "old b2", env });
-    appendMessage({ channel: "dm-stable-used", from: "a-ee", body: "new a", env });
-    appendMessage({ channel: "dm-stable-used", from: "b-ff", body: "new b", reply_to: 1, env });
+    appendMessage({
+      channel: "dm-stable-used",
+      from: "a-ee",
+      from_identity: "name:a-ee",
+      to_identity: "name:b-ff",
+      body: "new a",
+      env,
+    });
+    appendMessage({
+      channel: "dm-stable-used",
+      from: "b-ff",
+      from_identity: "name:b-ff",
+      to_identity: "name:a-ee",
+      body: "new b",
+      reply_to: 1,
+      env,
+    });
     const merged = appendDmMessage({
       stableChannel: "dm-stable-used",
       fallbackChannel: "dm-fallback",
@@ -72,6 +88,10 @@ describe("stable DM channel bindings (#10)", () => {
     expect(mergedMessages.map((message) => message.body))
       .toEqual(["old a", "old b", "new a", "new b", "after merge"]);
     expect(mergedMessages[3]!.reply_to).toBe(3);
+    expect(readRoutedMessages(merged.channel, { env }).slice(2, 4)).toMatchObject([
+      { from_identity: "name:a-ee", to_identity: "name:b-ff" },
+      { from_identity: "name:b-ff", to_identity: "name:a-ee" },
+    ]);
     expect(readMessages("dm-old-a", { env }).map((message) => message.body)).toEqual(["old a", "old b"]);
     expect(readMessages("dm-stable-used", { env }).map((message) => message.body)).toEqual(["new a", "new b"]);
 
@@ -214,15 +234,66 @@ describe("isOcsMessage 镜像铁律（上游 #622 教训）", () => {
     const env = freshEnv();
     const plain = appendMessage({ channel: "m", from: "a", body: "x @b", env });
     const withReply = appendMessage({ channel: "m", from: "a", body: "y", reply_to: 1, env });
+    const withIdentities = appendMessage({
+      channel: "m",
+      from: "a",
+      from_identity: "name:a",
+      to_identity: "name:b",
+      body: "z",
+      env,
+    });
     // 经 JSON 往返（即读侧看到的形状）逐条校验
     expect(isOcsMessage(JSON.parse(JSON.stringify(plain)))).toBe(true);
     expect(isOcsMessage(JSON.parse(JSON.stringify(withReply)))).toBe(true);
+    expect(isOcsMessage(JSON.parse(JSON.stringify(withIdentities)))).toBe(true);
+    expect(readMessages("m", { env })[2]).toEqual(withIdentities);
+    expect(readRoutedMessages("m", { env })[2]).toMatchObject({
+      from_identity: "name:a",
+      to_identity: "name:b",
+    });
   });
 
   test("未知字段拒绝（校验表与字段表逐字镜像，多一个字段就红）", () => {
     const env = freshEnv();
     const m = JSON.parse(JSON.stringify(appendMessage({ channel: "m", from: "a", body: "x", env })));
     expect(isOcsMessage({ ...m, sneaky: 1 })).toBe(false);
+  });
+
+  test("DM 身份必须使用受支持的完整命名空间格式", () => {
+    const env = freshEnv();
+    expect(() => appendMessage({
+      channel: "m",
+      from: "a",
+      from_identity: "workspace:not-a-hmac",
+      to_identity: "name:b",
+      body: "x",
+      env,
+    })).toThrow("invalid sender identity");
+    expect(() => appendMessage({
+      channel: "m",
+      from: "a",
+      from_identity: "name:a",
+      body: "missing recipient",
+      env,
+    })).toThrow("must be provided together");
+  });
+
+  test("消息落盘后追加的 route 不能改写既有消息归属", () => {
+    const env = freshEnv();
+    appendMessage({ channel: "m", from: "a", body: "plain", env });
+    const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+    const { channelLogPath } = require("../src/store.ts") as typeof import("../src/store.ts");
+    appendFileSync(
+      channelLogPath("m", env),
+      `${JSON.stringify({
+        v: 1,
+        type: "route",
+        seq: 1,
+        from_identity: "name:a",
+        to_identity: "name:b",
+      })}\n`,
+    );
+    expect(readRoutedMessages("m", { env })[0]).not.toHaveProperty("to_identity");
   });
 });
 

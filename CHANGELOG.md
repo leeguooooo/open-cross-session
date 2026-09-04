@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.4.0
+
+- `ocs who` 默认把当前项目放前面，用 `codex-<8hex>` / `pi-<8hex>` 短地址隐藏完整 UUID；`--verbose` 和 `--json` 按需展开
+- Codex 通过宿主 thread id 自动识别发送者，Claude/Codex/Pi 日常发送都不再要求 `--as`
+- 新增 `ocs inbox`：只列能由 route sidecar 或既有 cursor 证明归属的未读线程；稳定身份 cursor 支持 Claude 重启改名后续读，不猜测、不枚举其他私信
+- 活 Claude/Codex/Pi 的 `Reply:` / `Thread:` 命令不再携带多余 `--as`；`send --reply-to` 会在回复者身份匹配时安全反转父消息 route，让回复进入原发送者 inbox
+- `ocs doctor --fix` 同步修复三端 skill、Pi 扩展和数据目录权限；原子替换旧 skill，不沿符号链接改写共享缓存
+- 支持常见的 `ocs --help`；修复 macOS 测试临时路径过长导致 Pi UDS 用例失败
+- Release workflow 对 macOS 二进制重新做 ad-hoc codesign，并在打包前运行真实二进制 smoke test，避免无效签名被系统以 SIGKILL 拒绝执行
+
 ## v0.3.6
 
 - 支持 Pi TUI：`ocs skill install` 同时安装 Pi skill 与直投扩展；`ocs who` 列出活会话，`ocs dm pi-<session-id>`、`@pi-<session-id>` 和 `--reply-to` 可直接唤醒

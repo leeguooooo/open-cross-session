@@ -25,6 +25,7 @@ import {
   closeSync,
   readFileSync,
   readSync,
+  readdirSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -61,6 +62,34 @@ export function channelLogPath(channel: string, env?: NodeJS.ProcessEnv): string
   return join(channelsDir(env), `${channel}.jsonl`);
 }
 
+/** 列出可信频道日志；inbox 不跟随伪造的 symlink 扫描任意本机文件。 */
+export function listChannels(env: NodeJS.ProcessEnv = process.env): string[] {
+  const dir = channelsDir(env);
+  let files: string[];
+  try {
+    files = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const channels: string[] = [];
+  for (const file of files) {
+    if (!file.endsWith(".jsonl")) continue;
+    const channel = file.slice(0, -".jsonl".length);
+    if (!CHANNEL_RE.test(channel)) continue;
+    try {
+      const stat = lstatSync(join(dir, file));
+      if (
+        stat.isFile() &&
+        !stat.isSymbolicLink() &&
+        (typeof process.getuid !== "function" || stat.uid === process.getuid())
+      ) channels.push(channel);
+    } catch {
+      // 文件在扫描中被清理；忽略这一轮
+    }
+  }
+  return channels.sort();
+}
+
 export interface OcsMessage {
   v: 1;
   seq: number;
@@ -76,6 +105,7 @@ export interface OcsMessage {
 const REQUIRED_KEYS = ["v", "seq", "ts", "from", "body", "mentions"] as const;
 const OPTIONAL_KEYS = ["reply_to"] as const;
 const ALLOWED_KEYS: ReadonlySet<string> = new Set([...REQUIRED_KEYS, ...OPTIONAL_KEYS]);
+export const OCS_IDENTITY_RE = /^(?:name:[A-Za-z0-9][A-Za-z0-9._-]{0,63}|codex:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|pi:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|cmux:surface:\d+|workspace:[0-9a-f]{64})$/i;
 
 export function isOcsMessage(value: unknown): value is OcsMessage {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -92,6 +122,37 @@ export function isOcsMessage(value: unknown): value is OcsMessage {
     Array.isArray(rec.mentions) && rec.mentions.every((m) => typeof m === "string") &&
     (rec.reply_to === undefined ||
       (typeof rec.reply_to === "number" && Number.isInteger(rec.reply_to) && rec.reply_to >= 1))
+  );
+}
+
+/**
+ * Optional DM routing metadata lives in its own log frame. Old binaries reject
+ * unknown OcsMessage fields, but safely skip this non-message frame and still
+ * read the preceding message. The channel log remains the only truth source.
+ */
+export interface OcsRouteFrame {
+  v: 1;
+  type: "route";
+  seq: number;
+  from_identity: string;
+  to_identity: string;
+}
+
+export interface RoutedOcsMessage extends OcsMessage {
+  from_identity?: string;
+  to_identity?: string;
+}
+
+export function isOcsRouteFrame(value: unknown): value is OcsRouteFrame {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const rec = value as Record<string, unknown>;
+  return (
+    Object.keys(rec).sort().join(",") === "from_identity,seq,to_identity,type,v" &&
+    rec.v === 1 &&
+    rec.type === "route" &&
+    typeof rec.seq === "number" && Number.isInteger(rec.seq) && rec.seq >= 1 &&
+    typeof rec.from_identity === "string" && OCS_IDENTITY_RE.test(rec.from_identity) &&
+    typeof rec.to_identity === "string" && OCS_IDENTITY_RE.test(rec.to_identity)
   );
 }
 
@@ -252,6 +313,8 @@ function repairTrailingPartialLine(logPath: string): void {
 export interface AppendInput {
   channel: string;
   from: string;
+  from_identity?: string;
+  to_identity?: string;
   body: string;
   reply_to?: number;
   env?: NodeJS.ProcessEnv;
@@ -260,6 +323,15 @@ export interface AppendInput {
 export function appendMessage(input: AppendInput): OcsMessage {
   if (!CHANNEL_RE.test(input.channel)) throw new Error(`invalid channel: ${input.channel}`);
   if (!NAME_RE.test(input.from)) throw new Error(`invalid sender name: ${input.from}`);
+  if (input.from_identity !== undefined && !OCS_IDENTITY_RE.test(input.from_identity)) {
+    throw new Error(`invalid sender identity: ${input.from_identity}`);
+  }
+  if (input.to_identity !== undefined && !OCS_IDENTITY_RE.test(input.to_identity)) {
+    throw new Error(`invalid recipient identity: ${input.to_identity}`);
+  }
+  if ((input.from_identity === undefined) !== (input.to_identity === undefined)) {
+    throw new Error("DM routing identities must be provided together");
+  }
   if (input.body.length === 0) throw new Error("empty body");
   if (Buffer.byteLength(input.body, "utf8") > BODY_LIMIT) throw new Error("body too large");
   // reply_to 必须在写入前验证：NaN 会被 JSON.stringify 成 null，写出一条读侧
@@ -296,6 +368,19 @@ export function appendMessage(input: AppendInput): OcsMessage {
         ...(input.reply_to !== undefined ? { reply_to: input.reply_to } : {}),
       };
       const line = JSON.stringify(message);
+      if (input.from_identity !== undefined && input.to_identity !== undefined) {
+        const route: OcsRouteFrame = {
+          v: 1,
+          type: "route",
+          seq: message.seq,
+          from_identity: input.from_identity,
+          to_identity: input.to_identity,
+        };
+        // Route first: if the following message write fails, retrying is safe.
+        // Writing metadata after a committed message would create a window where
+        // the CLI reports failure and a human retry duplicates the message.
+        appendFileSync(logPath, `${JSON.stringify(route)}\n`, { mode: 0o600 });
+      }
       appendFileSync(logPath, `${line}\n`, { mode: 0o600 });
       if (firstLineWithSeq(logPath, message.seq) === line) return message;
     }
@@ -371,6 +456,56 @@ export function readMessages(channel: string, options: ReadOptions = {}): OcsMes
   }
   out.sort((a, b) => a.seq - b.seq);
   return out;
+}
+
+/** Read messages plus the nearest valid route sidecar written before the same seq. */
+export function readRoutedMessages(
+  channel: string,
+  options: ReadOptions = {},
+): RoutedOcsMessage[] {
+  if (!CHANNEL_RE.test(channel)) throw new Error(`invalid channel: ${channel}`);
+  let raw: string;
+  try {
+    raw = readFileSync(channelLogPath(channel, options.env), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const since = options.since ?? 0;
+  const seenMessages = new Set<number>();
+  const pendingRoutes = new Map<number, OcsRouteFrame>();
+  const messages: RoutedOcsMessage[] = [];
+  for (const line of raw.split("\n")) {
+    if (line === "") continue;
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (isOcsMessage(value)) {
+      if (!seenMessages.has(value.seq)) {
+        seenMessages.add(value.seq);
+        const pending = pendingRoutes.get(value.seq);
+        if (value.seq > since) {
+          messages.push(pending === undefined
+            ? value
+            : {
+                ...value,
+                from_identity: pending.from_identity,
+                to_identity: pending.to_identity,
+              });
+        }
+      }
+      pendingRoutes.delete(value.seq);
+      continue;
+    }
+    if (isOcsRouteFrame(value) && !seenMessages.has(value.seq)) {
+      pendingRoutes.set(value.seq, value);
+    }
+  }
+  messages.sort((a, b) => a.seq - b.seq);
+  return messages;
 }
 
 export function lastSeq(channel: string, env?: NodeJS.ProcessEnv): number {
@@ -480,7 +615,7 @@ function mergedDmChannel(stableChannel: string, inheritedChannel: string, payloa
   return `dm-${hash}--merged-history`;
 }
 
-function resequence(messages: readonly OcsMessage[], firstSeq: number): OcsMessage[] {
+function resequence(messages: readonly RoutedOcsMessage[], firstSeq: number): RoutedOcsMessage[] {
   const seqs = new Map(messages.map((message, index) => [message.seq, firstSeq + index]));
   return messages.map((message, index) => {
     const replyTo = message.reply_to === undefined ? undefined : seqs.get(message.reply_to);
@@ -490,6 +625,25 @@ function resequence(messages: readonly OcsMessage[], firstSeq: number): OcsMessa
       ...(replyTo === undefined ? { reply_to: undefined } : { reply_to: replyTo }),
     };
   });
+}
+
+function routedLogPayload(messages: readonly RoutedOcsMessage[]): string {
+  const lines: string[] = [];
+  for (const message of messages) {
+    const { from_identity, to_identity, ...plain } = message;
+    if (from_identity !== undefined && to_identity !== undefined) {
+      const route: OcsRouteFrame = {
+        v: 1,
+        type: "route",
+        seq: plain.seq,
+        from_identity,
+        to_identity,
+      };
+      lines.push(JSON.stringify(route));
+    }
+    lines.push(JSON.stringify(plain));
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 /**
@@ -509,15 +663,15 @@ function materializeMergedDmChannel(
     for (const channel of channels) {
       unlocks.push(acquireLock(join(channelsDir(env), `${channel}.lock`), env ?? process.env));
     }
-    const inherited = readMessages(inheritedChannel, { env });
-    const stable = readMessages(stableChannel, { env });
+    const inherited = readRoutedMessages(inheritedChannel, { env });
+    const stable = readRoutedMessages(stableChannel, { env });
     validateDmParticipants(inheritedChannel, inherited, aliases);
     validateDmParticipants(stableChannel, stable, aliases, false);
     const merged = [
       ...resequence(inherited, 1),
       ...resequence(stable, inherited.length + 1),
     ];
-    const payload = `${merged.map((message) => JSON.stringify(message)).join("\n")}\n`;
+    const payload = routedLogPayload(merged);
     const mergedChannel = mergedDmChannel(stableChannel, inheritedChannel, payload);
     unlocks.push(acquireLock(join(channelsDir(env), `${mergedChannel}.lock`), env ?? process.env));
     const path = channelLogPath(mergedChannel, env);
@@ -576,6 +730,8 @@ export interface AppendDmInput {
   /** --inherit 时用来证明旧频道里双方都发过言；只接受当前两个活且唯一的 workspace alias。 */
   expectedLegacyAliases?: readonly [string, string];
   from: string;
+  fromIdentity?: string;
+  toIdentity?: string;
   body: string;
   env?: NodeJS.ProcessEnv;
 }
@@ -598,6 +754,8 @@ export function appendDmMessage(input: AppendDmInput): AppendDmResult {
     const message = appendMessage({
       channel: input.fallbackChannel,
       from: input.from,
+      ...(input.fromIdentity === undefined ? {} : { from_identity: input.fromIdentity }),
+      ...(input.toIdentity === undefined ? {} : { to_identity: input.toIdentity }),
       body: input.body,
       env: input.env,
     });
@@ -655,7 +813,14 @@ export function appendDmMessage(input: AppendDmInput): AppendDmResult {
     if (binding !== null && lastSeq(channel, input.env) === 0) {
       throw new Error(`bound DM history channel ${channel} is missing or empty`);
     }
-    const message = appendMessage({ channel, from: input.from, body: input.body, env: input.env });
+    const message = appendMessage({
+      channel,
+      from: input.from,
+      ...(input.fromIdentity === undefined ? {} : { from_identity: input.fromIdentity }),
+      ...(input.toIdentity === undefined ? {} : { to_identity: input.toIdentity }),
+      body: input.body,
+      env: input.env,
+    });
     return { channel, message, bindingCreated };
   } finally {
     unlock();

@@ -16,7 +16,12 @@ import {
 } from "./claude-address.ts";
 import { listNativeSessions, type NativeClaudeSession } from "./claude-inject.ts";
 import { codexDesktopIpcAvailable } from "./codex-ipc.ts";
-import { codexSessionsRoot, isCodexThreadId, listCodexSessions } from "./codex-sessions.ts";
+import {
+  codexSessionsRoot,
+  isCodexThreadId,
+  listCodexRolloutFiles,
+  listCodexSessions,
+} from "./codex-sessions.ts";
 import {
   isPiSessionId,
   listPiSessions,
@@ -34,6 +39,9 @@ import {
 import { channelLogPath, ocsHome, readMessages, CHANNEL_RE, NAME_RE } from "./store.ts";
 
 export const OCS_NAME_ENV = "OCS_NAME";
+export const CODEX_THREAD_ID_ENV = "CODEX_THREAD_ID";
+const CODEX_SHORT_TARGET_RE = /^codex-([0-9a-f]{8})$/i;
+const PI_SHORT_TARGET_RE = /^pi-([0-9a-f]{8})$/i;
 export {
   claudeWorkspaceAlias,
   uniqueClaudeWorkspaceAlias,
@@ -59,7 +67,7 @@ function safeVerifiedWorkspaceIdentity(
 }
 
 /**
- * 识别「我是谁」：--as > $OCS_NAME > Pi 扩展 session id > 进程祖先链上的 Claude 原生会话名。
+ * 识别「我是谁」：--as > $OCS_NAME > Pi session id > Claude 原生会话 > Codex thread id。
  * agent 在自己的会话里跑 ocs 时自动识别，人一个字都不用打。
  */
 export function resolveSelfName(env: NodeJS.ProcessEnv = process.env): string | null {
@@ -68,9 +76,14 @@ export function resolveSelfName(env: NodeJS.ProcessEnv = process.env): string | 
   const piSessionId = env[OCS_PI_SESSION_ID_ENV];
   if (typeof piSessionId === "string" && isPiSessionId(piSessionId)) return piTargetName(piSessionId);
   const pid = findSelfClaudePid(env);
-  if (pid === null) return null;
-  const session = listNativeSessions(env).find((s) => s.pid === pid);
-  return session?.name ?? null;
+  if (pid !== null) {
+    const session = listNativeSessions(env).find((s) => s.pid === pid);
+    if (session?.name !== null && session?.name !== undefined) return session.name;
+  }
+  const codexThreadId = env[CODEX_THREAD_ID_ENV];
+  return typeof codexThreadId === "string" && isCodexThreadId(codexThreadId)
+    ? codexThreadId.toLowerCase()
+    : null;
 }
 
 /**
@@ -174,11 +187,20 @@ export type RosterEntry =
       workspaceWarning?: string;
       pid: number;
       status: string | null;
+      cwd: string | null;
       self: boolean;
     }
-  | { kind: "codex-task"; threadId: string; summary: string | null; cwd: string | null }
+  | {
+      kind: "codex-task";
+      target: string;
+      threadId: string;
+      summary: string | null;
+      cwd: string | null;
+      self: boolean;
+    }
   | {
       kind: "pi";
+      /** 可直接交给 `ocs dm` 的唯一短地址。 */
       target: string;
       sessionId: string;
       name: string | null;
@@ -217,18 +239,29 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env): Roster {
       ...(workspaceWarning === undefined ? {} : { workspaceWarning }),
       pid: s.pid,
       status: s.status,
+      cwd: s.cwd ?? null,
       self: s.pid === selfPid,
     });
   }
   const codexIpc = codexDesktopIpcAvailable(env);
+  const selfCodexThreadId = isCodexThreadId(env[CODEX_THREAD_ID_ENV] ?? "")
+    ? env[CODEX_THREAD_ID_ENV]!.toLowerCase()
+    : null;
   for (const s of listCodexSessions(codexSessionsRoot(env), { limit: 10 })) {
-    entries.push({ kind: "codex-task", threadId: s.threadId, summary: s.summary, cwd: s.cwd });
+    entries.push({
+      kind: "codex-task",
+      target: `codex-${s.threadId.slice(0, 8)}`,
+      threadId: s.threadId,
+      summary: s.summary,
+      cwd: s.cwd,
+      self: s.threadId === selfCodexThreadId,
+    });
   }
   const selfPiSessionId = env[OCS_PI_SESSION_ID_ENV]?.toLowerCase();
   for (const s of listPiSessions(env)) {
     entries.push({
       kind: "pi",
-      target: s.target,
+      target: `pi-${s.session_id.slice(0, 8)}`,
       sessionId: s.session_id,
       name: s.name,
       pid: s.pid,
@@ -270,6 +303,8 @@ export interface ResolvedDmTarget {
   ambiguousClaudeTargets?: string[];
   /** 同一 Pi session id 被多个活进程打开时，必须显式消歧，绝不任选一个。 */
   ambiguousPiTargets?: string[];
+  /** `codex-<8hex>` 命中多个本地 rollout 时必须拒绝任选。 */
+  ambiguousCodexTargets?: string[];
   threadId?: string;
   piSession?: PiSessionRegistration;
   piSessionId?: string;
@@ -280,6 +315,7 @@ export interface ResolvedDmTarget {
 export function selfIdentity(from: string): string {
   const piSessionId = piSessionIdFromTarget(from);
   if (piSessionId !== null) return `pi:${piSessionId}`;
+  if (isCodexThreadId(from)) return `codex:${from.toLowerCase()}`;
   return `name:${from}`;
 }
 
@@ -344,10 +380,59 @@ export function resolveDmTarget(
   if (isCodexThreadId(target)) {
     return {
       kind: "codex-task",
-      name: `codex-${target.slice(0, 8)}`,
+      name: `codex-${target.slice(0, 8).toLowerCase()}`,
       identity: `codex:${target.toLowerCase()}`,
-      threadId: target,
+      threadId: target.toLowerCase(),
     };
+  }
+  const codexShort = CODEX_SHORT_TARGET_RE.exec(target);
+  if (codexShort !== null) {
+    const prefix = codexShort[1]!.toLowerCase();
+    // 只扫固定布局下的文件名，不读每份 rollout 的 512 KiB 头部。
+    const matches = listCodexRolloutFiles(codexSessionsRoot(env))
+      .filter((session) => session.threadId.startsWith(prefix));
+    if (matches.length === 1) {
+      const threadId = matches[0]!.threadId;
+      return {
+        kind: "codex-task",
+        name: `codex-${prefix}`,
+        identity: `codex:${threadId}`,
+        threadId,
+      };
+    }
+    if (matches.length > 1) {
+      return {
+        kind: "codex-task",
+        name: `codex-${prefix}`,
+        identity: `codex:${prefix}`,
+        ambiguousCodexTargets: matches.map((session) => session.threadId),
+      };
+    }
+  }
+  const piShort = PI_SHORT_TARGET_RE.exec(target);
+  if (piShort !== null) {
+    const prefix = piShort[1]!.toLowerCase();
+    const matches = listPiSessions(env).filter((session) => session.session_id.startsWith(prefix));
+    if (matches.length === 1) {
+      const session = matches[0]!;
+      return {
+        kind: "pi",
+        name: session.target,
+        identity: `pi:${session.session_id}`,
+        piSessionId: session.session_id,
+        piSession: session,
+      };
+    }
+    if (matches.length > 1) {
+      return {
+        kind: "pi",
+        name: target,
+        identity: `pi:${prefix}`,
+        ambiguousPiTargets: matches.map((session) =>
+          `${session.target}(pid ${session.pid}, cwd ${session.cwd})`
+        ),
+      };
+    }
   }
   const piSessionId = piSessionIdFromTarget(target);
   if (piSessionId !== null) {

@@ -48,10 +48,12 @@ export interface WakeNoteInput {
   from: string;
   /** 消息正文，逐字（≤4096B）或前 512B 内联。 */
   body: string;
-  /** 唤醒时已知的目标会话原生名；非 DM 和非 Claude 目标的命令需要它填 `--as`。 */
+  /** 唤醒时已知的目标名；只有不能自动识别身份的载体才会把它填进 `--as`。 */
   receiver: string;
   /** DM 到 Claude 会话时的可读回复目标；在对端可自动识别自身身份时才设置。 */
   dmReplyTarget?: string;
+  /** 目标 harness 会给 ocs 提供自身身份；Reply/Thread 不需要再写 --as。 */
+  implicitReceiver?: boolean;
   replyTo?: number;
   /** 可选的相对时间（"2m ago"）；ocs 的唤醒紧随 send，调用方一般不传。 */
   ago?: string;
@@ -67,8 +69,13 @@ export function truncateUtf8(text: string, maxBytes: number): string {
   return buf.subarray(0, end).toString("utf8");
 }
 
-export function wakeReplyCommand(channel: string, receiver: string, seq: number): string {
-  return `ocs send ${channel} "<your reply>" --as ${receiver} --reply-to ${seq}`;
+export function wakeReplyCommand(
+  channel: string,
+  receiver: string,
+  seq: number,
+  implicitReceiver = false,
+): string {
+  return `ocs send ${channel} "<your reply>"${implicitReceiver ? "" : ` --as ${receiver}`} --reply-to ${seq}`;
 }
 
 export function wakeDmReplyCommand(target: string): string {
@@ -87,7 +94,7 @@ export function wakeReadCommand(channel: string, receiver: string, implicitRecei
  *   <body>
  *   <空行>
  *   Reply: ocs dm <sender> "<your reply>"                              (Claude DM)
- *          ocs send <channel> "<your reply>" --as <receiver> --reply-to <N> (其它)
+ *          ocs send <channel> "<your reply>" [--as <receiver>] --reply-to <N> (其它)
  *   Thread: ocs read <channel> [--as <receiver>]
  *
  * 正文 >4096B 时 body 换成前 512B + `… (<total> bytes total; full text: <read command>)`。
@@ -96,10 +103,11 @@ export function wakeReadCommand(channel: string, receiver: string, implicitRecei
 export function wakeNote(input: WakeNoteInput): string {
   const M = messages(input.lang ?? "en");
   const dmReply = input.dmReplyTarget !== undefined;
-  const read = wakeReadCommand(input.channel, input.receiver, dmReply);
+  const implicitReceiver = dmReply || input.implicitReceiver === true;
+  const read = wakeReadCommand(input.channel, input.receiver, implicitReceiver);
   const reply = dmReply
     ? wakeDmReplyCommand(input.dmReplyTarget!)
-    : wakeReplyCommand(input.channel, input.receiver, input.seq);
+    : wakeReplyCommand(input.channel, input.receiver, input.seq, implicitReceiver);
   const total = Buffer.byteLength(input.body, "utf8");
   const bodyPart = total <= WAKE_BODY_INLINE_MAX_BYTES
     ? input.body
@@ -297,7 +305,7 @@ export async function wakeSessions(
       name: receiver,
       pid: session.pid,
       sessionId: session.sessionId,
-      body: wakeNote({ ...input, receiver }),
+      body: wakeNote({ ...input, receiver, implicitReceiver: true }),
       fromName: input.from,
       env: input.env,
     });
@@ -451,7 +459,11 @@ export async function wakeCodexTask(input: WakeInput & {
       sourceThreadId = picked;
     }
     // Codex 任务没有 ocs 名字：Reply:/Thread: 里的 --as 用 dm 同款派生名 codex-<8hex>。
-    const prompt = wakeNote({ ...input, receiver: `codex-${input.targetThreadId.slice(0, 8)}` });
+    const prompt = wakeNote({
+      ...input,
+      receiver: input.targetThreadId,
+      implicitReceiver: true,
+    });
     const { turnId } = await client.startDelegatedTurn({
       targetThreadId: input.targetThreadId,
       sourceThreadId,

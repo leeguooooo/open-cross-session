@@ -33,7 +33,7 @@ function sessionsFixture(options: { name?: string; cwd?: string } = {}): NodeJS.
       name: options.name ?? "worker-a",
       cwd: options.cwd ?? "/work/worker",
       status: "idle",
-      messagingSocketPath: join(dir, "inbox.sock"),
+      messagingSocketPath: join(dir, `${process.pid}.sock`),
     }),
   );
   return {
@@ -330,5 +330,39 @@ describe("findDmReplyChannel（跨载体反向 dm 会话收敛，review 回归�
 describe("resolveSelfName", () => {
   test("OCS_NAME 显式覆盖优先", () => {
     expect(resolveSelfName({ [OCS_NAME_ENV]: "me-42" })).toBe("me-42");
+  });
+
+  test("Codex 会话直接使用宿主提供的 thread id，不再要求 --as", () => {
+    expect(resolveSelfName({ CODEX_THREAD_ID: THREAD.toUpperCase() })).toBe(THREAD);
+    expect(selfIdentity(THREAD)).toBe(`codex:${THREAD}`);
+  });
+
+  test("可验证的 Claude 会话优先于祖先进程遗留的 Codex thread id", () => {
+    const env = sessionsFixture({ name: "worker-a" });
+    env.CODEX_THREAD_ID = THREAD;
+    env.CLAUDE_CODE_SESSION_ID = "sess-1";
+    env.CLAUDE_CODE_MESSAGING_SOCKET = join(
+      env[CLAUDE_NATIVE_SESSIONS_DIR_ENV]!,
+      "..",
+      `${process.pid}.sock`,
+    );
+    expect(resolveSelfName(env)).toBe("worker-a");
+  });
+});
+
+test("codex-<8hex> 短地址解析到唯一的本地 thread id", () => {
+  const root = mkdtempSync(join(tmpdir(), "ocs-codex-short-"));
+  const day = join(root, "sessions", "2026", "09", "04");
+  mkdirSync(day, { recursive: true });
+  writeFileSync(
+    join(day, `rollout-2026-09-04T12-00-00-${THREAD}.jsonl`),
+    `${JSON.stringify({ type: "session_meta", payload: { cwd: "/work/current" } })}\n`,
+  );
+  const resolved = resolveDmTarget("codex-aaaaaaaa", { CODEX_HOME: root });
+  expect(resolved).toMatchObject({
+    kind: "codex-task",
+    name: "codex-aaaaaaaa",
+    identity: `codex:${THREAD}`,
+    threadId: THREAD,
   });
 });

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLAUDE_NATIVE_SESSIONS_DIR_ENV } from "../src/claude-inject.ts";
 import { IDLE_POLL_MS_ENV } from "../src/idle.ts";
-import { appendMessage, loadCursor, readMessages, OCS_HOME_ENV } from "../src/store.ts";
+import { appendMessage, loadCursor, readMessages, readRoutedMessages, OCS_HOME_ENV } from "../src/store.ts";
 
 // 真 CLI 进程 + 真 UDS + 真脱离终端的 watcher。
 // 订阅方/发送方会话 = 本测试进程（CLI 的祖先，findSelfClaudePid 命中，名 tester）；
@@ -83,6 +83,7 @@ function fixture(options: { withSelf?: boolean; selfCwd?: string; peerCwd?: stri
   const inherited = { ...process.env } as Record<string, string>;
   delete inherited.CLAUDE_CODE_SESSION_ID;
   delete inherited.CLAUDE_CODE_MESSAGING_SOCKET;
+  delete inherited.CODEX_THREAD_ID;
   delete inherited.OCS_NAME;
   return {
     env: {
@@ -164,6 +165,93 @@ describe("read 不回显自己（#3）", () => {
   }, T);
 });
 
+describe("inbox 离线续接", () => {
+  test("只列投给自己的未读 DM，read 后沿同一 cursor 消失", async () => {
+    const f = fixture();
+    try {
+      appendMessage({
+        channel: "dm-inbox-test",
+        from: "worker-a",
+        from_identity: "name:worker-a",
+        to_identity: "name:tester",
+        body: "queued while you were away",
+        env: f.env,
+      });
+      appendMessage({
+        channel: "dm-someone-else",
+        from: "worker-a",
+        from_identity: "name:worker-a",
+        to_identity: "name:someone-else",
+        body: "private",
+        env: f.env,
+      });
+
+      const inbox = await run(f, ["inbox"]);
+      expect({ code: inbox.code, stderr: inbox.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(inbox.stdout).toContain("Inbox: 1 unread thread(s)");
+      expect(inbox.stdout).toContain("ocs read dm-inbox-test");
+      expect(inbox.stdout).not.toContain("dm-someone-else");
+
+      const read = await run(f, ["read", "dm-inbox-test"]);
+      expect(read.stdout).toContain("queued while you were away");
+      expect((await run(f, ["inbox"])).stdout).toContain("no unread threads");
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("dm 写入的 route sidecar 可被离线收件人直接发现", async () => {
+    const f = fixture();
+    try {
+      const sent = await run(f, ["dm", "offline-bob", "please resume", "--as", "alice"]);
+      expect({ code: sent.code, stderr: sent.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(sent.stdout).toContain("NOT woken");
+
+      const inbox = await run(f, ["inbox", "--as", "offline-bob"]);
+      expect(inbox.stdout).toContain("Inbox: 1 unread thread(s)");
+      const channel = /ocs read (dm-[^\s]+) --as offline-bob/.exec(inbox.stdout)?.[1];
+      expect(channel).toBeDefined();
+      const read = await run(f, ["read", channel!, "--as", "offline-bob"]);
+      expect(read.stdout).toContain("please resume");
+      expect((await run(f, ["inbox", "--as", "offline-bob"])).stdout).toContain("no unread threads");
+
+      const reply = await run(f, [
+        "send",
+        channel!,
+        "done",
+        "--as",
+        "offline-bob",
+        "--reply-to",
+        "1",
+        "--no-wake",
+      ]);
+      expect({ code: reply.code, stderr: reply.stderr }).toEqual({ code: 0, stderr: "" });
+      const aliceInbox = await run(f, ["inbox", "--as", "alice"]);
+      expect(aliceInbox.stdout).toContain("Inbox: 1 unread thread(s)");
+      expect(aliceInbox.stdout).toContain(`ocs read ${channel} --as alice`);
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("发送方 cursor 写失败不把已落盘 DM 伪装成发送失败", async () => {
+    const f = fixture();
+    try {
+      mkdirSync(f.home, { recursive: true });
+      writeFileSync(join(f.home, "cursors"), "not a directory");
+      const sent = await run(f, ["dm", "offline-bob", "stored once", "--as", "alice"]);
+      expect({ code: sent.code, stderr: sent.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(sent.stdout).toContain("message is stored, but the sender cursor could not be advanced");
+      expect(sent.stdout).toContain("NOT woken");
+      const channel = /channel (dm-[^,\s)]+)/.exec(sent.stdout)?.[1];
+      expect(channel).toBeDefined();
+      expect(readMessages(channel!, { env: f.env }).map((message) => message.body)).toEqual(["stored once"]);
+    } finally {
+      f.close();
+    }
+  }, T);
+});
+
 describe("唤醒目标排除发送者本人（#3）", () => {
   test("按名字：--as worker-a 的正文里 @worker-a 不唤醒 worker-a（活会话、真 socket）", async () => {
     const f = fixture();
@@ -199,7 +287,8 @@ describe("唤醒目标排除发送者本人（#3）", () => {
       expect(r.stdout).toContain("wake: delivered to inbox → worker-a");
       const c = content(await f.nextFrame());
       expect(c).toContain("[ocs wake] tester mentioned you in #chat (seq 1)\n\nplease look @worker-a\n\n");
-      expect(c).toContain('Reply: ocs send chat "<your reply>" --as worker-a --reply-to 1\n');
+      expect(c).toContain('Reply: ocs send chat "<your reply>" --reply-to 1\n');
+      expect(c).toContain("Thread: ocs read chat\n");
     } finally {
       f.close();
     }
@@ -215,7 +304,7 @@ describe("--reply-to 唤醒被回复者（Reply: 行复制即达）", () => {
       expect(r.stdout).toContain("wake: delivered to inbox → worker-a");
       const c = content(await f.nextFrame());
       expect(c).toContain("[ocs wake] tester mentioned you in #chat (seq 2, reply to seq 1)\n\n<your reply>\n\n");
-      expect(c).toContain('Reply: ocs send chat "<your reply>" --as worker-a --reply-to 2\n');
+      expect(c).toContain('Reply: ocs send chat "<your reply>" --reply-to 2\n');
     } finally {
       f.close();
     }
@@ -228,6 +317,13 @@ describe("dm 唤醒提示（#8 #9）", () => {
     try {
       const r = await run(f, ["dm", "worker-a", "hello"]);
       expect(r.code).toBe(0);
+      const channel = /channel (dm-[^,\s)]+)/.exec(r.stdout)?.[1];
+      expect(channel).toBeDefined();
+      expect(readRoutedMessages(channel!, { env: f.env })[0]).toMatchObject({
+        from: "tester",
+        from_identity: expect.stringMatching(/^workspace:[0-9a-f]{64}$/),
+        to_identity: expect.stringMatching(/^workspace:[0-9a-f]{64}$/),
+      });
       const c = content(await f.nextFrame());
       expect(c).toContain('Reply: ocs dm tester "<your reply>"\n');
       expect(c).toMatch(/Thread: ocs read dm-[^\s]+\n/);
@@ -237,13 +333,14 @@ describe("dm 唤醒提示（#8 #9）", () => {
     }
   }, T);
 
-  test("显式 --as 可能不是可寻址的 Claude 名，保留完整 send 回复命令", async () => {
+  test("显式 --as 可能不是可寻址的发送者，仍用频道回复但接收方身份自动识别", async () => {
     const f = fixture();
     try {
       const r = await run(f, ["dm", "worker-a", "hello", "--as", "stable-alias"]);
       expect(r.code).toBe(0);
       const c = content(await f.nextFrame());
-      expect(c).toMatch(/Reply: ocs send dm-[^\s]+ "<your reply>" --as worker-a --reply-to 1/);
+      expect(c).toMatch(/Reply: ocs send dm-[^\s]+ "<your reply>" --reply-to 1/);
+      expect(c).not.toContain("--as worker-a");
     } finally {
       f.close();
     }
@@ -253,9 +350,9 @@ describe("dm 唤醒提示（#8 #9）", () => {
     const f = fixture({ peerCwd: "/work/tester" });
     try {
       const r = await run(f, ["dm", "worker-a", "hello"]);
-      expect(r.code).toBe(0);
+      expect({ code: r.code, stderr: r.stderr }).toEqual({ code: 0, stderr: "" });
       const c = content(await f.nextFrame());
-      expect(c).toMatch(/Reply: ocs send dm-[^\s]+ "<your reply>" --as worker-a --reply-to 1/);
+      expect(c).toMatch(/Reply: ocs send dm-[^\s]+ "<your reply>" --reply-to 1/);
       expect(c).not.toContain("Reply: ocs dm tester");
     } finally {
       f.close();
@@ -315,7 +412,7 @@ describe("dm 唤醒提示（#8 #9）", () => {
       await f.nextFrame();
       unlinkSync(join(f.home, "workspace-key"));
       const degraded = await run(f, ["dm", "worker-a", "still deliver"]);
-      expect(degraded.code).toBe(0);
+      expect({ code: degraded.code, stderr: degraded.stderr }).toEqual({ code: 0, stderr: "" });
       expect(degraded.stdout).toContain("workspace continuity disabled:");
       expect(degraded.stdout).toContain("session-scoped DM remains available");
       expect(degraded.stdout).toContain("wake: delivered to inbox");

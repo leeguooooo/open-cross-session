@@ -88,6 +88,20 @@ describe("wakeNote（协议 §1 骨架）", () => {
     );
   });
 
+  test("宿主可自动识别身份时 Reply/Thread 不再注入多余 --as", () => {
+    const note = wakeNote({
+      channel: "dev",
+      seq: 7,
+      from: "alice",
+      body: "hello",
+      receiver: "worker-a",
+      implicitReceiver: true,
+    });
+    expect(note).toContain('Reply: ocs send dev "<your reply>" --reply-to 7');
+    expect(note).toContain("Thread: ocs read dev");
+    expect(note).not.toContain("--as worker-a");
+  });
+
   test("刚好 4096 字节仍逐字内联；4097 字节截成前 512 字节 + 总字节数 + 读线程命令", () => {
     const exact = "x".repeat(WAKE_BODY_INLINE_MAX_BYTES);
     expect(wakeNote({ channel: "dev", seq: 1, from: "a", body: exact, receiver: "b" })).toContain(`\n\n${exact}\n\n`);
@@ -250,8 +264,8 @@ describe("injectChannelMessage 端到端（真 UDS）", () => {
       expect(message.content.endsWith("\n</cross-session-message>")).toBe(true);
       expect(message.content).toContain("[ocs wake] alice mentioned you in #dev (seq 7, reply to seq 2)\n\n");
       expect(message.content).toContain(`\n\n${body}\n\n`);
-      expect(message.content).toContain('\nReply: ocs send dev "<your reply>" --as worker-a --reply-to 7\n');
-      expect(message.content).toContain("\nThread: ocs read dev --as worker-a\n");
+      expect(message.content).toContain('\nReply: ocs send dev "<your reply>" --reply-to 7\n');
+      expect(message.content).toContain("\nThread: ocs read dev\n");
     } finally {
       f.server.close();
     }

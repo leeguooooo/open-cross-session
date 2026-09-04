@@ -85,6 +85,12 @@ describe("Pi registration and wake transport", () => {
     const env = { OCS_HOME: home };
 
     expect(listPiSessions(env)).toEqual([expected]);
+    expect(resolveDmTarget(`pi-${SESSION_ID.slice(0, 8)}`, env)).toMatchObject({
+      kind: "pi",
+      name: piTargetName(SESSION_ID),
+      identity: `pi:${SESSION_ID}`,
+      piSessionId: SESSION_ID,
+    });
     const result = await wakePiSession(expected, "[ocs wake] hello");
     expect(result).toEqual({ ok: true, sessionId: SESSION_ID, delivery: "queued" });
     expect(received).toMatchObject({
@@ -113,7 +119,10 @@ describe("Pi registration and wake transport", () => {
 
 describe("installed Pi extension", () => {
   test("registers a TUI, injects a follow-up custom message, and cleans up on shutdown", async () => {
-    const root = tempRoot("ocs-pi-extension-");
+    // macOS tmpdir() expands to a long /var/folders/... path. Keep this
+    // generated Unix socket below sockaddr_un's path limit.
+    const root = mkdtempSync("/tmp/ocs-pi-extension-");
+    tempRoots.push(root);
     const home = join(root, "ocs-home");
     const agentDir = join(root, "pi-agent");
     const paths = installPiIntegration("---\nname: ocs\n---\n", { PI_CODING_AGENT_DIR: agentDir }, root);

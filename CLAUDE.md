@@ -25,6 +25,7 @@ bun src/cli.ts <cmd>   # 本地跑 CLI（who/dm/send/read/notify-when-idle/sessi
 6. **vendored 文件不是 canonical**：`src/claude-inject.ts`、`src/codex-ipc.ts`、`src/codex-sessions.ts` 来自 AgentParty 主仓（`~/github.com/agentparty`，文件头有标注）。行为疑问对上游；修 bug 考虑回流上游。
 7. 唤醒载荷按 **docs/wake-protocol.md**（与 AgentParty 共用，正本在本仓库）：正文 ≤4096B 逐字内联、超过只带前 512B、整条 ≤5120B，`Reply:`/`Thread:` 两行永不砍。改数字/文案先改协议文档，两边同步。
 8. **notify-when-idle 是一次性的**：watcher 投递一条通知后必须退出；每次翻转都发会把订阅方打成筛子（测试钉着）。
+9. **DM 路由身份是独立 route sidecar，不是 `OcsMessage v1` 字段**：旧二进制会严格拒绝未知消息字段。sidecar 与消息在同一频道 JSONL，必须先写 route、再写 message；这样消息写失败可以安全重试，旧读端仍会跳过 sidecar 并读取原消息。
 
 ## 路线（owner 已拍板）
 

@@ -44,14 +44,16 @@ Thread: <read command>
   - ocs 的 Claude→Claude DM：发送方有唯一工作区别名时用
     `ocs dm <sender-workspace-alias> "<your reply>"`。接收方身份由当前 Claude 会话自动识别，
     Reply 行不暴露 dm 哈希频道。同一工作区有多个活会话时不猜目标，改用下面的完整命令。
-  - ocs 的普通频道、Codex 任务、Pi 会话、cmux 终端：
-    `ocs send <channel> "<your reply>" --as <receiver-name> --reply-to <N>`。这些场景不能假定接收方
-    有可自动识别的 Claude 身份，因此保留完整参数。
+  - ocs 投给活 Claude、Codex 或 Pi 会话：
+    `ocs send <channel> "<your reply>" --reply-to <N>`。三种 harness 都会给子进程提供可验证的
+    当前身份，Reply 行不得再用短展示名覆盖它。
+  - ocs 投给无法验证自身身份的 cmux surface / headless shell：
+    `ocs send <channel> "<your reply>" --as <receiver-name> --reply-to <N>`。
   - AgentParty：`party send <channel> "<your reply>" --reply-to <N>`；若接收方身份来自显式
     `AGENTPARTY_CONFIG` 路径，则前缀 `AGENTPARTY_CONFIG=<path> `。具体旗标以 `party send --help`
     为准，实现者核对后填入。
-- `Thread:` 后是读线程的命令（ocs Claude DM：`ocs read <channel>`；其它 ocs 载体：
-  `ocs read <channel> --as <receiver-name>`；AgentParty：
+- `Thread:` 后是读线程的命令（ocs 的活 Claude/Codex/Pi：`ocs read <channel>`；
+  无法验证自身身份的 ocs 载体：`ocs read <channel> --as <receiver-name>`；AgentParty：
   `party history <channel> --seq <N>`）。
 - 整条 note 上限 **5120 字节**（4096 正文 + 骨架 ≤ 1024）。骨架超预算时按降级阶梯先砍 `<ago>`、
   再砍 sender，`Reply:` 与 `Thread:` 两行永不砍。
