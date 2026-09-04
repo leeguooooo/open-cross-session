@@ -143,6 +143,13 @@ export interface CodexDesktopIpcClientOptions {
   env?: NodeJS.ProcessEnv;
   clientType?: string;
   requestTimeoutMs?: number;
+  /**
+   * 建连 + initialize 的预算，独立于 requestTimeoutMs。
+   * owner 探测故意用很短的 deadline（CODEX_OWNER_PROBE_TIMEOUT_MS）来快速判定"没人认领"，
+   * 但那个 deadline 套到建连上就变成了误判：机器一忙，连 socket 都还没握上就超时，
+   * 调用方看到的是传输故障而不是"未认领"。两者是不同的预算，别复用。
+   */
+  connectTimeoutMs?: number;
   startTurnTimeoutMs?: number;
 }
 
@@ -179,12 +186,14 @@ export class CodexDesktopIpcClient implements CodexDesktopIpcTransport {
   private closed = false;
   private readonly socketPath: string;
   private readonly timeoutMs: number;
+  private readonly connectTimeoutMs: number;
   private readonly startTurnTimeoutMs: number;
   private readonly clientType: string;
 
   constructor(options: CodexDesktopIpcClientOptions = {}) {
     this.socketPath = codexDesktopIpcSocketPath(options.env ?? process.env);
     this.timeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.startTurnTimeoutMs = options.startTurnTimeoutMs ?? 30_000;
     this.clientType = options.clientType ?? "ocs";
   }
@@ -198,11 +207,11 @@ export class CodexDesktopIpcClient implements CodexDesktopIpcTransport {
     socket.once("error", (error) => this.handleClose(error));
     socket.once("close", () => this.handleClose(new Error("ChatGPT Desktop IPC closed")));
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new CodexDesktopIpcUnavailableError(`ChatGPT Desktop IPC connect timed out`)), this.timeoutMs);
+      const timer = setTimeout(() => reject(new CodexDesktopIpcUnavailableError(`ChatGPT Desktop IPC connect timed out`)), this.connectTimeoutMs);
       socket.once("connect", () => { clearTimeout(timer); resolve(); });
       socket.once("error", (error) => { clearTimeout(timer); reject(error); });
     });
-    const response = await this.request("initialize", 0, { clientType: this.clientType });
+    const response = await this.request("initialize", 0, { clientType: this.clientType }, { timeoutMs: this.connectTimeoutMs });
     const id = object(response.result) && typeof response.result.clientId === "string"
       ? response.result.clientId
       : null;

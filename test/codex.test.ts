@@ -85,6 +85,8 @@ function fakeRouter(
     withThreadC?: boolean;
     ignoreOwnerFor?: ReadonlySet<string>;
     startTurnWithoutId?: boolean;
+    /** 让 initialize 慢于 owner 探测 deadline，模拟机器繁忙时的建连开销。 */
+    delayInitializeMs?: number;
   } = {},
 ): FakeRouter {
   const codexHome = rolloutFixture({ withThreadC: options.withThreadC ?? false }).CODEX_HOME!;
@@ -109,7 +111,9 @@ function fakeRouter(
         const reply = (extra: Record<string, unknown>) =>
           socket.write(encodeFrame({ type: "response", requestId: message.requestId, resultType: "success", ...extra }));
         if (message.method === "initialize") {
-          reply({ result: { clientId: "test-client" } });
+          const send = () => reply({ result: { clientId: "test-client" } });
+          if (options.delayInitializeMs === undefined) send();
+          else setTimeout(send, options.delayInitializeMs);
         } else if (message.method === "thread-owner-discovery") {
           if (options.ignoreOwnerFor?.has(params.conversationId as string)) continue;
           reply({ handledByClientId: ownerOf(params.conversationId as string) });
@@ -379,6 +383,28 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
       });
       expect(result.ok).toBe(true);
       if (result.ok) expect(result.sourceThreadId).toBe(THREAD_C);
+    } finally {
+      router.close();
+    }
+  });
+
+  // #28：owner 探测的 deadline 故意很短（判"没人认领"要快），但它一度也被当成建连预算。
+  // 机器一忙，30ms 还没握上 socket 就超时，调用方收到的是 failed（会被当传输故障重试），
+  // 而不是 not-open（该停靠 inbox）。建连必须有独立预算。
+  test("建连慢于 owner 探测 deadline 时，仍按未认领报 not-open，不退化成 failed", async () => {
+    const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_B]), delayInitializeMs: 120 });
+    try {
+      const result = await wakeCodexTask({
+        targetThreadId: THREAD_B,
+        channel: "dm-test",
+        body: "park me",
+        seq: 3,
+        from: "a",
+        env: router.env,
+        ownerDiscoveryTimeoutMs: 30,
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toBe("not-open");
     } finally {
       router.close();
     }
