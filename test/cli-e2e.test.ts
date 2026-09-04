@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLAUDE_NATIVE_SESSIONS_DIR_ENV } from "../src/claude-inject.ts";
 import { IDLE_POLL_MS_ENV } from "../src/idle.ts";
-import { OCS_HOME_ENV } from "../src/store.ts";
+import { appendMessage, readMessages, OCS_HOME_ENV } from "../src/store.ts";
 
 // 真 CLI 进程 + 真 UDS + 真脱离终端的 watcher。
 // 订阅方/发送方会话 = 本测试进程（CLI 的祖先，findSelfClaudePid 命中，名 tester）；
@@ -257,6 +257,71 @@ describe("dm 唤醒提示（#8 #9）", () => {
       const c = content(await f.nextFrame());
       expect(c).toMatch(/Reply: ocs send dm-[^\s]+ "<your reply>" --as worker-a --reply-to 1/);
       expect(c).not.toContain("Reply: ocs dm tester");
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("--inherit 显式继承旧频道，当次和后续 DM 都续写原历史（#10）", async () => {
+    const f = fixture();
+    try {
+      appendMessage({ channel: "dm-old-history", from: "tester-aa", body: "old one", env: f.env });
+      appendMessage({ channel: "dm-old-history", from: "worker-bb", body: "old two", env: f.env });
+      const inherited = await run(f, ["dm", "worker-a", "new three", "--inherit", "dm-old-history"]);
+      expect({ code: inherited.code, stderr: inherited.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(inherited.stdout).toContain("DM history inherited: dm-old-history → dm-old-history");
+      expect(inherited.stdout).toContain("channel dm-old-history, seq 3");
+      const firstWake = content(await f.nextFrame());
+      expect(firstWake).toContain("Thread: ocs read dm-old-history");
+
+      const continued = await run(f, ["dm", "worker-a", "new four"]);
+      expect(continued.code).toBe(0);
+      expect(continued.stdout).toContain("channel dm-old-history, seq 4");
+      await f.nextFrame();
+      expect(readMessages("dm-old-history", { env: f.env }).map((message) => message.body))
+        .toEqual(["old one", "old two", "new three", "new four"]);
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("首次稳定 DM 与 --inherit 并发时不会分裂成两条历史", async () => {
+    const f = fixture();
+    try {
+      appendMessage({ channel: "dm-old-race", from: "tester-aa", body: "old one", env: f.env });
+      appendMessage({ channel: "dm-old-race", from: "worker-bb", body: "old two", env: f.env });
+      const [inherit, ordinary] = await Promise.all([
+        run(f, ["dm", "worker-a", "inherit write", "--inherit", "dm-old-race"]),
+        run(f, ["dm", "worker-a", "ordinary write"]),
+      ]);
+      expect(ordinary.code).toBe(0);
+      if (inherit.code === 0) {
+        expect(inherit.stdout).toContain("channel dm-old-race");
+        expect(ordinary.stdout).toContain("channel dm-old-race");
+        expect(readMessages("dm-old-race", { env: f.env }).map((message) => message.body).sort())
+          .toEqual(["inherit write", "old one", "old two", "ordinary write"].sort());
+      } else {
+        expect(inherit.stderr).toContain("already has messages");
+        expect(readMessages("dm-old-race", { env: f.env }).map((message) => message.body))
+          .toEqual(["old one", "old two"]);
+      }
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("workspace-key 丢失时 DM 降级到会话级频道，不让基本通信罢工", async () => {
+    const f = fixture();
+    try {
+      expect((await run(f, ["dm", "worker-a", "warm key"])).code).toBe(0);
+      await f.nextFrame();
+      unlinkSync(join(f.home, "workspace-key"));
+      const degraded = await run(f, ["dm", "worker-a", "still deliver"]);
+      expect(degraded.code).toBe(0);
+      expect(degraded.stdout).toContain("workspace continuity disabled:");
+      expect(degraded.stdout).toContain("session-scoped DM remains available");
+      expect(degraded.stdout).toContain("wake: delivered to inbox");
+      await f.nextFrame();
     } finally {
       f.close();
     }

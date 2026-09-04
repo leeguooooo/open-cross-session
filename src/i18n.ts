@@ -74,13 +74,19 @@ interface Catalog {
   whoCodexHeader: (ipc: boolean) => string;
   whoCmuxHeader: string;
   whoSelfTag: string;
+  whoDataHome: (path: string) => string;
   whoWorkspaceAlias: (alias: string) => string;
   whoEmpty: string;
   whoCmuxHint: string;
   dmSent: (target: string, channel: string, seq: number) => string;
   dmWorkspaceResolved: (requested: string, current: string, alias: string) => string;
   dmWorkspaceAmbiguous: (target: string, names: string[]) => string;
+  dmWorkspaceWarning: (detail: string) => string;
+  dmInherited: (requested: string, channel: string) => string;
+  dmConversationFailed: (detail: string) => string;
   dmParked: (target: string, channel: string) => string;
+  dmParkedNew: (target: string, channel: string) => string;
+  dmParkedStable: (target: string, channel: string) => string;
   dmTargetNotFound: (target: string) => string;
   dmCmuxBusy: (ref: string) => string;
   dmCmuxWoken: (ref: string) => string;
@@ -104,8 +110,9 @@ Usage:
   ocs who
       Roster of every reachable agent: Claude sessions, Codex tasks, terminals,
       plus pending idle notifications.
-  ocs dm <name-or-id> <text> [--as <name>] [--notify-when-idle]
+  ocs dm <name-or-id> <text> [--as <name>] [--inherit <old-dm-channel>] [--notify-when-idle]
       Message + wake one agent. Channel is auto-derived; nothing to set up.
+      --inherit binds one pre-v0.3.4 DM history channel; both Claude workspaces must be live and unique.
   ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake]
            [--notify-when-idle] [--codex <thread-id>] [--codex-source <thread-id>]
       Append to a channel. @<session-name> wakes a live Claude session;
@@ -217,6 +224,7 @@ Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-m
     `Codex tasks (wake: ocs dm <thread-id>; Desktop IPC ${ipc ? "available" : "UNAVAILABLE — open ChatGPT Desktop"})`,
   whoCmuxHeader: "cmux terminal surfaces (wake: ocs dm surface:N)",
   whoSelfTag: "  ← you",
+  whoDataHome: (path) => `OCS data home: ${path} (sessions must share this directory for DM continuity)`,
   whoWorkspaceAlias: (alias) => `  alias=${alias} (stable across session restarts while unique)`,
   whoEmpty: "no reachable agents found — open a Claude Code session or a Codex task",
   whoCmuxHint: "cmux not detected: terminal TUIs are not listed (they can still join channels themselves)",
@@ -225,8 +233,15 @@ Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-m
     `resolved ${requested} → ${current} via unique workspace alias ${alias}`,
   dmWorkspaceAmbiguous: (target, names) =>
     `workspace address ${target} is ambiguous: ${names.join(", ")} — use an exact live name from \`ocs who\``,
+  dmWorkspaceWarning: (detail) => `workspace continuity disabled: ${detail}`,
+  dmInherited: (requested, channel) => `DM history inherited: ${requested} → ${channel}`,
+  dmConversationFailed: (detail) => `cannot resolve DM conversation: ${detail}`,
   dmParked: (target, channel) =>
-    `${target} has no live session right now — NOT woken. The message is parked in channel ${channel} and will only be seen if that name reads it later (names are per-session unless pinned via OCS_NAME/--as)`,
+    `${target} has no live session right now — NOT woken. The message is in ${channel}, but only that exact name can read it; a restarted session with a new name will not discover it. Run \`ocs who\` to find a live workspace alias, or pin OCS_NAME/--as.`,
+  dmParkedNew: (target, channel) =>
+    `${target} has no live session — NOT woken. This created a new DM channel ${channel}; a restarted session with a different name will not discover or read it. Run \`ocs who\` and send to its live workspace alias instead.`,
+  dmParkedStable: (target, channel) =>
+    `${target} has no live session — NOT woken. The message was appended to stable workspace DM ${channel}; the peer can read it after restart by using the same workspace alias, but ocs does not auto-nudge offline sessions.`,
   dmTargetNotFound: (target) =>
     `target not found: ${target} — run \`ocs who\` to see reachable agents`,
   dmCmuxBusy: (ref) =>
@@ -255,8 +270,9 @@ const zh: Catalog = {
   ocs who
       全机 agent 花名册：Claude 会话、Codex 任务、终端，都在一张表里，
       外加待触发的空闲通知
-  ocs dm <名字或id> <内容> [--as <name>] [--notify-when-idle]
+  ocs dm <名字或id> <内容> [--as <name>] [--inherit <旧dm频道>] [--notify-when-idle]
       给一个 agent 发消息并唤醒；频道自动派生，什么都不用建
+      --inherit 一次性绑定 v0.3.4 之前的 DM 历史；双方 Claude 工作区必须在线且唯一
   ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake]
            [--notify-when-idle] [--codex <thread-id>] [--codex-source <thread-id>]
       往频道追加消息；@<会话名> 唤醒活 Claude 会话，@<thread-id>
@@ -362,6 +378,7 @@ const zh: Catalog = {
     `Codex 任务（唤醒: ocs dm <thread-id>；Desktop IPC ${ipc ? "可用" : "不可用——先开 ChatGPT Desktop"}）`,
   whoCmuxHeader: "cmux 终端 surface（唤醒: ocs dm surface:N）",
   whoSelfTag: "  ← 你自己",
+  whoDataHome: (path) => `OCS 数据目录：${path}（要继续同一 DM 历史，各会话必须共用此目录）`,
   whoWorkspaceAlias: (alias) => `  别名=${alias}（唯一时可跨会话重启使用）`,
   whoEmpty: "没发现可达的 agent——开一个 Claude Code 会话或 Codex 任务",
   whoCmuxHint: "cmux 未检测到：终端 TUI 不在列表里（它们仍可自己进频道）",
@@ -370,8 +387,15 @@ const zh: Catalog = {
     `通过唯一工作区别名 ${alias} 解析 ${requested} → ${current}`,
   dmWorkspaceAmbiguous: (target, names) =>
     `工作区地址 ${target} 不唯一：${names.join("、")}——请从 \`ocs who\` 里选精确的实时名字`,
+  dmWorkspaceWarning: (detail) => `工作区历史延续已停用：${detail}`,
+  dmInherited: (requested, channel) => `已继承 DM 历史：${requested} → ${channel}`,
+  dmConversationFailed: (detail) => `无法解析 DM 会话：${detail}`,
   dmParked: (target, channel) =>
-    `${target} 当前没有活会话——**没有被唤醒**。消息停靠在频道 ${channel}，只有这个名字将来主动读频道才看得到（会话名默认一次性，固定身份用 OCS_NAME/--as）`,
+    `${target} 当前没有活会话——**没有被唤醒**。消息在 ${channel}，但只有这个精确名字能读；重启后换了名字的会话不会发现它。请运行 \`ocs who\` 查找实时工作区别名，或用 OCS_NAME/--as 固定名字。`,
+  dmParkedNew: (target, channel) =>
+    `${target} 当前没有活会话——**没有被唤醒**。这次发送新建了 DM 频道 ${channel}；对方若已重启并更名，将不会发现或读到它。请运行 \`ocs who\`，改发到实时工作区别名。`,
+  dmParkedStable: (target, channel) =>
+    `${target} 当前没有活会话——**没有被唤醒**。消息已追加到稳定工作区 DM ${channel}；对方重启后使用同一工作区别名即可读取，但 ocs 不会自动催收离线会话。`,
   dmTargetNotFound: (target) => `找不到目标: ${target}——跑 \`ocs who\` 看可达的 agent`,
   dmCmuxBusy: (ref) => `${ref} 正在跑一轮，不打断。消息已在频道里，它下轮会读到；也可稍后重试`,
   dmCmuxWoken: (ref) => `已经由 cmux 唤醒终端 ${ref}`,

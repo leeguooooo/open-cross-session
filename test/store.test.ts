@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  appendDmMessage,
   appendMessage,
   extractMentions,
   isOcsMessage,
@@ -16,6 +17,120 @@ import {
 function freshEnv(): NodeJS.ProcessEnv {
   return { [OCS_HOME_ENV]: mkdtempSync(join(tmpdir(), "ocs-store-")) };
 }
+
+describe("stable DM channel bindings (#10)", () => {
+  test("显式继承旧频道后续写原 seq，后续不带 --inherit 也继续用同一频道", () => {
+    const env = freshEnv();
+    appendMessage({ channel: "dm-old-history", from: "alice-aa", body: "one", env });
+    appendMessage({ channel: "dm-old-history", from: "bob-bb", body: "two", env });
+    const inherited = appendDmMessage({
+      stableChannel: "dm-stable-pair",
+      fallbackChannel: "dm-fallback",
+      inheritChannel: "dm-old-history",
+      expectedLegacyAliases: ["alice", "bob"],
+      from: "alice-new",
+      body: "three",
+      env,
+    });
+    expect(inherited).toMatchObject({ channel: "dm-old-history", bindingCreated: true });
+    expect(inherited.message.seq).toBe(3);
+
+    const continued = appendDmMessage({
+      stableChannel: "dm-stable-pair",
+      fallbackChannel: "dm-fallback",
+      from: "bob-new",
+      body: "four",
+      env,
+    });
+    expect(continued).toMatchObject({ channel: "dm-old-history", bindingCreated: false });
+    expect(continued.message.seq).toBe(4);
+    expect(readMessages("dm-old-history", { env }).map((message) => message.body))
+      .toEqual(["one", "two", "three", "four"]);
+    expect(readMessages("dm-stable-pair", { env })).toEqual([]);
+  });
+
+  test("稳定新频道已有消息时拒绝继承，已落盘绑定也不得改指", () => {
+    const env = freshEnv();
+    appendMessage({ channel: "dm-old-a", from: "a-aa", body: "old a", env });
+    appendMessage({ channel: "dm-old-a", from: "b-bb", body: "old b", env });
+    appendMessage({ channel: "dm-old-b", from: "a-cc", body: "old a2", env });
+    appendMessage({ channel: "dm-old-b", from: "b-dd", body: "old b2", env });
+    appendDmMessage({
+      stableChannel: "dm-stable-used",
+      fallbackChannel: "dm-fallback",
+      from: "a",
+      body: "new",
+      env,
+    });
+    expect(() => appendDmMessage({
+      stableChannel: "dm-stable-used",
+      fallbackChannel: "dm-fallback",
+      inheritChannel: "dm-old-a",
+      expectedLegacyAliases: ["a", "b"],
+      from: "a",
+      body: "must fail",
+      env,
+    })).toThrow("already has messages");
+
+    appendDmMessage({
+      stableChannel: "dm-stable-bound",
+      fallbackChannel: "dm-fallback",
+      inheritChannel: "dm-old-a",
+      expectedLegacyAliases: ["a", "b"],
+      from: "a",
+      body: "bind",
+      env,
+    });
+    expect(() => appendDmMessage({
+      stableChannel: "dm-stable-bound",
+      fallbackChannel: "dm-fallback",
+      inheritChannel: "dm-old-b",
+      expectedLegacyAliases: ["a", "b"],
+      from: "a",
+      body: "must fail",
+      env,
+    })).toThrow("already bound");
+  });
+
+  test("没有稳定 workspace pair 时不允许 --inherit", () => {
+    const env = freshEnv();
+    appendMessage({ channel: "dm-old", from: "a", body: "old", env });
+    expect(() => appendDmMessage({
+      fallbackChannel: "dm-fallback",
+      inheritChannel: "dm-old",
+      from: "a",
+      body: "no",
+      env,
+    })).toThrow("uniquely addressable");
+  });
+
+  test("旧频道缺一方发言或包含第三个参与者时拒绝绑定", () => {
+    const env = freshEnv();
+    appendMessage({ channel: "dm-one-sided", from: "alice-aa", body: "only me", env });
+    expect(() => appendDmMessage({
+      stableChannel: "dm-stable-one-sided",
+      fallbackChannel: "dm-fallback",
+      inheritChannel: "dm-one-sided",
+      expectedLegacyAliases: ["alice", "bob"],
+      from: "alice-new",
+      body: "no",
+      env,
+    })).toThrow("no messages from workspace bob");
+
+    appendMessage({ channel: "dm-three-people", from: "alice-aa", body: "a", env });
+    appendMessage({ channel: "dm-three-people", from: "bob-bb", body: "b", env });
+    appendMessage({ channel: "dm-three-people", from: "mallory-cc", body: "m", env });
+    expect(() => appendDmMessage({
+      stableChannel: "dm-stable-three",
+      fallbackChannel: "dm-fallback",
+      inheritChannel: "dm-three-people",
+      expectedLegacyAliases: ["alice", "bob"],
+      from: "alice-new",
+      body: "no",
+      env,
+    })).toThrow("unexpected participants: mallory-cc");
+  });
+});
 
 describe("appendMessage / readMessages", () => {
   test("seq 从 1 单调递增，读回顺序与内容一致", () => {
@@ -78,8 +193,9 @@ describe("isOcsMessage 镜像铁律（上游 #622 教训）", () => {
 });
 
 describe("extractMentions", () => {
-  test("去重、允许 . _ -，忽略非法字符后缀", () => {
-    expect(extractMentions("hi @bob @bob @al.ice-1 email a@b")).toEqual(["bob", "al.ice-1", "b"]);
+  test("去重、允许 . _ -，邮箱 / SSH remote 里的 @ 不触发唤醒", () => {
+    expect(extractMentions("hi @bob @bob (@al.ice-1) email a@b git@github.com:x/y ssh://git@host:2222/x"))
+      .toEqual(["bob", "al.ice-1"]);
     expect(extractMentions("no mentions")).toEqual([]);
   });
 });

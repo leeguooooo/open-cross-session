@@ -33,6 +33,9 @@ ocs who                       # 全机 agent 花名册（你自己会被标出�
 ocs dm agentparty-d8 "帮我审下这个 diff"    # 直发并唤醒一个 agent
                               # 频道自动派生，你的身份自动识别
 
+# 一次性接续 v0.3.4 之前的 DM 历史
+ocs dm agentparty "继续旧话题" --inherit dm-<旧频道>
+
 # 需要多方讨论时才用显式频道（频道就是个文件，没有任何要维护的东西）
 ocs send dev "进展如何？@agentparty-d8 @piggo-67"
 ocs watch dev                 # 人肉旁观频道
@@ -84,7 +87,7 @@ Claude→Claude DM 的「回复」行优先使用发送方的唯一工作区别�
 |---|---|
 | `ocs who` | 全机 agent 花名册（你自己会被标出），外加待触发的空闲通知 |
 | `ocs whoami` | 看自动识别出的发送者身份 |
-| `ocs dm <名字或id> <内容>` | 直发并唤醒一个 agent，频道自动派生。`--notify-when-idle` |
+| `ocs dm <名字或id> <内容>` | 直发并唤醒一个 agent；唯一 Claude 工作区重启后继续使用同一频道。`--inherit <旧dm频道>` 一次性绑定 v0.3.4 前的历史；`--notify-when-idle` |
 | `ocs send <ch> <body> --as <name>` | 追加消息，`@` 触发唤醒，`--reply-to <seq>` 同时唤醒那条的作者。`--no-wake`、`--notify-when-idle`、`--codex <thread-id>`、`--codex-source <thread-id>` |
 | `ocs read <ch> --as <name>` | 从游标读新消息并推进。自己发的折叠成一行（`--include-self` 完整显示；`--json` 带 `self`）。`--since <seq>`、`--peek` |
 | `ocs notify-when-idle <名字>` | 一次性：那个 Claude 会话下次空闲或退出时，你的会话收到一条 `[跨会话空闲通知]`（已空闲则立即；6 小时后过期） |
@@ -96,7 +99,8 @@ Claude→Claude DM 的「回复」行优先使用发送方的唯一工作区别�
 | `ocs upgrade` | 迁移到托管版的指引 |
 | `ocs version` | 打印版本 |
 
-数据在 `~/.ocs`（`OCS_HOME` 可覆盖）。频道就是 JSONL 文件，标准工具就能查看和备份。
+数据在 `~/.ocs`（`OCS_HOME` 可覆盖），频道是 JSONL 文件。备份时应保留整个目录，
+包括 `workspace-key`；这个本机密钥用来稳定派生工作区身份，频道名不会暴露仓库路径或远程地址。
 
 ## 与原生 cross-session 的关系
 
@@ -113,14 +117,11 @@ Claude Code 和 Codex 各自都有原生的跨会话能力，在各自的岛内�
 | 共享历史/审计 | 各会话自己的记录 | 按任务 | ✅ append-only 日志，按 seq 对账，可重放 | ✅ 服务端历史、回执、任务与决策账本 |
 | 统一花名册 | 只见 Claude 会话 | 只见 Codex 任务 | ✅ `ocs who` 列出本机全部 agent | ✅ `party agents` 列出频道内全部地址 |
 
-\* 只是持久化，有两个实打实的限制。其一，没有自动催收：没有进程盯着谁上线，积压
-要等该 agent **下一次读频道**（下次被唤醒、下次 `ocs read`、或有人提醒）才补上。
-其二，身份默认不跨重启：自动识别的 Claude 会话名是一次性的——会话重启就是新名字，
-不会去找旧名字名下的频道和游标。`ocs who` 会在同一工作区只有一个活 Claude 会话时显示
-稳定的工作区别名。重启后用别名（`choose-browser`）寻址，不再依赖一次性生成名（`choose-browser-10`）。
-这只解决实时寻址，不代表身份或历史延续；要跨重启接续积压，用 `OCS_NAME` / `--as` 固定名字。
-`ocs dm` 发给当前不在线的名字会把消息停靠进频道并明说「没有被唤醒」。
-相对原生的真实优势只有一条：消息不丢——原生发给离线对端是直接消失的。
+\* 持久化不包含自动催收：没有进程盯着谁上线，对方要等下次 `ocs read`、被唤醒或有人提醒时才会读到积压。
+Claude 的生成会话名重启后仍会变，但唯一工作区别名会对应一个加盐的本机身份。Git 仓库使用规范化远程地址，
+因此不同 worktree 能落到同一 DM 历史；非 Git 工作区使用启动目录。该身份记在本机索引里，对方离线时也能续写原频道。
+同一仓库多会话时会退回精确会话名，不共用私信。需要显式角色身份时使用 `OCS_NAME` / `--as`。
+v0.3.4 之前的历史可用 `--inherit` 绑定一次；工作区不唯一、旧频道只有单方发言、或新对话已有消息时都会拒绝。
 
 诚实建议：claude↔claude 的快速直发用原生更顺——ocs 的 Claude 载体本来就骑在
 原生收件箱 socket 上。当对话跨厂商、超过两方、需要消息在一边离线时不丢、或要留

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLAUDE_NATIVE_SESSIONS_DIR_ENV } from "../src/claude-inject.ts";
@@ -12,8 +12,11 @@ import {
   resolveSelfName,
   selfIdentity,
   uniqueClaudeWorkspaceAlias,
+  uniqueClaudeWorkspaceIdentity,
   OCS_NAME_ENV,
 } from "../src/roster.ts";
+import { resetClaudeAddressCachesForTest } from "../src/claude-address.ts";
+import { verifiedClaudeWorkspaceIdentity } from "../src/workspace-registry.ts";
 import { appendMessage, loadCursor, readMessages, saveCursor, OCS_HOME_ENV } from "../src/store.ts";
 
 const THREAD = "aaaaaaaa-1111-2222-3333-444444444444";
@@ -33,7 +36,10 @@ function sessionsFixture(options: { name?: string; cwd?: string } = {}): NodeJS.
       messagingSocketPath: join(dir, "inbox.sock"),
     }),
   );
-  return { [CLAUDE_NATIVE_SESSIONS_DIR_ENV]: sessionsDir };
+  return {
+    [CLAUDE_NATIVE_SESSIONS_DIR_ENV]: sessionsDir,
+    [OCS_HOME_ENV]: join(dir, "home"),
+  };
 }
 
 describe("dmChannel", () => {
@@ -105,6 +111,22 @@ describe("resolveDmTarget", () => {
     expect((stale as { claude?: unknown }).claude).toBeUndefined();
   });
 
+  test("工作区别名离线后从本机持久索引恢复稳定身份，不伪造活会话", () => {
+    const env = sessionsFixture({ name: "choose-browser-21", cwd: "/work/choose-browser" });
+    const live = resolveDmTarget("choose-browser", env);
+    expect(live).toMatchObject({ workspaceAlias: "choose-browser", claude: { name: "choose-browser-21" } });
+    const sessionsDir = env[CLAUDE_NATIVE_SESSIONS_DIR_ENV]!;
+    for (const file of readdirSync(sessionsDir)) unlinkSync(join(sessionsDir, file));
+    const offline = resolveDmTarget("choose-browser", env);
+    expect(offline).toMatchObject({
+      kind: "claude",
+      name: "choose-browser",
+      workspaceAlias: "choose-browser",
+      workspaceIdentity: live!.workspaceIdentity,
+    });
+    expect((offline as { claude?: unknown }).claude).toBeUndefined();
+  });
+
   test("同一工作区多个活会话时别名判歧义，不任选目标", () => {
     const dir = mkdtempSync(join(tmpdir(), "ocs-roster-ambiguous-"));
     const sessionsDir = join(dir, "sessions");
@@ -121,17 +143,23 @@ describe("resolveDmTarget", () => {
           messagingSocketPath: join(dir, `${pid}.sock`),
         }));
       }
-      const env = { [CLAUDE_NATIVE_SESSIONS_DIR_ENV]: sessionsDir };
+      const env = {
+        [CLAUDE_NATIVE_SESSIONS_DIR_ENV]: sessionsDir,
+        [OCS_HOME_ENV]: join(dir, "home"),
+      };
       expect(resolveDmTarget("choose-browser", env)).toMatchObject({
         ambiguousClaudeTargets: [
           expect.stringContaining("choose-browser-21(pid "),
           expect.stringContaining("choose-browser-af(pid "),
         ],
       });
-      const aliases = buildRoster(env).entries
-        .filter((entry) => entry.kind === "claude")
+      const claudeEntries = buildRoster(env).entries.filter((entry) => entry.kind === "claude");
+      const aliases = claudeEntries
         .map((entry) => entry.kind === "claude" ? entry.workspaceAlias : undefined);
       expect(aliases).toEqual([undefined, undefined]);
+      expect(claudeEntries.every((entry) =>
+        entry.kind === "claude" && entry.workspaceWarning?.includes("using session-scoped DM") === true
+      )).toBe(true);
     } finally {
       peer.kill();
     }
@@ -169,6 +197,116 @@ test("工作区别名与另一活会话的精确名冲突时不得用于短 Repl
   const collision = { ...self, pid: 202, sessionId: "other", name: "agentparty", cwd: "/work/other" };
   expect(uniqueClaudeWorkspaceAlias(self, [self])).toBe("agentparty");
   expect(uniqueClaudeWorkspaceAlias(self, [self, collision])).toBeNull();
+});
+
+test("稳定工作区身份跨会话名不变，同 basename 不同绝对路径不碰撞", () => {
+  const env = { [OCS_HOME_ENV]: mkdtempSync(join(tmpdir(), "ocs-identity-")) };
+  const base = {
+    pid: 101,
+    sessionId: "old",
+    name: "super-admin-53",
+    cwd: "/Users/leo/tk.com/super-admin",
+    status: "idle",
+    statusUpdatedAt: null,
+    kind: "interactive",
+    messagingSocketPath: "/tmp/old.sock",
+    procStart: null,
+  };
+  const restarted = { ...base, pid: 202, sessionId: "new", name: "super-admin-26", messagingSocketPath: "/tmp/new.sock" };
+  const otherPath = { ...restarted, cwd: "/tmp/other/super-admin" };
+  const oldIdentity = uniqueClaudeWorkspaceIdentity(base, [base], env);
+  const newIdentity = uniqueClaudeWorkspaceIdentity(restarted, [restarted], env);
+  const otherIdentity = uniqueClaudeWorkspaceIdentity(otherPath, [otherPath], env);
+  expect(oldIdentity).toBe(newIdentity);
+  expect(otherIdentity).not.toBe(newIdentity);
+  expect(newIdentity).toMatch(/^workspace:[0-9a-f]{64}$/);
+  expect(newIdentity).not.toContain("/Users/leo");
+});
+
+test("HTTPS / SSH 形式的同一 Git 远程得到同一工作区身份", () => {
+  const root = mkdtempSync(join(tmpdir(), "ocs-git-anchor-"));
+  const first = join(root, "first");
+  const second = join(root, "second");
+  mkdirSync(first);
+  mkdirSync(second);
+  for (const [cwd, remote] of [
+    [first, "https://github.com/example/shared-project.git"],
+    [second, "git@github.com:example/shared-project.git"],
+  ] as const) {
+    expect(Bun.spawnSync(["git", "-C", cwd, "init", "-q"]).exitCode).toBe(0);
+    expect(Bun.spawnSync(["git", "-C", cwd, "remote", "add", "origin", remote]).exitCode).toBe(0);
+  }
+  const env = { [OCS_HOME_ENV]: join(root, "ocs-home") };
+  const session = (cwd: string, pid: number) => ({
+    pid,
+    sessionId: `s-${pid}`,
+    name: `shared-project-${pid}`,
+    cwd,
+    status: "idle",
+    statusUpdatedAt: null,
+    kind: "interactive",
+    messagingSocketPath: join(root, `${pid}.sock`),
+    procStart: null,
+  });
+  const a = session(first, 101);
+  const b = session(second, 202);
+  expect(claudeWorkspaceAlias(a)).toBe("shared-project");
+  expect(claudeWorkspaceAlias(b)).toBe("shared-project");
+  expect(uniqueClaudeWorkspaceIdentity(a, [a], env))
+    .toBe(uniqueClaudeWorkspaceIdentity(b, [b], env));
+});
+
+test("workspace-key 丢失时拒绝生成新身份，不静默漂移频道", () => {
+  const home = mkdtempSync(join(tmpdir(), "ocs-key-loss-"));
+  const env = { [OCS_HOME_ENV]: home };
+  const session = {
+    pid: 101,
+    sessionId: "s",
+    name: "project-aa",
+    cwd: "/work/project",
+    status: "idle",
+    statusUpdatedAt: null,
+    kind: "interactive",
+    messagingSocketPath: "/tmp/project.sock",
+    procStart: null,
+  };
+  expect(uniqueClaudeWorkspaceIdentity(session, [session], env)).toMatch(/^workspace:/);
+  unlinkSync(join(home, "workspace-key"));
+  resetClaudeAddressCachesForTest();
+  expect(() => uniqueClaudeWorkspaceIdentity(session, [session], env))
+    .toThrow("workspace key is missing");
+});
+
+test("workspace-key 丢失时目标仍可按精确会话名解析，只禁用稳定历史", () => {
+  const env = sessionsFixture({ name: "project-aa", cwd: "/work/project" });
+  expect(resolveDmTarget("project-aa", env)?.workspaceIdentity).toMatch(/^workspace:/);
+  unlinkSync(join(env[OCS_HOME_ENV]!, "workspace-key"));
+  resetClaudeAddressCachesForTest();
+  const degraded = resolveDmTarget("project-aa", env);
+  expect(degraded).toMatchObject({ kind: "claude", name: "project-aa", claude: { name: "project-aa" } });
+  expect(degraded?.workspaceIdentity).toBeUndefined();
+  expect(degraded?.workspaceWarning).toContain("session-scoped DM remains available");
+});
+
+test("同一别名的持久身份发生变化时禁用稳定频道并给出诊断", () => {
+  const root = mkdtempSync(join(tmpdir(), "ocs-identity-conflict-"));
+  const env = { [OCS_HOME_ENV]: join(root, "home") };
+  const first = {
+    pid: 101,
+    sessionId: "a",
+    name: "project-aa",
+    cwd: join(root, "one", "project"),
+    status: "idle",
+    statusUpdatedAt: null,
+    kind: "interactive",
+    messagingSocketPath: "/tmp/a.sock",
+    procStart: null,
+  };
+  const moved = { ...first, pid: 202, sessionId: "b", name: "project-bb", cwd: join(root, "two", "project") };
+  expect(verifiedClaudeWorkspaceIdentity(first, [first], env).identity).toMatch(/^workspace:/);
+  const conflict = verifiedClaudeWorkspaceIdentity(moved, [moved], env);
+  expect(conflict.identity).toBeNull();
+  expect(conflict.warning).toContain("conflicts with saved state");
 });
 
 describe("findDmReplyChannel（跨载体反向 dm 会话收敛，review 回归）", () => {

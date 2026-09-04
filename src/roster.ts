@@ -12,15 +12,43 @@ import {
   claudeWorkspaceAlias,
   claudeWorkspaceTargetMatches,
   uniqueClaudeWorkspaceAlias,
+  uniqueClaudeWorkspaceIdentity,
 } from "./claude-address.ts";
 import { listNativeSessions, type NativeClaudeSession } from "./claude-inject.ts";
 import { codexDesktopIpcAvailable } from "./codex-ipc.ts";
 import { codexSessionsRoot, isCodexThreadId, listCodexSessions } from "./codex-sessions.ts";
 import { findSelfClaudePid } from "./wake.ts";
+import {
+  knownClaudeWorkspaceIdentities,
+  type VerifiedWorkspaceIdentity,
+  verifiedClaudeWorkspaceIdentity,
+} from "./workspace-registry.ts";
 import { channelLogPath, ocsHome, readMessages, CHANNEL_RE, NAME_RE } from "./store.ts";
 
 export const OCS_NAME_ENV = "OCS_NAME";
-export { claudeWorkspaceAlias, uniqueClaudeWorkspaceAlias } from "./claude-address.ts";
+export {
+  claudeWorkspaceAlias,
+  uniqueClaudeWorkspaceAlias,
+  uniqueClaudeWorkspaceIdentity,
+} from "./claude-address.ts";
+
+function safeVerifiedWorkspaceIdentity(
+  session: NativeClaudeSession,
+  sessions: readonly NativeClaudeSession[],
+  env: NodeJS.ProcessEnv,
+): VerifiedWorkspaceIdentity {
+  try {
+    return verifiedClaudeWorkspaceIdentity(session, sessions, env);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      identity: null,
+      warning:
+        `${detail}; session-scoped DM remains available. ` +
+        "Restore the original workspace-key to recover continuity; if it is gone, start new identity state and use --inherit for old history.",
+    };
+  }
+}
 
 /**
  * 识别「我是谁」：--as > $OCS_NAME > 进程祖先链上的 Claude 原生会话名。
@@ -36,18 +64,22 @@ export function resolveSelfName(env: NodeJS.ProcessEnv = process.env): string | 
 }
 
 /**
- * dm 频道名：按参与者**原始名字**排序 + 哈希派生，双方各自算都得到同一个频道。
- * 频道名里掺 40 位 hex（160-bit 截断 sha256，git 同级强度）的原始名字对哈希：slug 只为可读性，唯一性完全由哈希保证——
+ * dm 频道名：按参与者完整命名空间身份排序 + 哈希派生，双方各自算都得到同一个频道。
+ * 频道名里掺 40 位 hex（160-bit 截断 sha256，git 同级强度）的身份对哈希：slug 只为可读性，唯一性完全由哈希保证——
  * 否则清洗（大小写折叠、`.`→`-`）、64 字符截断、分隔符歧义（`a--b`+`c` 与
  * `a`+`b--c` 同串）都会把不同名字对合并进同一频道，停靠的私信就可能被
  * 无关身份读走（review 发现）。更短的截断（如 32 位）生日界太低且可被蓄意碾磨出碰撞，160 位不可行。
  */
 export function dmChannel(a: string, b: string): string {
-  // 入参必须是注入式身份串（selfIdentity / ResolvedDmTarget.identity），不许传截断别名——哈希强度救不了有损输入。
+  // 入参必须是全长命名空间身份（name/codex/cmux/workspace），不许传截断别名。
   const [x, y] = [a, b].sort() as [string, string];
   const hash = createHash("sha256").update(`${x}\u0000${y}`).digest("hex").slice(0, 40);
-  const clean = (name: string) =>
-    name.toLowerCase().replace(/^name:|^codex:|^cmux:/, "").replace(/[^a-z0-9_-]/g, "-");
+  const clean = (name: string) => {
+    const readable = /^workspace:[0-9a-f]{64}$/.test(name)
+      ? "workspace"
+      : name.replace(/^name:|^codex:|^cmux:/, "");
+    return readable.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+  };
   const slug = `${clean(x)}--${clean(y)}`.slice(0, 64 - (3 + 40 + 2));
   const channel = `dm-${hash}--${slug}`;
   if (!CHANNEL_RE.test(channel)) throw new Error(`cannot derive dm channel from: ${a}, ${b}`);
@@ -125,7 +157,15 @@ export function wakeCmuxSurface(ref: string, note: string): CmuxWakeResult {
 // ───────────────────────── 统一花名册 ─────────────────────────
 
 export type RosterEntry =
-  | { kind: "claude"; name: string; workspaceAlias?: string; pid: number; status: string | null; self: boolean }
+  | {
+      kind: "claude";
+      name: string;
+      workspaceAlias?: string;
+      workspaceWarning?: string;
+      pid: number;
+      status: string | null;
+      self: boolean;
+    }
   | { kind: "codex-task"; threadId: string; summary: string | null; cwd: string | null }
   | { kind: "cmux"; ref: string; title: string };
 
@@ -133,6 +173,7 @@ export interface Roster {
   entries: RosterEntry[];
   codexIpc: boolean;
   cmux: boolean;
+  home: string;
 }
 
 export function buildRoster(env: NodeJS.ProcessEnv = process.env): Roster {
@@ -141,11 +182,20 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env): Roster {
   const nativeSessions = listNativeSessions(env).filter((session) => session.name !== null);
   for (const s of nativeSessions) {
     if (s.name === null) continue;
+    const rawAlias = claudeWorkspaceAlias(s);
     const alias = uniqueClaudeWorkspaceAlias(s, nativeSessions);
+    let workspaceWarning: string | undefined;
+    if (rawAlias !== null && alias === null) {
+      workspaceWarning =
+        `workspace alias ${rawAlias} is shared or collides with a live exact name; using session-scoped DM`;
+    } else {
+      workspaceWarning = safeVerifiedWorkspaceIdentity(s, nativeSessions, env).warning;
+    }
     entries.push({
       kind: "claude",
       name: s.name,
       ...(alias !== null && alias !== s.name ? { workspaceAlias: alias } : {}),
+      ...(workspaceWarning === undefined ? {} : { workspaceWarning }),
       pid: s.pid,
       status: s.status,
       self: s.pid === selfPid,
@@ -161,7 +211,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env): Roster {
       entries.push({ kind: "cmux", ref: s.ref, title: s.title });
     }
   }
-  return { entries, codexIpc, cmux };
+  return { entries, codexIpc, cmux, home: ocsHome(env) };
 }
 
 export type DmTargetKind = "claude" | "codex-task" | "cmux";
@@ -172,7 +222,8 @@ export interface ResolvedDmTarget {
   name: string;
   /**
    * 频道派生用的注入式身份串：`name:<全名>` / `codex:<完整thread id>` /
-   * `cmux:<surface ref>`。冒号不在 NAME_RE 字符集里，三个命名空间互不可能
+   * `cmux:<surface ref>`。workspace 身份单独放在 workspaceIdentity。冒号不在 NAME_RE
+   * 字符集里，各命名空间互不可能
    * 拼出同一串；且恒为全长——哈希再强，喂截断别名照样碰撞（review 发现：
    * codex 别名只含 thread id 前 8 hex）。
    */
@@ -180,6 +231,10 @@ export interface ResolvedDmTarget {
   claude?: NativeClaudeSession;
   /** 请求使用了工作区别名。 */
   workspaceAlias?: string;
+  /** 活会话或本机持久索引给出的稳定工作区身份。 */
+  workspaceIdentity?: string;
+  /** 持久身份与本机索引冲突时的可执行诊断。 */
+  workspaceWarning?: string;
   /** 同一别名对应多个活会话时列出候选；调用方必须拒绝发送。 */
   ambiguousClaudeTargets?: string[];
   threadId?: string;
@@ -261,23 +316,31 @@ export function resolveDmTarget(
   const sessions = listNativeSessions(env).filter((session) => session.name !== null);
   const session = sessions.find((candidate) => candidate.name === target);
   if (session !== undefined) {
+    const workspaceAlias = uniqueClaudeWorkspaceAlias(session, sessions);
+    const workspace = safeVerifiedWorkspaceIdentity(session, sessions, env);
     return {
       kind: "claude",
       name: target,
       identity: `name:${target}`,
       claude: session,
+      ...(workspaceAlias === null ? {} : { workspaceAlias }),
+      ...(workspace.identity === null ? {} : { workspaceIdentity: workspace.identity }),
+      ...(workspace.warning === undefined ? {} : { workspaceWarning: workspace.warning }),
     };
   }
   const aliasMatches = sessions.filter((candidate) => claudeWorkspaceTargetMatches(candidate, target));
   if (aliasMatches.length === 1) {
     const matched = aliasMatches[0]!;
     const alias = claudeWorkspaceAlias(matched)!;
+    const workspace = safeVerifiedWorkspaceIdentity(matched, sessions, env);
     return {
       kind: "claude",
       name: matched.name!,
       identity: `name:${matched.name!}`,
       claude: matched,
       workspaceAlias: alias,
+      ...(workspace.identity === null ? {} : { workspaceIdentity: workspace.identity }),
+      ...(workspace.warning === undefined ? {} : { workspaceWarning: workspace.warning }),
     };
   }
   if (aliasMatches.length > 1) {
@@ -289,6 +352,25 @@ export function resolveDmTarget(
       ambiguousClaudeTargets: aliasMatches
         .map((candidate) => `${candidate.name!}(pid ${candidate.pid}, cwd ${candidate.cwd ?? "?"})`)
         .sort(),
+    };
+  }
+  const knownWorkspaces = knownClaudeWorkspaceIdentities(target, env);
+  if (knownWorkspaces.length === 1) {
+    return {
+      kind: "claude",
+      name: target,
+      identity: `name:${target}`,
+      workspaceAlias: target,
+      workspaceIdentity: knownWorkspaces[0]!,
+    };
+  }
+  if (knownWorkspaces.length > 1) {
+    return {
+      kind: "claude",
+      name: target,
+      identity: `name:${target}`,
+      workspaceAlias: target,
+      ambiguousClaudeTargets: knownWorkspaces.map((identity) => `saved workspace ${identity.slice(10, 22)}`),
     };
   }
   return {

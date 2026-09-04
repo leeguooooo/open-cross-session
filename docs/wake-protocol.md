@@ -70,6 +70,11 @@ ocs 侧补充：`ocs send --reply-to <N>` 会**隐含唤醒 seq N 的作者**（
 那行复制执行就必须真的把回复送回发送方，不能再要求手加一个 `@`。ocs 的唤醒紧随 send，
 `<ago>` 一般不填。
 
+ocs 的 Claude DM 频道使用稳定工作区身份派生。Git 仓库按规范化远程地址归一，非 Git 目录按
+启动路径归一；原始值只进本机 `workspace-key` 的 HMAC，频道名不携带路径或远程地址。同一工作区多会话或
+别名冲突时不共用频道，改用会话级身份。v0.3.4 之前的旧历史用
+`ocs dm <target> "<text>" --inherit <old-dm-channel>` 绑定一次；绑定前要求双方工作区在线且唯一，并验证旧频道里双方都发过言。
+
 ## 2. 空闲通知（#5）
 
 名字统一：订阅叫 **`notify_when_idle`**（CLI 旗标 `--notify-when-idle`，独立命令

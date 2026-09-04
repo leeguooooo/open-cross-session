@@ -34,6 +34,9 @@ ocs who                       # roster of every reachable agent (you are marked)
 ocs dm agentparty-d8 "can you review this diff?"    # message + wake one agent
                               # channel auto-derived, your identity auto-detected
 
+# one-time migration for DM history created before v0.3.4
+ocs dm agentparty "continuing in the old thread" --inherit dm-<old-channel>
+
 # multi-party rooms when you want them (channels are just files, nothing to manage)
 ocs send dev "status? @agentparty-d8 @piggo-67"
 ocs watch dev                 # tail a channel as a human observer
@@ -89,7 +92,7 @@ Delivery honesty: for Claude targets, a successful send means the frame reached 
 |---|---|
 | `ocs who` | Roster of every reachable agent (you are marked), plus pending idle notifications |
 | `ocs whoami` | Print the auto-detected sender identity |
-| `ocs dm <name-or-id> <text>` | Message + wake one agent; the channel is auto-derived. `--notify-when-idle` |
+| `ocs dm <name-or-id> <text>` | Message + wake one agent; unique Claude workspaces keep one channel across restarts. `--inherit <old-dm-channel>` binds pre-v0.3.4 history once; `--notify-when-idle` |
 | `ocs send <ch> <body> --as <name>` | Append to a channel; `@` mentions wake, `--reply-to <seq>` also wakes that seq's author. `--no-wake`, `--notify-when-idle`, `--codex <thread-id>`, `--codex-source <thread-id>` |
 | `ocs read <ch> --as <name>` | Read new messages since your cursor, then advance it. Your own messages fold to one line (`--include-self` shows them; `--json` adds `self`). `--since <seq>`, `--peek` |
 | `ocs notify-when-idle <name>` | One-shot: a `[Cross-session idle notice]` lands in your session when that Claude session next goes idle or exits (immediately if already idle; expires after 6h) |
@@ -101,7 +104,9 @@ Delivery honesty: for Claude targets, a successful send means the frame reached 
 | `ocs upgrade` | Migration guide to hosted Agent Party |
 | `ocs version` | Print the version |
 
-Data lives in `~/.ocs` (override with `OCS_HOME`). Channels are plain JSONL logs — inspect or back them up with standard tools.
+Data lives in `~/.ocs` (override with `OCS_HOME`). Channels are plain JSONL logs.
+Back up the whole directory, including `workspace-key`: that local secret keeps
+workspace identities stable without exposing repository paths or remotes in channel names.
 
 ## vs native cross-session
 
@@ -119,19 +124,17 @@ bridge between them, plus what neither provides:
 | Shared history / audit | per-session transcripts | per-task | ✅ append-only log, seq-referenced receipts, replayable | ✅ server-backed history, receipts, task and decision ledgers |
 | Unified roster | Claude sessions only | Codex tasks only | ✅ `ocs who` lists every local agent | ✅ `party agents` lists channel-wide addresses |
 
-\* Persistence only — two real limits. No auto-nudge: nothing watches for sessions
-coming online; the backlog is seen only when that agent next reads the channel
-(next wake, next `ocs read`, or a human prompt). And identity is not durable by
-default: an auto-detected Claude session name is per-session — a restarted
-session gets a new name and won't look for channels or cursors keyed to the old
-one. `ocs who` also shows a stable workspace alias when exactly one live Claude
-session uses that working directory. Use that alias (`choose-browser`) instead of
-the generated name (`choose-browser-10`) to find the current session after a
-restart. This is live routing only, not identity or history continuity. For an
-agent that must pick up backlog across restarts, pin a stable name
-(`OCS_NAME` / `--as`). `ocs dm` to a currently-offline name parks the message and
-says so explicitly ("NOT woken"). What you do get over native: the message is
-never lost — a send to an offline native peer simply disappears.
+\* Persistence has no auto-nudge: nothing watches for sessions coming online, so
+the peer sees backlog on its next `ocs read`, wake, or human prompt. Claude's
+generated session name still changes after restart, but a unique workspace alias
+maps to a salted local identity. Git repositories use their normalized origin so
+worktrees converge; non-Git workspaces use their launch directory. That identity
+keeps the same DM channel and can be recovered from the local index while the peer
+is offline. Same-repository multi-session cases deliberately fall back to exact
+session names rather than sharing private history. Use `OCS_NAME` / `--as` when
+you need an explicit role identity. History created before v0.3.4 can be attached
+once with `--inherit`; ocs refuses ambiguous workspaces, one-sided histories, or
+rebinding a conversation that already has messages.
 
 Honest guidance: for a quick claude↔claude direct message, native is smoother —
 ocs's Claude carrier literally rides on the native inbox socket. Use ocs when the

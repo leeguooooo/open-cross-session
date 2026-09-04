@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   openSync,
   closeSync,
@@ -97,6 +98,8 @@ export function isOcsMessage(value: unknown): value is OcsMessage {
 export function extractMentions(body: string): string[] {
   const out = new Set<string>();
   for (const match of body.matchAll(/@([A-Za-z0-9][A-Za-z0-9._-]{0,63})/g)) {
+    const at = match.index ?? 0;
+    if (at > 0 && !/[\s([{（]/u.test(body[at - 1]!)) continue;
     out.add(match[1]!);
   }
   return [...out];
@@ -121,7 +124,7 @@ function lockTimeoutMs(env: NodeJS.ProcessEnv): number {
  * 不一致说明搬走的是别人在窗口期里刚建的新锁（#8 竞态），立即用 linkSync
  * （EEXIST 时不覆盖）原样归还。多个等待者只有一个 rename 成功，输家 ENOENT 重试。
  */
-function acquireLock(lockPath: string, env: NodeJS.ProcessEnv): () => void {
+export function acquireLock(lockPath: string, env: NodeJS.ProcessEnv): () => void {
   const deadline = Date.now() + lockTimeoutMs(env);
   for (;;) {
     try {
@@ -373,6 +376,185 @@ export function readMessages(channel: string, options: ReadOptions = {}): OcsMes
 export function lastSeq(channel: string, env?: NodeJS.ProcessEnv): number {
   const messages = readMessages(channel, { env });
   return messages.length === 0 ? 0 : messages[messages.length - 1]!.seq;
+}
+
+interface DmChannelBinding {
+  v: 1;
+  stable_channel: string;
+  channel: string;
+  created_at: string;
+}
+
+function dmBindingsDir(env?: NodeJS.ProcessEnv): string {
+  return join(ocsHome(env), "dm-bindings");
+}
+
+function dmBindingPath(stableChannel: string, env?: NodeJS.ProcessEnv): string {
+  if (!CHANNEL_RE.test(stableChannel) || !stableChannel.startsWith("dm-")) {
+    throw new Error(`invalid stable DM channel: ${stableChannel}`);
+  }
+  return join(dmBindingsDir(env), `${stableChannel}.json`);
+}
+
+function readDmBinding(stableChannel: string, env?: NodeJS.ProcessEnv): DmChannelBinding | null {
+  const path = dmBindingPath(stableChannel, env);
+  let raw: string;
+  try {
+    const stat = lstatSync(path);
+    if (
+      !stat.isFile() ||
+      stat.isSymbolicLink() ||
+      stat.size > 8 * 1024 ||
+      (typeof process.getuid === "function" && stat.uid !== process.getuid())
+    ) throw new Error(`untrusted DM binding: ${path}`);
+    raw = readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new Error(`invalid DM binding JSON: ${path}`);
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`invalid DM binding: ${path}`);
+  }
+  const binding = value as Record<string, unknown>;
+  const keys = Object.keys(binding).sort();
+  if (
+    keys.join(",") !== "channel,created_at,stable_channel,v" ||
+    binding.v !== 1 ||
+    binding.stable_channel !== stableChannel ||
+    typeof binding.channel !== "string" ||
+    !CHANNEL_RE.test(binding.channel) ||
+    !binding.channel.startsWith("dm-") ||
+    typeof binding.created_at !== "string"
+  ) throw new Error(`invalid DM binding: ${path}`);
+  return binding as unknown as DmChannelBinding;
+}
+
+function writeDmBinding(binding: DmChannelBinding, env?: NodeJS.ProcessEnv): void {
+  const path = dmBindingPath(binding.stable_channel, env);
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(binding), { mode: 0o600 });
+    renameSync(tmp, path);
+  } catch (error) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // tmp 未生成或已 rename
+    }
+    throw error;
+  }
+}
+
+export interface AppendDmInput {
+  /** 双方都有唯一工作区身份时的稳定频道；否则缺省。 */
+  stableChannel?: string;
+  /** 没有稳定工作区身份时的会话级频道。 */
+  fallbackChannel: string;
+  /** 用户显式选择的旧 DM 频道，作为该稳定 pair 的历史。 */
+  inheritChannel?: string;
+  /** --inherit 时用来证明旧频道里双方都发过言；只接受当前两个活且唯一的 workspace alias。 */
+  expectedLegacyAliases?: readonly [string, string];
+  from: string;
+  body: string;
+  env?: NodeJS.ProcessEnv;
+}
+
+export interface AppendDmResult {
+  channel: string;
+  message: OcsMessage;
+  bindingCreated: boolean;
+}
+
+/**
+ * 稳定 DM pair 的「解析绑定 → append」共用一把锁，防止一边继承旧频道、另一边同时写入
+ * 新稳定频道。绑定只能从「新稳定频道还是空的」状态创建，且一旦落盘不可改指。
+ */
+export function appendDmMessage(input: AppendDmInput): AppendDmResult {
+  if (input.stableChannel === undefined) {
+    if (input.inheritChannel !== undefined) {
+      throw new Error("--inherit requires two uniquely addressable live Claude workspaces");
+    }
+    const message = appendMessage({
+      channel: input.fallbackChannel,
+      from: input.from,
+      body: input.body,
+      env: input.env,
+    });
+    return { channel: input.fallbackChannel, message, bindingCreated: false };
+  }
+
+  const stableChannel = input.stableChannel;
+  const dir = dmBindingsDir(input.env);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const unlock = acquireLock(`${dmBindingPath(stableChannel, input.env)}.lock`, input.env ?? process.env);
+  try {
+    let binding = readDmBinding(stableChannel, input.env);
+    let bindingCreated = false;
+    const inheritChannel = input.inheritChannel;
+    if (inheritChannel !== undefined) {
+      if (input.expectedLegacyAliases === undefined) {
+        throw new Error("--inherit requires two uniquely addressable live Claude workspaces");
+      }
+      if (!CHANNEL_RE.test(inheritChannel) || !inheritChannel.startsWith("dm-")) {
+        throw new Error(`invalid inherited DM channel: ${inheritChannel}`);
+      }
+      if (binding !== null && binding.channel !== inheritChannel) {
+        throw new Error(
+          `stable DM channel is already bound to ${binding.channel}; refusing to replace it with ${inheritChannel}`,
+        );
+      }
+      if (binding === null && inheritChannel !== stableChannel) {
+        if (lastSeq(stableChannel, input.env) > 0) {
+          throw new Error(`stable DM channel ${stableChannel} already has messages; refusing to split its history`);
+        }
+        const inheritedMessages = readMessages(inheritChannel, { env: input.env });
+        if (inheritedMessages.length === 0) {
+          throw new Error(`inherited DM channel ${inheritChannel} is missing or empty`);
+        }
+        const participants = new Set(inheritedMessages.map((message) => message.from));
+        const legacyMatches = (name: string, alias: string): boolean => {
+          if (name === alias) return true;
+          const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          return new RegExp(`^${escaped}-[0-9a-f]{2}$`, "i").test(name);
+        };
+        for (const alias of input.expectedLegacyAliases) {
+          if (![...participants].some((name) => legacyMatches(name, alias))) {
+            throw new Error(`inherited DM channel ${inheritChannel} has no messages from workspace ${alias}`);
+          }
+        }
+        const unexpected = [...participants].filter((name) =>
+          !input.expectedLegacyAliases!.some((alias) => legacyMatches(name, alias))
+        );
+        if (unexpected.length > 0) {
+          throw new Error(
+            `inherited DM channel ${inheritChannel} contains unexpected participants: ${unexpected.join(", ")}`,
+          );
+        }
+        binding = {
+          v: 1,
+          stable_channel: stableChannel,
+          channel: inheritChannel,
+          created_at: new Date().toISOString(),
+        };
+        writeDmBinding(binding, input.env);
+        bindingCreated = true;
+      }
+    }
+    const channel = binding?.channel ?? stableChannel;
+    if (binding !== null && lastSeq(channel, input.env) === 0) {
+      throw new Error(`bound DM history channel ${channel} is missing or empty`);
+    }
+    const message = appendMessage({ channel, from: input.from, body: input.body, env: input.env });
+    return { channel, message, bindingCreated };
+  } finally {
+    unlock();
+  }
 }
 
 /** 每消费者游标：`cursors/<channel>.<consumer>.json`。读位置与传输解耦（上游同款概念）。 */
