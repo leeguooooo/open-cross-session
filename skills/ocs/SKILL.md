@@ -26,6 +26,8 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
 - Your own identity is auto-detected inside Claude, Codex, and Pi sessions; `--as <name>` overrides.
 - Codex and Pi tasks have short `codex-<8hex>` / `pi-<8hex>` addresses in `ocs who`;
   use the full ID shown by `ocs who --verbose` only if a short prefix is ambiguous.
+- `ocs who` lists only Codex tasks claimed by an open Desktop renderer.
+  `ocs codex-sessions` is rollout history and does not imply wakeability.
 - A wake note you receive carries the message body (up to 4096 bytes; longer
   messages show the first 512 bytes plus a Thread: command). Claude-to-Claude DM
   replies use the short `ocs dm <workspace-alias>` form when that alias identifies
@@ -43,6 +45,8 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
   `[Cross-session idle notice]` when it goes idle or exits (immediately if it is
   already idle; expires after 6h). No polling, no "done yet?" messages.
 - Delivery honesty: "delivered to inbox" or "queued" does not mean the model read it.
+- If a Codex task is not renderer-open, the message remains stored and will appear
+  in that task's `ocs inbox`; opening/selecting its Desktop task enables direct wake.
 - To keep a conversation going, end your message with the peer's @name so they wake
   (you are never woken by your own @).
 - Replying with `ocs dm <workspace-alias>` reuses the stable or explicitly

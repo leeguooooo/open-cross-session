@@ -186,15 +186,15 @@ describe("inbox 离线续接", () => {
         env: f.env,
       });
 
-      const inbox = await run(f, ["inbox"]);
+      const inbox = await run(f, ["inbox", "--as", "tester"]);
       expect({ code: inbox.code, stderr: inbox.stderr }).toEqual({ code: 0, stderr: "" });
       expect(inbox.stdout).toContain("Inbox: 1 unread thread(s)");
       expect(inbox.stdout).toContain("ocs read dm-inbox-test");
       expect(inbox.stdout).not.toContain("dm-someone-else");
 
-      const read = await run(f, ["read", "dm-inbox-test"]);
+      const read = await run(f, ["read", "dm-inbox-test", "--as", "tester"]);
       expect(read.stdout).toContain("queued while you were away");
-      expect((await run(f, ["inbox"])).stdout).toContain("no unread threads");
+      expect((await run(f, ["inbox", "--as", "tester"])).stdout).toContain("no unread threads");
     } finally {
       f.close();
     }

@@ -67,6 +67,10 @@ interface Catalog {
   doctorCodex: string;
   doctorIpcOk: (path: string) => string;
   doctorIpcMissing: (path: string) => string;
+  doctorIpcRouteOk: string;
+  doctorIpcRouteMissing: (thread: string) => string;
+  doctorIpcRouteProbeFailed: (detail: string) => string;
+  doctorIpcRouteUnverified: string;
   doctorRollouts: (n: number) => string;
   doctorOneRollout: string;
   doctorNoRollouts: string;
@@ -97,6 +101,7 @@ interface Catalog {
   failLimit: string;
   whoClaudeHeader: string;
   whoCodexHeader: (ipc: boolean) => string;
+  whoCodexNone: (ipc: boolean) => string;
   whoPiHeader: string;
   whoCmuxHeader: string;
   whoSelfTag: string;
@@ -159,7 +164,7 @@ Usage:
   ocs whoami
       Print the auto-detected sender identity.
   ocs sessions | codex-sessions [--limit <n>]
-      Raw lists per namespace (who also covers Pi).
+      Live Claude sessions or local Codex rollout history; ocs who shows renderer-open Codex tasks.
   ocs watch <channel> [--interval-ms <n>]
       Tail a channel (Ctrl+C to stop).
   ocs doctor [--fix]
@@ -245,10 +250,15 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   doctorSkillsFixed: "updated the ocs skill for Claude, Codex, and Pi",
   doctorSkillsFixFailed: (detail) => `integration repair failed: ${detail}`,
   doctorCodex: "Codex / ChatGPT Desktop side",
-  doctorIpcOk: (path) => `Desktop IPC available (${path})`,
+  doctorIpcOk: (path) => `Desktop IPC router socket available (${path})`,
   doctorIpcMissing: (path) => `Desktop IPC unavailable (${path} missing or wrong perms) — is ChatGPT Desktop running?`,
-  doctorRollouts: (n) => `${n}+ Codex rollouts (IPC wake needs a pair of open tasks; satisfied)`,
-  doctorOneRollout: "only 1 Codex rollout — native IPC wake needs a second task under the same renderer as source",
+  doctorIpcRouteOk: "this Codex task is claimed by an open Desktop renderer (wakeable)",
+  doctorIpcRouteMissing: (thread) =>
+    `this Codex task (${thread.slice(0, 8)}) is not claimed by an open Desktop renderer; stored messages still appear in \`ocs inbox\`, but wake needs its task view open/selected`,
+  doctorIpcRouteProbeFailed: (detail) => `could not verify Desktop renderer routing: ${detail}`,
+  doctorIpcRouteUnverified: "renderer routing not verified (run doctor from inside a Codex task)",
+  doctorRollouts: (n) => `${n}+ local Codex rollout record(s) found (history only; \`ocs who\` verifies open tasks)`,
+  doctorOneRollout: "1 local Codex rollout record found (history only; an open renderer is required for wake)",
   doctorNoRollouts: "no Codex rollouts (have you run codex?)",
   doctorPi: "Pi side",
   doctorPiExtensionOk: (path) => `direct-wake extension installed (${path})`,
@@ -284,8 +294,11 @@ Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-m
   failInterval: "--interval-ms must be >= 50",
   failLimit: "--limit must be a positive integer",
   whoClaudeHeader: "Claude Code sessions (wake: @name / ocs dm <name>)",
-  whoCodexHeader: (ipc) =>
-    `Codex tasks (wake: ocs dm codex-<short-id>; Desktop IPC ${ipc ? "available" : "UNAVAILABLE — open ChatGPT Desktop"})`,
+  whoCodexHeader: (_ipc) =>
+    "Open Codex tasks (wake: ocs dm codex-<short-id>; renderer ownership verified)",
+  whoCodexNone: (ipc) => ipc
+    ? "Codex: no recent rollout is currently claimed by an open Desktop renderer (\`ocs codex-sessions\` shows history)"
+    : "Codex: Desktop IPC socket unavailable — open ChatGPT Desktop",
   whoPiHeader: "Pi sessions (wake: ocs dm pi-<short-id>; @ mentions use the full session id)",
   whoCmuxHeader: "cmux terminal surfaces (wake: ocs dm surface:N)",
   whoSelfTag: "  ← you",
@@ -359,7 +372,7 @@ const zh: Catalog = {
   ocs whoami
       看自动识别出的发送者身份
   ocs sessions | codex-sessions [--limit <n>]
-      按命名空间的原始列表（who 已覆盖两者）
+      活 Claude 会话或本地 Codex rollout 历史；ocs who 才显示 renderer 已打开的 Codex task
   ocs watch <channel> [--interval-ms <n>]
       跟踪频道新消息（Ctrl+C 退出）
   ocs doctor [--fix]
@@ -439,10 +452,15 @@ const zh: Catalog = {
   doctorSkillsFixed: "已更新 Claude、Codex、Pi 的 ocs skill",
   doctorSkillsFixFailed: (detail) => `集成修复失败：${detail}`,
   doctorCodex: "Codex / ChatGPT Desktop 侧",
-  doctorIpcOk: (path) => `Desktop IPC 可用（${path}）`,
+  doctorIpcOk: (path) => `Desktop IPC 路由 socket 存在（${path}）`,
   doctorIpcMissing: (path) => `Desktop IPC 不可用（${path} 缺失或权限不对）——ChatGPT Desktop 开着吗？`,
-  doctorRollouts: (n) => `${n}+ 个 Codex rollout（IPC 唤醒需要成对任务，满足）`,
-  doctorOneRollout: "只有 1 个 Codex rollout——原生 IPC 唤醒需要同 renderer 下的第二个任务作 source",
+  doctorIpcRouteOk: "当前 Codex task 已被打开的 Desktop renderer 认领（可唤醒）",
+  doctorIpcRouteMissing: (thread) =>
+    `当前 Codex task（${thread.slice(0, 8)}）未被打开的 Desktop renderer 认领；持久消息仍会进入 \`ocs inbox\`，但主动唤醒需要打开或选中该 task 页面`,
+  doctorIpcRouteProbeFailed: (detail) => `无法验证 Desktop renderer 路由：${detail}`,
+  doctorIpcRouteUnverified: "尚未验证 renderer 路由（请从 Codex task 内运行 doctor）",
+  doctorRollouts: (n) => `找到 ${n}+ 条本地 Codex rollout 记录（只是历史；\`ocs who\` 才验证打开的 task）`,
+  doctorOneRollout: "找到 1 条本地 Codex rollout 记录（只是历史；唤醒仍需要打开的 renderer）",
   doctorNoRollouts: "没有 Codex rollout（跑过 codex 吗？）",
   doctorPi: "Pi 侧",
   doctorPiExtensionOk: (path) => `直投扩展已安装（${path}）`,
@@ -476,8 +494,11 @@ const zh: Catalog = {
   failInterval: "--interval-ms 必须 >= 50",
   failLimit: "--limit 必须是正整数",
   whoClaudeHeader: "Claude Code 会话（唤醒: @名字 / ocs dm <名字>）",
-  whoCodexHeader: (ipc) =>
-    `Codex 任务（唤醒: ocs dm codex-<短id>；Desktop IPC ${ipc ? "可用" : "不可用——先开 ChatGPT Desktop"}）`,
+  whoCodexHeader: (_ipc) =>
+    "已打开的 Codex task（唤醒: ocs dm codex-<短id>；renderer ownership 已验证）",
+  whoCodexNone: (ipc) => ipc
+    ? "Codex：近期 rollout 当前都没有被打开的 Desktop renderer 认领（\`ocs codex-sessions\` 可看历史）"
+    : "Codex：Desktop IPC socket 不可用——请打开 ChatGPT Desktop",
   whoPiHeader: "Pi 会话（唤醒: ocs dm pi-<短id>；@ 提及仍使用完整 session id）",
   whoCmuxHeader: "cmux 终端 surface（唤醒: ocs dm surface:N）",
   whoSelfTag: "  ← 你自己",

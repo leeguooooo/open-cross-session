@@ -26,6 +26,7 @@ bun src/cli.ts <cmd>   # 本地跑 CLI（who/dm/send/read/notify-when-idle/sessi
 7. 唤醒载荷按 **docs/wake-protocol.md**（与 AgentParty 共用，正本在本仓库）：正文 ≤4096B 逐字内联、超过只带前 512B、整条 ≤5120B，`Reply:`/`Thread:` 两行永不砍。改数字/文案先改协议文档，两边同步。
 8. **notify-when-idle 是一次性的**：watcher 投递一条通知后必须退出；每次翻转都发会把订阅方打成筛子（测试钉着）。
 9. **DM 路由身份是独立 route sidecar，不是 `OcsMessage v1` 字段**：旧二进制会严格拒绝未知消息字段。sidecar 与消息在同一频道 JSONL，必须先写 route、再写 message；这样消息写失败可以安全重试，旧读端仍会跳过 sidecar 并读取原消息。
+10. **Codex rollout ≠ Desktop 可达任务**：`~/.codex/sessions` 只是历史。主动唤醒前必须让 renderer owner claim 目标，并为同 renderer 找到 source；当前 Desktop 对无人认领的 discovery 会超时，候选必须并发短探测，未认领按 `not-open` 停靠 inbox，不当传输故障重试。
 
 ## 路线（owner 已拍板）
 

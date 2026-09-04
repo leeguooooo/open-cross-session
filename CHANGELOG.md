@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.1
+
+- Codex roster 只展示被 ChatGPT Desktop renderer 实际认领的 open task，不再把本地 rollout 历史误报成可达
+- Codex target/source owner 改为并发短探测；未打开任务约 1 秒内明确报告消息已存储、可用 `ocs inbox`，不再串行等待 10 秒超时
+- `ocs doctor` 分开报告 IPC router socket、当前 task renderer ownership 与 rollout 历史，避免 socket 存在被误解为端到端可唤醒
+
 ## v0.4.0
 
 - `ocs who` 默认把当前项目放前面，用 `codex-<8hex>` / `pi-<8hex>` 短地址隐藏完整 UUID；`--verbose` 和 `--json` 按需展开

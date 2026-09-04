@@ -105,6 +105,10 @@ Claude→Claude DM 的「回复」行优先使用发送方的唯一工作区别�
 
 送达语义按载体区分：Claude 目标发送成功，只代表帧到了对方收件箱 socket；`accept` 下进入对话，`hold` 下仍可能被丢。Pi 成功表示扩展已接收并排队。Desktop 或 Pi 的帧写出后若没收到响应，`ocs` 会报「结果未知」且不重发，避免重复投递。
 
+Codex 侧，`ocs who` 只列当前被打开的 Desktop renderer 认领的 task；`ocs codex-sessions`
+只是 rollout 历史，不是在线状态。发给已关闭 task 的 DM 仍会写入 append-only 日志并明确标为停靠，
+目标之后可用 `ocs inbox` 找回，但不会被描述成已经唤醒。
+
 ## 命令
 
 | 命令 | 作用 |
@@ -117,7 +121,7 @@ Claude→Claude DM 的「回复」行优先使用发送方的唯一工作区别�
 | `ocs read <ch>` | 从游标读新消息并推进。自己发的折叠成一行（`--include-self` 完整显示；`--json` 带 `self`）；`--as` 覆盖身份。另支持 `--since`、`--peek` |
 | `ocs notify-when-idle <名字>` | 一次性：那个 Claude 会话下次空闲或退出时，你的会话收到一条 `[跨会话空闲通知]`（已空闲则立即；6 小时后过期） |
 | `ocs sessions` | 列活着的 Claude Code 会话 |
-| `ocs codex-sessions` | 列本机 Codex 任务（`--limit <n>`） |
+| `ocs codex-sessions` | 列本机 Codex rollout 历史（`--limit <n>`）；不同于 `ocs who`，不代表 task 正在打开或可唤醒 |
 | `ocs watch <ch>` | 跟踪频道（`--interval-ms <n>`） |
 | `ocs doctor` | 体检 Claude、Codex、Pi、三端 skill 和数据目录；`--fix` 安全修复本地安装并复检 |
 | `ocs skill install` | 修复或更新 Claude Code、Codex、Pi 的内置 skill，并安装 Pi 直投扩展 |

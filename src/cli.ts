@@ -9,8 +9,17 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { listNativeSessions, type NativeClaudeSession } from "./claude-inject.ts";
 import { enableCrossSessionInbound, readCrossSessionInbound } from "./claude-settings.ts";
-import { codexDesktopIpcAvailable, codexDesktopIpcSocketPath } from "./codex-ipc.ts";
-import { codexSessionsRoot, formatCodexSessionLine, listCodexSessions } from "./codex-sessions.ts";
+import {
+  codexDesktopIpcAvailable,
+  codexDesktopIpcSocketPath,
+  discoverCodexDesktopOwners,
+} from "./codex-ipc.ts";
+import {
+  codexSessionsRoot,
+  formatCodexSessionLine,
+  isCodexThreadId,
+  listCodexSessions,
+} from "./codex-sessions.ts";
 import { detectLang, messages } from "./i18n.ts";
 import {
   identityCursorConsumer,
@@ -54,6 +63,7 @@ import {
   resolveSelfName,
   selfIdentity,
   uniqueClaudeWorkspaceAlias,
+  CODEX_THREAD_ID_ENV,
   OCS_NAME_ENV,
   wakeCmuxSurface,
 } from "./roster.ts";
@@ -67,7 +77,7 @@ import {
   wakeSessions,
 } from "./wake.ts";
 
-export const OCS_VERSION = "0.4.0";
+export const OCS_VERSION = "0.4.1";
 
 const LANG = detectLang();
 const M = messages(LANG);
@@ -565,7 +575,7 @@ function cmdInbox(parsed: Parsed): void {
   }
 }
 
-function cmdWho(parsed: Parsed): void {
+async function cmdWho(parsed: Parsed): Promise<void> {
   const roster = buildRoster();
   const json = parsed.flags.has("json");
   if (roster.entries.length === 0 && !json) {
@@ -584,7 +594,16 @@ function cmdWho(parsed: Parsed): void {
   const projectTag = (entry: { cwd?: string | null }): string =>
     entry.cwd === cwd ? M.whoCurrentProject : "";
   const claude = relevantFirst(roster.entries.filter((e) => e.kind === "claude"));
-  const codex = relevantFirst(roster.entries.filter((e) => e.kind === "codex-task"));
+  const codexCandidates = relevantFirst(roster.entries.filter((e) => e.kind === "codex-task"));
+  let codexOwners: Record<string, string> = {};
+  if (roster.codexIpc && codexCandidates.length > 0) {
+    try {
+      codexOwners = await discoverCodexDesktopOwners(codexCandidates.map((entry) => entry.threadId));
+    } catch {
+      // Socket/router failure is reported below as no verified open tasks.
+    }
+  }
+  const codex = codexCandidates.filter((entry) => codexOwners[entry.threadId] !== undefined);
   const pi = relevantFirst(roster.entries.filter((e) => e.kind === "pi"));
   const cmux = roster.entries.filter((e) => e.kind === "cmux");
   if (json) {
@@ -613,6 +632,8 @@ function cmdWho(parsed: Parsed): void {
           : `  ${e.target}  ${label.slice(0, 60)}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`,
       );
     }
+  } else if (codexCandidates.length > 0) {
+    console.log(M.whoCodexNone(roster.codexIpc));
   }
   if (pi.length > 0) {
     console.log(M.whoPiHeader);
@@ -714,7 +735,7 @@ function cmdCodexSessions(parsed: Parsed): void {
   for (const s of sessions) console.log(formatCodexSessionLine(s));
 }
 
-function cmdDoctor(parsed: Parsed): void {
+async function cmdDoctor(parsed: Parsed): Promise<void> {
   const ok = (s: string) => console.log(`  ✅ ${s}`);
   const warn = (s: string) => console.log(`  ⚠️  ${s}`);
   const bad = (s: string) => console.log(`  ❌ ${s}`);
@@ -757,10 +778,23 @@ function cmdDoctor(parsed: Parsed): void {
   }
 
   console.log(M.doctorCodex);
-  if (codexDesktopIpcAvailable()) {
+  const ipcAvailable = codexDesktopIpcAvailable();
+  if (ipcAvailable) {
     ok(M.doctorIpcOk(codexDesktopIpcSocketPath()));
   } else {
     warn(M.doctorIpcMissing(codexDesktopIpcSocketPath()));
+  }
+  const currentCodexThread = process.env[CODEX_THREAD_ID_ENV];
+  if (ipcAvailable && typeof currentCodexThread === "string" && isCodexThreadId(currentCodexThread)) {
+    try {
+      const owners = await discoverCodexDesktopOwners([currentCodexThread]);
+      if (owners[currentCodexThread.toLowerCase()] !== undefined) ok(M.doctorIpcRouteOk);
+      else warn(M.doctorIpcRouteMissing(currentCodexThread));
+    } catch (error) {
+      warn(M.doctorIpcRouteProbeFailed(String(error)));
+    }
+  } else if (ipcAvailable) {
+    warn(M.doctorIpcRouteUnverified);
   }
   const codex = listCodexSessions(codexSessionsRoot(), { limit: 3 });
   if (codex.length >= 2) ok(M.doctorRollouts(codex.length));
@@ -859,6 +893,8 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
 - Your own identity is auto-detected inside Claude, Codex, and Pi sessions; \`--as <name>\` overrides.
 - Codex and Pi tasks have short \`codex-<8hex>\` / \`pi-<8hex>\` addresses in \`ocs who\`;
   use the full ID shown by \`ocs who --verbose\` only if a short prefix is ambiguous.
+- \`ocs who\` lists only Codex tasks claimed by an open Desktop renderer.
+  \`ocs codex-sessions\` is rollout history and does not imply wakeability.
 - A wake note you receive carries the message body (up to 4096 bytes; longer
   messages show the first 512 bytes plus a Thread: command). Claude-to-Claude DM
   replies use the short \`ocs dm <workspace-alias>\` form when that alias identifies
@@ -876,6 +912,8 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
   \`[Cross-session idle notice]\` when it goes idle or exits (immediately if it is
   already idle; expires after 6h). No polling, no "done yet?" messages.
 - Delivery honesty: "delivered to inbox" or "queued" does not mean the model read it.
+- If a Codex task is not renderer-open, the message remains stored and will appear
+  in that task's \`ocs inbox\`; opening/selecting its Desktop task enables direct wake.
 - To keep a conversation going, end your message with the peer's @name so they wake
   (you are never woken by your own @).
 - Replying with \`ocs dm <workspace-alias>\` reuses the stable or explicitly
@@ -1008,7 +1046,7 @@ async function main(): Promise<void> {
       cmdInbox(parsed);
       break;
     case "who":
-      cmdWho(parsed);
+      await cmdWho(parsed);
       break;
     case "whoami":
       cmdWhoami();
@@ -1032,7 +1070,7 @@ async function main(): Promise<void> {
       cmdCodexSessions(parsed);
       break;
     case "doctor":
-      cmdDoctor(parsed);
+      await cmdDoctor(parsed);
       break;
     case "upgrade":
       console.log(M.upgrade);

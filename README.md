@@ -112,6 +112,11 @@ The protocol is shared with Agent Party: [docs/wake-protocol.md](./docs/wake-pro
 
 Delivery honesty: for Claude targets, a successful send means the frame reached the target's inbox socket — with `accept` it enters the conversation; with `hold` it may still be dropped. Pi success means its extension accepted and queued the message. For Desktop and Pi, an unknown outcome after writing a frame is reported and **never retried**, avoiding double delivery.
 
+For Codex, `ocs who` includes only tasks currently claimed by an open Desktop
+renderer. `ocs codex-sessions` is rollout history, not presence. A DM to a task
+that is no longer open remains in the append-only log and is reported as parked;
+the target can recover it with `ocs inbox`, but it is not described as woken.
+
 ## Commands
 
 | Command | Purpose |
@@ -124,7 +129,7 @@ Delivery honesty: for Claude targets, a successful send means the frame reached 
 | `ocs read <ch>` | Read new messages since your cursor, then advance it. Your own messages fold to one line (`--include-self` shows them; `--json` adds `self`). `--as` overrides identity; also supports `--since`, `--peek` |
 | `ocs notify-when-idle <name>` | One-shot: a `[Cross-session idle notice]` lands in your session when that Claude session next goes idle or exits (immediately if already idle; expires after 6h) |
 | `ocs sessions` | List live Claude Code sessions |
-| `ocs codex-sessions` | List local Codex tasks (`--limit <n>`) |
+| `ocs codex-sessions` | List local Codex rollout history (`--limit <n>`); unlike `ocs who`, this does not imply the task is open or wakeable |
 | `ocs watch <ch>` | Tail a channel (`--interval-ms <n>`) |
 | `ocs doctor` | Health check for Claude, Codex, Pi, skills, and the data directory; `--fix` repairs safe local setup and re-checks it |
 | `ocs skill install` | Repair/update the bundled skill for Claude Code, Codex, and Pi, plus Pi's direct-wake extension |

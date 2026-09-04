@@ -23,6 +23,7 @@ import { createConnection, type Socket } from "node:net";
 
 const MAX_IPC_FRAME_BYTES = 64 * 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+export const CODEX_OWNER_PROBE_TIMEOUT_MS = 500;
 const INITIALIZING_CLIENT_ID = "initializing-client";
 
 export interface CodexDesktopIpcRoute {
@@ -498,6 +499,34 @@ export class CodexDesktopIpcClient implements CodexDesktopIpcTransport {
     }
     for (const listener of this.closeListeners) listener(error);
     this.closeListeners.clear();
+  }
+}
+
+/**
+ * Snapshot the subset of rollout ids that an open Desktop renderer actually
+ * claims. Unclaimed ids intentionally time out in current ChatGPT builds, so
+ * probes run concurrently under one short deadline instead of serially.
+ */
+export async function discoverCodexDesktopOwners(
+  threadIds: readonly string[],
+  options: { env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+): Promise<Record<string, string>> {
+  const client = new CodexDesktopIpcClient({
+    env: options.env,
+    requestTimeoutMs: options.timeoutMs ?? CODEX_OWNER_PROBE_TIMEOUT_MS,
+  });
+  try {
+    await client.connect();
+    const pairs = await Promise.all([...new Set(threadIds.map((id) => id.toLowerCase()))].map(async (id) => {
+      try {
+        return [id, await client.discoverThreadOwner(id)] as const;
+      } catch {
+        return null;
+      }
+    }));
+    return Object.fromEntries(pairs.filter((pair): pair is readonly [string, string] => pair !== null));
+  } finally {
+    client.close();
   }
 }
 

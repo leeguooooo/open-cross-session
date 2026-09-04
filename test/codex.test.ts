@@ -4,11 +4,13 @@ import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexSessionsRoot, listCodexSessions } from "../src/codex-sessions.ts";
+import { discoverCodexDesktopOwners } from "../src/codex-ipc.ts";
 import { pickCodexSourceThread, splitWakeMentions, wakeCodexTask } from "../src/wake.ts";
 
 const THREAD_A = "aaaaaaaa-1111-2222-3333-444444444444";
 const THREAD_B = "bbbbbbbb-1111-2222-3333-444444444444";
 const THREAD_C = "cccccccc-1111-2222-3333-444444444444";
+const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 
 function rolloutFixture(options: { withThreadC?: boolean } = {}): NodeJS.ProcessEnv {
   const codexHome = mkdtempSync(join(tmpdir(), "ocs-codex-"));
@@ -74,7 +76,11 @@ function encodeFrame(value: unknown): Buffer {
 }
 
 function fakeRouter(
-  options: { ownerOf?: (threadId: string) => string; withThreadC?: boolean } = {},
+  options: {
+    ownerOf?: (threadId: string) => string;
+    withThreadC?: boolean;
+    ignoreOwnerFor?: ReadonlySet<string>;
+  } = {},
 ): FakeRouter {
   const codexHome = rolloutFixture({ withThreadC: options.withThreadC ?? false }).CODEX_HOME!;
   const ipcDir = join(codexHome, "ipc");
@@ -100,6 +106,7 @@ function fakeRouter(
         if (message.method === "initialize") {
           reply({ result: { clientId: "test-client" } });
         } else if (message.method === "thread-owner-discovery") {
+          if (options.ignoreOwnerFor?.has(params.conversationId as string)) continue;
           reply({ handledByClientId: ownerOf(params.conversationId as string) });
         } else if (message.method === "thread-follower-start-turn") {
           startTurnRequests.push(params);
@@ -113,7 +120,86 @@ function fakeRouter(
   return { env: { CODEX_HOME: codexHome }, server, startTurnRequests, close: () => server.close() };
 }
 
+async function runCli(
+  router: FakeRouter,
+  args: string[],
+  extraEnv: Record<string, string> = {},
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const env = {
+    ...process.env,
+    ...router.env,
+    OCS_HOME: mkdtempSync(join(tmpdir(), "ocs-codex-cli-")),
+    OCS_LANG: "en",
+    ...extraEnv,
+  } as Record<string, string>;
+  delete env.CLAUDE_CODE_SESSION_ID;
+  delete env.CLAUDE_CODE_MESSAGING_SOCKET;
+  delete env.OCS_PI_SESSION_ID;
+  const proc = Bun.spawn([process.execPath, CLI, ...args], { env, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  await proc.exited;
+  return { code: proc.exitCode ?? -1, stdout, stderr };
+}
+
 describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
+  test("ocs who 只展示被 open renderer 认领的 Codex task", async () => {
+    const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_A]) });
+    try {
+      const result = await runCli(router, ["who", "--json"], { CODEX_THREAD_ID: THREAD_B });
+      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+      const roster = JSON.parse(result.stdout) as {
+        entries: Array<{
+          kind: string;
+          target?: string;
+          threadId?: string;
+          summary?: string | null;
+          cwd?: string | null;
+          self?: boolean;
+        }>;
+      };
+      const codex = roster.entries.filter((entry) => entry.kind === "codex-task");
+      expect(codex).toEqual([{
+        kind: "codex-task",
+        target: "codex-bbbbbbbb",
+        threadId: THREAD_B,
+        summary: "hello world",
+        cwd: "/tmp/b",
+        self: true,
+      }]);
+    } finally {
+      router.close();
+    }
+  });
+
+  test("ocs doctor 区分 router socket、当前 task ownership 与 rollout 历史", async () => {
+    const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_B]) });
+    try {
+      const result = await runCli(router, ["doctor"], { CODEX_THREAD_ID: THREAD_B });
+      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(result.stdout).toContain("Desktop IPC router socket available");
+      expect(result.stdout).toContain("this Codex task (bbbbbbbb) is not claimed by an open Desktop renderer");
+      expect(result.stdout).toContain("local Codex rollout record(s) found (history only");
+    } finally {
+      router.close();
+    }
+  });
+
+  test("批量 owner 探测只返回被打开 renderer 认领的 task", async () => {
+    const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_A]) });
+    try {
+      const owners = await discoverCodexDesktopOwners([THREAD_A, THREAD_B], {
+        env: router.env,
+        timeoutMs: 30,
+      });
+      expect(owners).toEqual({ [THREAD_B]: "renderer-1" });
+    } finally {
+      router.close();
+    }
+  });
+
   test("同 renderer：turn 被接受，toolOutput 走 codex_app/send_message_to_thread", async () => {
     const router = fakeRouter();
     try {
@@ -164,10 +250,10 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
   });
 
   test("自动选 source 跳过未打开的 rollout，取下一个同 renderer 候选", async () => {
-    // A（较新）未打开，C（较老）开着且同 renderer → 应跳过 A 选 C
+    // 当前 Desktop 对未认领的 A 不回响应；C（较老）开着且同 renderer → 并发探测后选 C。
     const router = fakeRouter({
       withThreadC: true,
-      ownerOf: (t) => (t === THREAD_A ? "" : "renderer-1"),
+      ignoreOwnerFor: new Set([THREAD_A]),
     });
     try {
       const result = await wakeCodexTask({
@@ -177,9 +263,37 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
         seq: 1,
         from: "a",
         env: router.env,
+        ownerDiscoveryTimeoutMs: 30,
       });
       expect(result.ok).toBe(true);
       if (result.ok) expect(result.sourceThreadId).toBe(THREAD_C);
+    } finally {
+      router.close();
+    }
+  });
+
+  test("无人认领的 target 在短探测窗口后如实报告已存储/inbox，不等待默认 10 秒", async () => {
+    const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_B]) });
+    try {
+      const started = Date.now();
+      const result = await wakeCodexTask({
+        targetThreadId: THREAD_B,
+        channel: "dm-test",
+        body: "park me",
+        seq: 3,
+        from: "a",
+        env: router.env,
+        ownerDiscoveryTimeoutMs: 30,
+      });
+      expect(Date.now() - started).toBeLessThan(500);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe("not-open");
+        expect(result.detail).toContain("not claimed by an open ChatGPT Desktop renderer");
+        expect(result.detail).toContain("message is stored in #dm-test");
+        expect(result.detail).toContain("ocs inbox");
+      }
+      expect(router.startTurnRequests).toEqual([]);
     } finally {
       router.close();
     }

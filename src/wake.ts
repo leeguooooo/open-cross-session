@@ -24,6 +24,7 @@ import {
   CodexDesktopIpcRequestError,
   CodexDesktopIpcUnavailableError,
   CodexDesktopIpcUnknownOutcomeError,
+  CODEX_OWNER_PROBE_TIMEOUT_MS,
   codexDesktopIpcAvailable,
 } from "./codex-ipc.ts";
 import { codexSessionsRoot, isCodexThreadId, listCodexSessions } from "./codex-sessions.ts";
@@ -318,20 +319,24 @@ export async function wakeSessions(
 
 export type CodexWakeResult =
   | { ok: true; turnId: string; targetThreadId: string; sourceThreadId: string }
-  | { ok: false; reason: "unavailable" | "bad-thread-id" | "no-source" | "route-mismatch" | "failed" | "unknown-outcome"; detail?: string };
+  | { ok: false; reason: "unavailable" | "bad-thread-id" | "not-open" | "no-source" | "route-mismatch" | "failed" | "unknown-outcome"; detail?: string };
 
 /**
  * source thread 候选：Desktop IPC 的 `thread-follower-start-turn` 需要一个 source 任务
- * （UI 里显示「来自任务 X 的消息」）。未显式指定时按 rollout 新旧序逐个当候选——
- * rollout 存在 ≠ 在 Desktop 里开着，谁能用要靠 owner 探测逐个试。
+ * （UI 里显示「来自任务 X 的消息」）。未显式指定时按 rollout 新旧序当候选；
+ * rollout 存在 ≠ 在 Desktop 里开着，所有候选用同一短窗口并发探测 owner。
  */
 /**
- * owner 探测异常分类（review #13）：只有「明确无 renderer 认领」才算 not-open，
- * 超时/断连/协议错误是 transport——把传输故障说成「任务没开」会误导用户去开任务。
+ * 当前 Desktop router 对无人认领的 discovery 不返回 no-client-found，而是让请求超时。
+ * initialize 已成功后，这种 method-specific timeout 与显式 no-client-found 都表示当前没有
+ * open renderer claim 该任务；断连和其它协议错误才是 transport。
  */
 function classifyOwnerError(error: unknown): "not-open" | "transport" {
-  if (error instanceof CodexDesktopIpcUnavailableError && error.message.includes("No ChatGPT renderer owns")) {
-    return "not-open";
+  if (error instanceof CodexDesktopIpcUnavailableError) {
+    if (
+      error.message.includes("No ChatGPT renderer owns") ||
+      error.message.includes("thread-owner-discovery timed out")
+    ) return "not-open";
   }
   if (error instanceof CodexDesktopIpcRequestError && error.message.includes("no-client-found")) {
     return "not-open";
@@ -369,6 +374,8 @@ export function pickCodexSourceThread(
 export async function wakeCodexTask(input: WakeInput & {
   targetThreadId: string;
   sourceThreadId?: string;
+  /** Internal/test override; live CLI uses the short owner-probe deadline. */
+  ownerDiscoveryTimeoutMs?: number;
 }): Promise<CodexWakeResult> {
   const env = input.env ?? process.env;
   if (!isCodexThreadId(input.targetThreadId)) {
@@ -382,45 +389,59 @@ export async function wakeCodexTask(input: WakeInput & {
         input.sourceThreadId.toLowerCase() === input.targetThreadId.toLowerCase())) {
     return { ok: false, reason: "bad-thread-id", detail: input.sourceThreadId };
   }
-  const client = new CodexDesktopIpcClient({ env });
+  const client = new CodexDesktopIpcClient({
+    env,
+    requestTimeoutMs: input.ownerDiscoveryTimeoutMs ?? CODEX_OWNER_PROBE_TIMEOUT_MS,
+  });
   try {
     await client.connect();
-    // 分开探测、准确归因：target 探不到就是 target 没开，绝不把 source 的问题算到它头上。
-    let targetOwner: string;
-    try {
-      targetOwner = await client.discoverThreadOwner(input.targetThreadId);
-    } catch (error) {
-      return classifyOwnerError(error) === "not-open"
+    const sourceCandidates = input.sourceThreadId === undefined
+      ? listCodexSourceCandidates(input.targetThreadId, env)
+      : [input.sourceThreadId];
+    const ids = [input.targetThreadId, ...sourceCandidates];
+    type OwnerProbe = { owner: string } | { error: unknown };
+    const probeEntries: Array<readonly [string, OwnerProbe]> = await Promise.all(ids.map(async (id) => {
+      try {
+        return [id, { owner: await client.discoverThreadOwner(id) }] as readonly [string, OwnerProbe];
+      } catch (error) {
+        return [id, { error }] as readonly [string, OwnerProbe];
+      }
+    }));
+    const probes = new Map<string, OwnerProbe>(probeEntries);
+    const targetProbe = probes.get(input.targetThreadId)!;
+    if ("error" in targetProbe) {
+      return classifyOwnerError(targetProbe.error) === "not-open"
         ? {
             ok: false,
-            reason: "failed",
-            detail: `target task ${input.targetThreadId} is not open in ChatGPT Desktop (IPC only reaches open tasks)`,
+            reason: "not-open",
+            detail:
+              `target task ${input.targetThreadId} is not claimed by an open ChatGPT Desktop renderer. ` +
+              `The message is stored in #${input.channel}; open/select that task to enable wake, or run \`ocs inbox\` there.`,
           }
         : {
             ok: false,
             reason: "failed",
-            detail: `IPC error while discovering target owner: ${String(error)}`,
+            detail: `IPC error while discovering target owner: ${String(targetProbe.error)}`,
           };
     }
-    // source：显式指定则严格校验；自动选择则逐候选试探，跳过没开着的 rollout。
+    const targetOwner = targetProbe.owner;
     let sourceThreadId: string;
     if (input.sourceThreadId !== undefined) {
-      let sourceOwner: string;
-      try {
-        sourceOwner = await client.discoverThreadOwner(input.sourceThreadId);
-      } catch (error) {
-        return classifyOwnerError(error) === "not-open"
+      const sourceProbe = probes.get(input.sourceThreadId)!;
+      if ("error" in sourceProbe) {
+        return classifyOwnerError(sourceProbe.error) === "not-open"
           ? {
               ok: false,
-              reason: "failed",
-              detail: `source task ${input.sourceThreadId} is not open in ChatGPT Desktop`,
+              reason: "no-source",
+              detail: `source task ${input.sourceThreadId} is not claimed by an open ChatGPT Desktop renderer`,
             }
           : {
               ok: false,
               reason: "failed",
-              detail: `IPC error while discovering source owner: ${String(error)}`,
+              detail: `IPC error while discovering source owner: ${String(sourceProbe.error)}`,
             };
       }
+      const sourceOwner = sourceProbe.owner;
       if (sourceOwner !== targetOwner) {
         return {
           ok: false,
@@ -430,23 +451,20 @@ export async function wakeCodexTask(input: WakeInput & {
       }
       sourceThreadId = input.sourceThreadId;
     } else {
-      let picked: string | null = null;
-      for (const candidate of listCodexSourceCandidates(input.targetThreadId, env)) {
-        try {
-          if ((await client.discoverThreadOwner(candidate)) === targetOwner) {
-            picked = candidate;
-            break;
-          }
-        } catch (error) {
-          // 只有「确实没开」才跳过继续；传输故障必须中止并如实报告（review #13），
-          // 否则会把断连/超时伪装成 no-source。
-          if (classifyOwnerError(error) === "transport") {
-            return {
-              ok: false,
-              reason: "failed",
-              detail: `IPC error while probing source candidates: ${String(error)}`,
-            };
-          }
+      const picked = sourceCandidates.find((candidate) => {
+        const probe = probes.get(candidate)!;
+        return "owner" in probe && probe.owner === targetOwner;
+      }) ?? null;
+      if (picked === null) {
+        const transportFailure = sourceCandidates
+          .map((candidate) => probes.get(candidate)!)
+          .find((probe) => "error" in probe && classifyOwnerError(probe.error) === "transport");
+        if (transportFailure !== undefined && "error" in transportFailure) {
+          return {
+            ok: false,
+            reason: "failed",
+            detail: `IPC error while probing source candidates: ${String(transportFailure.error)}`,
+          };
         }
       }
       if (picked === null) {
@@ -474,6 +492,15 @@ export async function wakeCodexTask(input: WakeInput & {
   } catch (error) {
     if (error instanceof CodexDesktopIpcUnknownOutcomeError) {
       return { ok: false, reason: "unknown-outcome", detail: error.message };
+    }
+    if (classifyOwnerError(error) === "not-open") {
+      return {
+        ok: false,
+        reason: "not-open",
+        detail:
+          `target task ${input.targetThreadId} stopped being renderer-owned before delivery. ` +
+          `The message remains in #${input.channel} for \`ocs inbox\`.`,
+      };
     }
     const text = String(error);
     if (text.includes("no-client-found") || text.includes("No ChatGPT renderer owns")) {
