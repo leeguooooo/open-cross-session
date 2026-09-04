@@ -4,7 +4,6 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   statSync,
   symlinkSync,
@@ -12,10 +11,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { autoCleanupTempDirs, tempDir } from "./tmp";
+
+autoCleanupTempDirs();
 
 // review #14 回归：缺值/未知 flag/多余参数必须报错退出，不许静默吞掉。
 function runCli(args: string[]): { code: number; stderr: string; stdout: string } {
-  const home = mkdtempSync(join(tmpdir(), "ocs-cli-"));
+  const home = tempDir("ocs-cli-");
   const proc = Bun.spawnSync(["bun", join(import.meta.dir, "..", "src", "cli.ts"), ...args], {
     env: { ...process.env, CODEX_HOME: join(home, "codex"), OCS_HOME: home, OCS_LANG: "en" },
   });
@@ -63,7 +65,7 @@ describe("命令级参数 schema", () => {
   });
 
   test("doctor --fix 一次修复三端 skill、Pi 扩展和数据目录权限", () => {
-    const root = mkdtempSync(join(tmpdir(), "ocs-doctor-fix-"));
+    const root = tempDir("ocs-doctor-fix-");
     const home = join(root, "home");
     const dataHome = join(root, "ocs-home");
     const piAgentDir = join(root, "pi-agent");

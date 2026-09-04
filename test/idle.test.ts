@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +15,9 @@ import {
   saveIdleSubscription,
 } from "../src/idle.ts";
 import { OCS_HOME_ENV } from "../src/store.ts";
+import { autoCleanupTempDirs, tempDir } from "./tmp";
+
+autoCleanupTempDirs();
 
 // 订阅方 = 本测试进程（有真 socket 收帧）；目标 = 每个 fixture 自己的 sleep 子进程
 // （活 pid，可随时杀）。不用 beforeAll 共享：bun test 在用例超时后会杀掉所有子进程。
@@ -32,7 +35,7 @@ interface Fixture {
 }
 
 function fixture(): Fixture {
-  const dir = mkdtempSync(join(tmpdir(), "ocs-idle-"));
+  const dir = tempDir("ocs-idle-");
   const sessionsDir = join(dir, "sessions");
   mkdirSync(sessionsDir, { mode: 0o700 });
   const sockPath = join(dir, "sub.sock");

@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { autoCleanupTempDirs, tempDir } from "./tmp";
+
+autoCleanupTempDirs();
 import {
   CLAUDE_SETTINGS_PATH_ENV,
   enableCrossSessionInbound,
@@ -9,7 +12,7 @@ import {
 } from "../src/claude-settings.ts";
 
 function fixture(content?: string): { env: NodeJS.ProcessEnv; path: string; dir: string } {
-  const dir = mkdtempSync(join(tmpdir(), "ocs-settings-"));
+  const dir = tempDir("ocs-settings-");
   const path = join(dir, "settings.json");
   if (content !== undefined) writeFileSync(path, content);
   return { env: { [CLAUDE_SETTINGS_PATH_ENV]: path }, path, dir };

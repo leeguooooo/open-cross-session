@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLAUDE_NATIVE_SESSIONS_DIR_ENV } from "../src/claude-inject.ts";
@@ -18,11 +18,14 @@ import {
 import { resetClaudeAddressCachesForTest } from "../src/claude-address.ts";
 import { verifiedClaudeWorkspaceIdentity } from "../src/workspace-registry.ts";
 import { appendMessage, loadCursor, readMessages, saveCursor, OCS_HOME_ENV } from "../src/store.ts";
+import { autoCleanupTempDirs, tempDir } from "./tmp";
+
+autoCleanupTempDirs();
 
 const THREAD = "aaaaaaaa-1111-2222-3333-444444444444";
 
 function sessionsFixture(options: { name?: string; cwd?: string } = {}): NodeJS.ProcessEnv {
-  const dir = mkdtempSync(join(tmpdir(), "ocs-roster-"));
+  const dir = tempDir("ocs-roster-");
   const sessionsDir = join(dir, "sessions");
   mkdirSync(sessionsDir, { mode: 0o700 });
   writeFileSync(
@@ -128,7 +131,7 @@ describe("resolveDmTarget", () => {
   });
 
   test("同一工作区多个活会话时别名判歧义，不任选目标", () => {
-    const dir = mkdtempSync(join(tmpdir(), "ocs-roster-ambiguous-"));
+    const dir = tempDir("ocs-roster-ambiguous-");
     const sessionsDir = join(dir, "sessions");
     mkdirSync(sessionsDir, { mode: 0o700 });
     const peer = Bun.spawn(["sleep", "30"], { stdio: ["ignore", "ignore", "ignore"] });
@@ -200,7 +203,7 @@ test("工作区别名与另一活会话的精确名冲突时不得用于短 Repl
 });
 
 test("稳定工作区身份跨会话名不变，同 basename 不同绝对路径不碰撞", () => {
-  const env = { [OCS_HOME_ENV]: mkdtempSync(join(tmpdir(), "ocs-identity-")) };
+  const env = { [OCS_HOME_ENV]: tempDir("ocs-identity-") };
   const base = {
     pid: 101,
     sessionId: "old",
@@ -224,7 +227,7 @@ test("稳定工作区身份跨会话名不变，同 basename 不同绝对路径�
 });
 
 test("HTTPS / SSH 形式的同一 Git 远程得到同一工作区身份", () => {
-  const root = mkdtempSync(join(tmpdir(), "ocs-git-anchor-"));
+  const root = tempDir("ocs-git-anchor-");
   const first = join(root, "first");
   const second = join(root, "second");
   mkdirSync(first);
@@ -257,7 +260,7 @@ test("HTTPS / SSH 形式的同一 Git 远程得到同一工作区身份", () => 
 });
 
 test("workspace-key 丢失时拒绝生成新身份，不静默漂移频道", () => {
-  const home = mkdtempSync(join(tmpdir(), "ocs-key-loss-"));
+  const home = tempDir("ocs-key-loss-");
   const env = { [OCS_HOME_ENV]: home };
   const session = {
     pid: 101,
@@ -289,7 +292,7 @@ test("workspace-key 丢失时目标仍可按精确会话名解析，只禁用稳
 });
 
 test("同一别名的持久身份发生变化时禁用稳定频道并给出诊断", () => {
-  const root = mkdtempSync(join(tmpdir(), "ocs-identity-conflict-"));
+  const root = tempDir("ocs-identity-conflict-");
   const env = { [OCS_HOME_ENV]: join(root, "home") };
   const first = {
     pid: 101,
@@ -311,7 +314,7 @@ test("同一别名的持久身份发生变化时禁用稳定频道并给出诊�
 
 describe("findDmReplyChannel（跨载体反向 dm 会话收敛，review 回归）", () => {
   test("被唤醒方读过的频道里有对方发言 → 反向 dm 续用同一频道", () => {
-    const env = { [OCS_HOME_ENV]: require("node:fs").mkdtempSync(require("node:path").join(require("node:os").tmpdir(), "ocs-dmrev-")) };
+    const env = { [OCS_HOME_ENV]: tempDir("ocs-dmrev-") };
     // 正向：alice dm 一个 codex 目标 → 频道按载体身份派生
     const target = resolveDmTarget("aaaaaaaa-1111-2222-3333-444444444444", env)!;
     const forward = dmChannel(selfIdentity("alice"), target.identity);
@@ -351,7 +354,7 @@ describe("resolveSelfName", () => {
 });
 
 test("codex-<8hex> 短地址解析到唯一的本地 thread id", () => {
-  const root = mkdtempSync(join(tmpdir(), "ocs-codex-short-"));
+  const root = tempDir("ocs-codex-short-");
   const day = join(root, "sessions", "2026", "09", "04");
   mkdirSync(day, { recursive: true });
   writeFileSync(
