@@ -20,15 +20,30 @@ export function tempDir(prefix: string): string {
   return dir;
 }
 
-/** 立即清掉已登记的目录；afterEach 会自动调用，一般不用手动调。 */
-export function cleanupTempDirs(): void {
+type RemoveTempDir = (dir: string) => void;
+
+function removeTempDir(dir: string): void {
+  rmSync(dir, { recursive: true, force: true });
+}
+
+/** 立即清掉已登记的目录；失败项保留到下一次清理重试，并在本轮统一报错。 */
+export function cleanupTempDirs(remove: RemoveTempDir = removeTempDir): void {
+  const failures: Array<{ dir: string; error: unknown }> = [];
   for (const dir of created.splice(0)) {
-    // 清理失败不能弄挂测试：临时目录删不掉只是留垃圾，不是被测行为出错。
     try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // 忽略
+      remove(dir);
+    } catch (error) {
+      created.push(dir);
+      failures.push({ dir, error });
     }
+  }
+
+  if (failures.length > 0) {
+    const paths = failures.map(({ dir }) => dir).join(", ");
+    throw new AggregateError(
+      failures.map(({ error }) => error),
+      `failed to clean ${failures.length} temporary test director${failures.length === 1 ? "y" : "ies"}: ${paths}`,
+    );
   }
 }
 
@@ -39,5 +54,5 @@ import { afterEach } from "bun:test";
 
 /** 在调用方文件里注册「每个用例后清掉本文件建的临时目录」。 */
 export function autoCleanupTempDirs(): void {
-  afterEach(cleanupTempDirs);
+  afterEach(() => cleanupTempDirs());
 }
