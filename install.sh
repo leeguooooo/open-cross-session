@@ -5,6 +5,7 @@ set -eu
 
 REPO="leeguooooo/open-cross-session"
 INSTALL_DIR="${OCS_INSTALL_DIR:-$HOME/.local/bin}"
+SKILLS_CLI_VERSION="${OCS_SKILLS_CLI_VERSION:-1.5.23}"
 
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 arch=$(uname -m)
@@ -52,4 +53,29 @@ case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *) echo "note: add $INSTALL_DIR to your PATH" ;;
 esac
+
+# Install the same versioned ocs skill for Claude Code, Codex, and Pi. The
+# skills CLI is optional: the binary has an embedded fallback and also installs
+# Pi's runtime extension, which a SKILL.md package cannot provide by itself.
+if [ "${OCS_INSTALL_SKILLS:-1}" != "0" ]; then
+  ocs_version=$("$INSTALL_DIR/ocs" version | awk 'NR == 1 { print $2 }')
+  skill_source="https://github.com/$REPO/tree/v$ocs_version/skills/ocs"
+  if command -v npx >/dev/null 2>&1; then
+    echo "installing ocs skill for Claude Code, Codex, and Pi"
+    if DISABLE_TELEMETRY=1 npx -y "skills@$SKILLS_CLI_VERSION" add "$skill_source" \
+      --skill ocs --global \
+      --agent claude-code --agent codex --agent pi --yes </dev/null; then
+      echo "skill registered via skills CLI (source: v$ocs_version)"
+    else
+      echo "warning: skills CLI failed; using the embedded skill installer" >&2
+    fi
+  else
+    echo "note: npx not found; using the embedded skill installer" >&2
+  fi
+  if ! "$INSTALL_DIR/ocs" skill install </dev/null; then
+    echo "warning: ocs installed, but skill/Pi extension setup failed; rerun: ocs skill install" >&2
+  fi
+else
+  echo "note: skill installation skipped (OCS_INSTALL_SKILLS=0)"
+fi
 echo "ok: run \`ocs doctor\` to get started"

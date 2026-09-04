@@ -1,8 +1,8 @@
 // 全机 agent 花名册与直发（dm）支撑：发现任意 agent、识别自己、派生 dm 频道。
 //
 // 目标体验：人只说自然语言，agent 自己跑 `ocs who` 发现同伴、`ocs dm` 搭话。
-// 三个命名空间统一在这里：Claude 原生会话（UDS 可唤醒）、ChatGPT Desktop 任务
-// （IPC 可唤醒）、cmux surface（可选加速器，探测到才列）。
+// 四个命名空间统一在这里：Claude 原生会话（UDS 可唤醒）、ChatGPT Desktop 任务
+// （IPC 可唤醒）、Pi 会话（扩展 UDS 可唤醒）、cmux surface（可选加速器，探测到才列）。
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -17,6 +17,14 @@ import {
 import { listNativeSessions, type NativeClaudeSession } from "./claude-inject.ts";
 import { codexDesktopIpcAvailable } from "./codex-ipc.ts";
 import { codexSessionsRoot, isCodexThreadId, listCodexSessions } from "./codex-sessions.ts";
+import {
+  isPiSessionId,
+  listPiSessions,
+  OCS_PI_SESSION_ID_ENV,
+  piSessionIdFromTarget,
+  piTargetName,
+  type PiSessionRegistration,
+} from "./pi-sessions.ts";
 import { findSelfClaudePid } from "./wake.ts";
 import {
   knownClaudeWorkspaceIdentities,
@@ -51,12 +59,14 @@ function safeVerifiedWorkspaceIdentity(
 }
 
 /**
- * 识别「我是谁」：--as > $OCS_NAME > 进程祖先链上的 Claude 原生会话名。
- * agent 在自己的会话里跑 ocs 时三者兜底，人一个字都不用打。
+ * 识别「我是谁」：--as > $OCS_NAME > Pi 扩展 session id > 进程祖先链上的 Claude 原生会话名。
+ * agent 在自己的会话里跑 ocs 时自动识别，人一个字都不用打。
  */
 export function resolveSelfName(env: NodeJS.ProcessEnv = process.env): string | null {
   const explicit = env[OCS_NAME_ENV];
   if (typeof explicit === "string" && NAME_RE.test(explicit)) return explicit;
+  const piSessionId = env[OCS_PI_SESSION_ID_ENV];
+  if (typeof piSessionId === "string" && isPiSessionId(piSessionId)) return piTargetName(piSessionId);
   const pid = findSelfClaudePid(env);
   if (pid === null) return null;
   const session = listNativeSessions(env).find((s) => s.pid === pid);
@@ -167,6 +177,15 @@ export type RosterEntry =
       self: boolean;
     }
   | { kind: "codex-task"; threadId: string; summary: string | null; cwd: string | null }
+  | {
+      kind: "pi";
+      target: string;
+      sessionId: string;
+      name: string | null;
+      pid: number;
+      cwd: string;
+      self: boolean;
+    }
   | { kind: "cmux"; ref: string; title: string };
 
 export interface Roster {
@@ -205,6 +224,18 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env): Roster {
   for (const s of listCodexSessions(codexSessionsRoot(env), { limit: 10 })) {
     entries.push({ kind: "codex-task", threadId: s.threadId, summary: s.summary, cwd: s.cwd });
   }
+  const selfPiSessionId = env[OCS_PI_SESSION_ID_ENV]?.toLowerCase();
+  for (const s of listPiSessions(env)) {
+    entries.push({
+      kind: "pi",
+      target: s.target,
+      sessionId: s.session_id,
+      name: s.name,
+      pid: s.pid,
+      cwd: s.cwd,
+      self: selfPiSessionId === s.session_id,
+    });
+  }
   const cmux = cmuxAvailable();
   if (cmux) {
     for (const s of listCmuxSurfaces()) {
@@ -214,7 +245,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env): Roster {
   return { entries, codexIpc, cmux, home: ocsHome(env) };
 }
 
-export type DmTargetKind = "claude" | "codex-task" | "cmux";
+export type DmTargetKind = "claude" | "codex-task" | "pi" | "cmux";
 
 export interface ResolvedDmTarget {
   kind: DmTargetKind;
@@ -237,12 +268,18 @@ export interface ResolvedDmTarget {
   workspaceWarning?: string;
   /** 同一别名对应多个活会话时列出候选；调用方必须拒绝发送。 */
   ambiguousClaudeTargets?: string[];
+  /** 同一 Pi session id 被多个活进程打开时，必须显式消歧，绝不任选一个。 */
+  ambiguousPiTargets?: string[];
   threadId?: string;
+  piSession?: PiSessionRegistration;
+  piSessionId?: string;
   cmuxRef?: string;
 }
 
 /** 发送方的注入式身份串（与 ResolvedDmTarget.identity 同一命名空间规则）。 */
 export function selfIdentity(from: string): string {
+  const piSessionId = piSessionIdFromTarget(from);
+  if (piSessionId !== null) return `pi:${piSessionId}`;
   return `name:${from}`;
 }
 
@@ -292,8 +329,8 @@ export function findDmReplyChannel(
 }
 
 /**
- * 把 dm 目标字符串解析到三个命名空间之一：surface:N → cmux；uuid → codex；
- * 否则 Claude 会话名。名字合法但当前无活会话时**不报错**——返回无 session 的
+ * 把 dm 目标字符串解析到四个命名空间之一：surface:N → cmux；uuid → codex；
+ * pi-<uuid> → Pi；否则 Claude 会话名。名字合法但当前无活会话时**不报错**——返回无 session 的
  * claude 目标，调用方把消息停靠进频道（离线投递=持久化的承诺靠这里兑现），
  * 只有格式非法才返回 null。
  */
@@ -310,6 +347,28 @@ export function resolveDmTarget(
       name: `codex-${target.slice(0, 8)}`,
       identity: `codex:${target.toLowerCase()}`,
       threadId: target,
+    };
+  }
+  const piSessionId = piSessionIdFromTarget(target);
+  if (piSessionId !== null) {
+    const matches = listPiSessions(env).filter((session) => session.session_id === piSessionId);
+    if (matches.length > 1) {
+      return {
+        kind: "pi",
+        name: piTargetName(piSessionId),
+        identity: `pi:${piSessionId}`,
+        piSessionId,
+        ambiguousPiTargets: matches.map((session) =>
+          `${session.target}(pid ${session.pid}, cwd ${session.cwd})`
+        ),
+      };
+    }
+    return {
+      kind: "pi",
+      name: piTargetName(piSessionId),
+      identity: `pi:${piSessionId}`,
+      piSessionId,
+      ...(matches[0] === undefined ? {} : { piSession: matches[0] }),
     };
   }
   if (!NAME_RE.test(target)) return null;

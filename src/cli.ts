@@ -10,6 +10,8 @@ import { enableCrossSessionInbound, readCrossSessionInbound } from "./claude-set
 import { codexDesktopIpcAvailable, codexDesktopIpcSocketPath } from "./codex-ipc.ts";
 import { codexSessionsRoot, formatCodexSessionLine, listCodexSessions } from "./codex-sessions.ts";
 import { detectLang, messages } from "./i18n.ts";
+import { installPiIntegration, piExtensionCurrent, piExtensionPath } from "./pi-extension.ts";
+import { listPiSessions, wakePiSession } from "./pi-sessions.ts";
 import {
   createIdleSubscription,
   formatDuration,
@@ -51,7 +53,7 @@ import {
   wakeSessions,
 } from "./wake.ts";
 
-export const OCS_VERSION = "0.3.5";
+export const OCS_VERSION = "0.3.6";
 
 const LANG = detectLang();
 const M = messages(LANG);
@@ -96,7 +98,7 @@ const COMMAND_SPECS: Record<string, CommandSpec> = {
   help: NO_ARGS,
 };
 
-/** 发送者身份：--as > $OCS_NAME > 祖先 Claude 会话名。都拿不到才要求显式。 */
+/** 发送者身份：--as > $OCS_NAME > Pi 扩展身份 > 祖先 Claude 会话名。 */
 function senderName(parsed: Parsed): string {
   const explicit = parsed.flags.get("as");
   if (typeof explicit === "string" && explicit !== "") return explicit;
@@ -197,8 +199,18 @@ async function cmdSend(parsed: Parsed): Promise<void> {
 
   if (parsed.flags.has("no-wake")) return;
 
-  // @ 分流：uuid 形状的 mention 视为 codex thread id，其余按 Claude 会话名。
-  const { claudeNames, codexThreads } = splitWakeMentions(message.mentions);
+  // --reply-to <seq> 隐含唤醒那条消息的作者：唤醒 note 里的 Reply: 行就是这么写的，
+  // 复制执行必须真的把回复送回发送方，而不是要求再手加一个 @。
+  const wakeAddresses = [...message.mentions];
+  if (replyToSeq !== undefined) {
+    const parent = readMessages(channel, { since: replyToSeq - 1 }).find((m) => m.seq === replyToSeq);
+    if (parent !== undefined && parent.from !== from && !wakeAddresses.includes(parent.from)) {
+      wakeAddresses.push(parent.from);
+    }
+  }
+
+  // @ 分流：裸 uuid → Codex，pi-<uuid> → Pi，其余 → Claude 会话名。
+  const { claudeNames, codexThreads, piTargets } = splitWakeMentions(wakeAddresses);
 
   // Codex 侧：--codex <thread-id> 或 @<thread-id>，走 ChatGPT Desktop 原生跨任务通信
   const codexFlag = parsed.flags.get("codex");
@@ -231,15 +243,34 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     }
   }
 
-  // --reply-to <seq> 隐含唤醒那条消息的作者：唤醒 note 里的 Reply: 行就是这么写的，
-  // 复制执行必须真的把回复送回发送方，而不是要求再手加一个 @。
-  const wakeNames = [...claudeNames];
-  if (replyToSeq !== undefined) {
-    const parent = readMessages(channel, { since: replyToSeq - 1 }).find((m) => m.seq === replyToSeq);
-    if (parent !== undefined && parent.from !== from && !wakeNames.includes(parent.from)) {
-      wakeNames.push(parent.from);
+  // Pi 侧：全局扩展登记活 TUI，并经私有 UDS 收件箱注入。忙碌时由 Pi 自己排成 follow-up。
+  for (const target of piTargets) {
+    if (target === from) {
+      console.log(M.piWakeSelfSkipped(target));
+      continue;
+    }
+    const resolved = resolveDmTarget(target);
+    if (resolved?.ambiguousPiTargets !== undefined) {
+      console.log(M.piWakeAmbiguous(target, resolved.ambiguousPiTargets));
+      continue;
+    }
+    if (resolved?.kind !== "pi" || resolved.piSession === undefined) {
+      console.log(M.piWakeUnavailable(target));
+      continue;
+    }
+    const result = await wakePiSession(
+      resolved.piSession,
+      wakeNote({ ...wakeInput, receiver: resolved.name }),
+    );
+    if (result.ok) console.log(M.piWakeAccepted(target));
+    else if (result.reason === "unknown-outcome") {
+      console.log(M.piWakeUnknownOutcome(target, result.detail ?? ""));
+    } else {
+      console.log(M.piWakeFailed(target, result.reason, result.detail ?? ""));
     }
   }
+
+  const wakeNames = [...claudeNames];
   if (wakeNames.length === 0) {
     if (idleSubscriber !== null) subscribeIdle(idleSubscriber, []);
     return;
@@ -284,6 +315,9 @@ async function cmdDm(parsed: Parsed): Promise<void> {
   if (resolved === null) fail(M.dmTargetNotFound(target));
   if (resolved.ambiguousClaudeTargets !== undefined) {
     fail(M.dmWorkspaceAmbiguous(target, resolved.ambiguousClaudeTargets));
+  }
+  if (resolved.ambiguousPiTargets !== undefined) {
+    fail(M.piWakeAmbiguous(target, resolved.ambiguousPiTargets));
   }
   if (resolved.workspaceAlias !== undefined && resolved.name !== target) {
     console.log(M.dmWorkspaceResolved(target, resolved.name, resolved.workspaceAlias));
@@ -389,6 +423,23 @@ async function cmdDm(parsed: Parsed): Promise<void> {
     else if (result.reason === "unknown-outcome") console.log(M.codexUnknownOutcome(result.detail ?? ""));
     else console.log(M.codexFailed(result.reason, result.detail ?? ""));
     if (idleSubscriber !== null) subscribeIdle(idleSubscriber, []);
+  } else if (resolved.kind === "pi" && resolved.piSessionId !== undefined) {
+    if (resolved.piSession === undefined) {
+      console.log(M.dmPiParked(target, channel));
+      if (idleSubscriber !== null) subscribeIdle(idleSubscriber, []);
+      return;
+    }
+    const result = await wakePiSession(
+      resolved.piSession,
+      wakeNote({ ...wakeInput, receiver: resolved.name }),
+    );
+    if (result.ok) console.log(M.piWakeAccepted(resolved.name));
+    else if (result.reason === "unknown-outcome") {
+      console.log(M.piWakeUnknownOutcome(resolved.name, result.detail ?? ""));
+    } else {
+      console.log(M.piWakeFailed(resolved.name, result.reason, result.detail ?? ""));
+    }
+    if (idleSubscriber !== null) subscribeIdle(idleSubscriber, []);
   } else if (resolved.kind === "cmux" && resolved.cmuxRef !== undefined) {
     // cmux surface 没有 ocs 名字：Reply:/Thread: 的 --as 用 dm 同款派生名 surface-N。
     const result = wakeCmuxSurface(resolved.cmuxRef, wakeNote({ ...wakeInput, receiver: resolved.name }));
@@ -412,6 +463,9 @@ async function cmdNotifyWhenIdle(parsed: Parsed): Promise<void> {
   if (resolved?.ambiguousClaudeTargets !== undefined) {
     fail(M.dmWorkspaceAmbiguous(name, resolved.ambiguousClaudeTargets));
   }
+  if (resolved?.ambiguousPiTargets !== undefined) {
+    fail(M.piWakeAmbiguous(name, resolved.ambiguousPiTargets));
+  }
   if (resolved?.kind !== "claude" || resolved.claude === undefined) fail(M.idleTargetNotLive(name));
   subscribeIdle(subscriber, [resolved.claude]);
 }
@@ -425,6 +479,7 @@ function cmdWho(): void {
   console.log(M.whoDataHome(roster.home));
   const claude = roster.entries.filter((e) => e.kind === "claude");
   const codex = roster.entries.filter((e) => e.kind === "codex-task");
+  const pi = roster.entries.filter((e) => e.kind === "pi");
   const cmux = roster.entries.filter((e) => e.kind === "cmux");
   if (claude.length > 0) {
     console.log(M.whoClaudeHeader);
@@ -442,6 +497,14 @@ function cmdWho(): void {
     for (const e of codex) {
       if (e.kind !== "codex-task") continue;
       console.log(`  ${e.threadId}  ${(e.summary ?? e.cwd ?? "").slice(0, 60)}`);
+    }
+  }
+  if (pi.length > 0) {
+    console.log(M.whoPiHeader);
+    for (const e of pi) {
+      if (e.kind !== "pi") continue;
+      const label = e.name === null ? "" : `  ${e.name.slice(0, 60)}`;
+      console.log(`  ${e.target}  pid=${e.pid}${label}${e.self ? M.whoSelfTag : ""}`);
     }
   }
   if (roster.cmux) {
@@ -565,6 +628,13 @@ function cmdDoctor(parsed: Parsed): void {
   else if (codex.length === 1) warn(M.doctorOneRollout);
   else warn(M.doctorNoRollouts);
 
+  console.log(M.doctorPi);
+  if (piExtensionCurrent()) ok(M.doctorPiExtensionOk(piExtensionPath()));
+  else warn(M.doctorPiExtensionMissing(piExtensionPath()));
+  const pi = listPiSessions();
+  if (pi.length > 0) ok(M.doctorPiSessions(pi.length));
+  else warn(M.doctorNoPiSessions);
+
   console.log(M.doctorAccel);
   const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
   const cmuxPing = spawnSync("cmux", ["ping"], { encoding: "utf8", timeout: 2000 });
@@ -583,9 +653,9 @@ function cmdDoctor(parsed: Parsed): void {
   }
 }
 
-const SKILL_MD = `---
+export const SKILL_MD = `---
 name: ocs
-description: Talk to any other AI coding agent on this machine (Claude Code sessions, Codex tasks, terminal TUIs) over open-cross-session. Use when asked to discuss with, delegate to, wake, or message another local agent/session, or to check what other agents are running.
+description: Talk to any other AI coding agent on this machine (Claude Code sessions, Codex tasks, Pi sessions, terminal TUIs) over open-cross-session. Use when asked to discuss with, delegate to, wake, or message another local agent/session, or to check what other agents are running.
 ---
 
 # ocs — talk to other local agents
@@ -607,7 +677,7 @@ ocs dm <name> "<text>" --notify-when-idle      # send, then subscribe (also on s
 ocs whoami | sessions | watch <channel> | doctor [--fix] | version
 \`\`\`
 
-- Your own identity is auto-detected inside a Claude session; \`--as <name>\` overrides.
+- Your own identity is auto-detected inside Claude and Pi sessions; \`--as <name>\` overrides.
 - A wake note you receive carries the message body (up to 4096 bytes; longer
   messages show the first 512 bytes plus a Thread: command). Claude-to-Claude DM
   replies use the short \`ocs dm <workspace-alias>\` form when that alias identifies
@@ -616,12 +686,13 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
 - A unique Claude workspace pair keeps one DM channel across session restarts and
   worktrees. For history created before v0.3.4, use \`--inherit <old-dm-channel>\`
   once while both workspaces are live; ocs verifies that both sides spoke there.
+- Pi targets use \`pi-<session UUID>\`. The installed extension queues inbound
+  messages as follow-ups, so it never interrupts a busy Pi turn.
 - Waiting for a peer to finish: \`ocs notify-when-idle <name>\` (or
   \`--notify-when-idle\` on send/dm). You get exactly one
   \`[Cross-session idle notice]\` when it goes idle or exits (immediately if it is
   already idle; expires after 6h). No polling, no "done yet?" messages.
-- Delivery honesty: "delivered to inbox" ≠ read. A busy terminal agent is not
-  interrupted; it reads the channel on its next turn.
+- Delivery honesty: "delivered to inbox" or "queued" does not mean the model read it.
 - To keep a conversation going, end your message with the peer's @name so they wake
   (you are never woken by your own @).
 - Replying with \`ocs dm <workspace-alias>\` reuses the stable or explicitly
@@ -631,15 +702,27 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
 function cmdSkill(parsed: Parsed): void {
   const [sub] = parsed.positional;
   if (sub !== "install") fail(M.unknownCommand(`skill ${sub ?? ""}`));
-  const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+  const { mkdirSync, readFileSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
   const { homedir } = require("node:os") as typeof import("node:os");
-  const { join } = require("node:path") as typeof import("node:path");
-  const dir = join(homedir(), ".claude", "skills", "ocs");
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, "SKILL.md");
-  writeFileSync(path, SKILL_MD);
-  console.log(M.skillInstalled(path));
-  console.log(M.skillCodexHint);
+  const { dirname, join } = require("node:path") as typeof import("node:path");
+  const installSkill = (path: string): void => {
+    mkdirSync(dirname(path), { recursive: true });
+    try {
+      if (readFileSync(path, "utf8") === SKILL_MD) return;
+    } catch {
+      // missing or unreadable: write below and surface any real write error
+    }
+    writeFileSync(path, SKILL_MD);
+  };
+  const claudePath = join(homedir(), ".claude", "skills", "ocs", "SKILL.md");
+  const codexPath = join(homedir(), ".codex", "skills", "ocs", "SKILL.md");
+  installSkill(claudePath);
+  installSkill(codexPath);
+  console.log(M.skillInstalled(claudePath));
+  console.log(M.skillInstalled(codexPath));
+  const pi = installPiIntegration(SKILL_MD);
+  console.log(M.skillInstalled(pi.skillPath));
+  console.log(M.piExtensionInstalled(pi.extensionPath));
 }
 
 async function cmdWatch(parsed: Parsed): Promise<void> {

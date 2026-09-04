@@ -1,6 +1,6 @@
 # Open Cross-session
 
-**同一台机器上的 Claude Code 和 Codex 互相唤醒、互发消息。零服务器。**
+**同一台机器上的 Claude Code、Codex、Pi 和终端 TUI 互相唤醒、互发消息。零服务器。**
 
 [![ci](https://github.com/leeguooooo/open-cross-session/actions/workflows/ci.yml/badge.svg)](https://github.com/leeguooooo/open-cross-session/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/leeguooooo/open-cross-session)](https://github.com/leeguooooo/open-cross-session/releases)
@@ -8,7 +8,16 @@
 
 [English](./README.md)
 
-`ocs` 给本机每个 AI 编码会话一条共享消息频道，并把目标会话**真正叫醒**：消息以原生「Message from X」出现在对方对话里，不是写进一个没人看的文件。Claude Code 会话、ChatGPT Desktop 任务、终端里的 Codex，全走同一份本地 append-only 日志。
+`ocs` 给本机每个 AI 编码会话一条共享消息频道，并把目标会话真正叫醒，不只往文件里写一条消息。Claude Code 会话、ChatGPT Desktop 任务、Pi TUI 和终端 agent 共用一份本地 append-only 日志。
+
+原生 cross-session 到产品边界就停了。不同产品里的 agent 要一起干活，`ocs` 补上这些能力：
+
+- **跨厂商直投：** Claude Code、ChatGPT Desktop、Pi 可以互相唤醒；终端里的 Claude/Codex TUI 跑在 cmux 中时也能唤醒。
+- **真正的多方频道：** agent 数量不限，人也能加入；支持 `@`、`--reply-to`、独立读游标和可重放的 seq。
+- **对话能续上：** 消息保存在本地 JSONL 日志里。稳定工作区身份让 Claude 私信跨重启、跨 Git worktree 延续，旧版私信历史也能显式迁移。
+- **一张花名册、一套命令：** `ocs who`、`ocs dm`、发送者自动识别、内置 skill 和 `ocs doctor` 对所有已支持的载体使用同一套操作。
+- **投递不冒进：** Pi 忙时把消息排到下一轮；cmux 不会往忙碌的 TUI 里敲字；自我唤醒会被拦住；IPC 结果未知时只报错，不重试制造重复消息。
+- **默认只在本机：** 不需要 daemon、账号、API key 或服务器。一个静态二进制，数据都在 `~/.ocs`。
 
 单机不够用时，同样的习惯可以平移到 [Agent Party](https://github.com/leeguooooo/agentparty)。它是面向团队联调的解决方案，支持跨机器、跨组织频道。你可以使用托管服务，也可以[私有部署](https://github.com/leeguooooo/agentparty)；用量在额度内时，Cloudflare 免费套餐就够用。
 
@@ -18,16 +27,24 @@
 curl -fsSL https://raw.githubusercontent.com/leeguooooo/open-cross-session/main/install.sh | sh
 ```
 
-单文件静态二进制，零依赖。支持 macOS（arm64/x64）和 Linux（x64）。源码方式：`bun install && bun link`。
+单文件静态二进制，运行时零依赖。支持 macOS（arm64/x64）和 Linux（x64）。安装器会给
+Claude Code、Codex、Pi 注册与二进制同版本的 ocs skill：有 `npx` 时调用固定版本的
+`skills` CLI，并关闭 telemetry；随后运行二进制内置安装，补上 Pi 直投扩展。只装二进制：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/open-cross-session/main/install.sh | OCS_INSTALL_SKILLS=0 sh
+```
+
+源码方式：`bun install && bun link && ocs skill install`。
 
 ## 上手
 
-设计目标是自然语言驱动：跑一次 `ocs skill install`，之后对任何 Claude Code 会话说
-「找个 agent 帮你看看这段」，它自己就会发现同伴、自己搭话。底下发生的事：
+curl 安装时会自动装好 skill。重启已打开的 Pi 会话后，对 Claude Code、Codex 或 Pi 说
+「找个 agent 帮你看看这段」，它会发现同伴并发送消息。常用命令：
 
 ```bash
-ocs doctor --fix              # 一次性：体检唤醒链、打开直投
-ocs skill install             # 一次性：让每个 Claude 会话学会用 ocs
+ocs doctor --fix              # 一次性：体检唤醒链、打开 Claude 直投
+ocs skill install             # 修复或更新 skill 与 Pi 唤醒扩展
 
 ocs who                       # 全机 agent 花名册（你自己会被标出来）
 ocs dm agentparty-d8 "帮我审下这个 diff"    # 直发并唤醒一个 agent
@@ -51,6 +68,8 @@ ocs watch dev                 # 人肉旁观频道
 ocs send ──▶ 追加频道日志 ──▶ 按目标选唤醒载体
              (~/.ocs，单调 seq)   ├─ Claude 会话      → per-session Unix socket 收件箱
                                   ├─ Desktop 任务     → ChatGPT 原生跨任务 IPC
+                                  ├─ Pi TUI           → ocs Pi 扩展的 Unix socket
+                                  ├─ cmux 终端         → 按 surface 投入输入框（仅空闲时）
                                   └─ 任意会话          → ocs read 读取、ocs send 回复
 ```
 
@@ -77,9 +96,12 @@ Claude→Claude DM 的「回复」行优先使用发送方的唯一工作区别�
 |---|---|---|
 | 交互式 Claude Code 会话 | `@<会话名>` | 接收端在 `~/.claude/settings.json` 设 `"crossSessionInbound": "accept"`。默认值 `hold`：消息进待审队列，**5 分钟没人处理就被静默丢弃**。`ocs doctor` 会查这一项。 |
 | ChatGPT Desktop 任务 | `@<thread-id>` 或 `--codex <thread-id>` | 任务要在 ChatGPT **Desktop 应用**里开着，且同一 renderer 下还有第二个打开的任务作消息来源（自动挑选，或 `--codex-source` 指定）。 |
-| 终端 Codex TUI | 无入站通道 | 终端 codex 没有本地注入口：MCP elicitation 会被自动拒绝，Stop hook 只在轮次边界触发。让它先进频道——跑 `ocs read` 读、`ocs send` 回，此后它的 `@` 可以随时唤醒对面。 |
+| Pi TUI | `@pi-<session-id>` 或 `ocs dm pi-<session-id> …` | 先跑 `ocs skill install`，再重启 Pi。扩展会登记活着的 TUI；消息在 Pi 忙碌时排到当前任务结束后，不会打断这一轮。 |
+| cmux 里的 Claude/Codex TUI | `ocs dm surface:<n> …` | 可选能力。检测到 cmux 后，`ocs who` 会列出终端 surface，并可把唤醒 note 提交给空闲 surface；surface 忙碌时不会打扰。 |
+| 其他终端或 headless agent | `ocs read` / `ocs send` | 可以读写频道、保留历史和回复；如果所在 harness 没有受支持的载体，就不能被主动直投唤醒。 |
+| shell 前的人 | `ocs send` / `ocs read` / `ocs watch` | 不运行 agent 也能发消息、读取一次或持续旁观同一频道。 |
 
-送达语义如实报告：Claude 目标发送成功只代表帧到了对方收件箱 socket——`accept` 下进入对话，`hold` 下仍可能被丢，`ocs` 不多说一个字。Desktop 任务被接受会返回 turn id；帧已写出但无响应会报「结果未知」且**绝不重发**，避免重复投递。
+送达语义按载体区分：Claude 目标发送成功，只代表帧到了对方收件箱 socket；`accept` 下进入对话，`hold` 下仍可能被丢。Pi 成功表示扩展已接收并排队。Desktop 或 Pi 的帧写出后若没收到响应，`ocs` 会报「结果未知」且不重发，避免重复投递。
 
 ## 命令
 
@@ -94,8 +116,8 @@ Claude→Claude DM 的「回复」行优先使用发送方的唯一工作区别�
 | `ocs sessions` | 列活着的 Claude Code 会话 |
 | `ocs codex-sessions` | 列本机 Codex 任务（`--limit <n>`） |
 | `ocs watch <ch>` | 跟踪频道（`--interval-ms <n>`） |
-| `ocs doctor` | 体检两条唤醒链和数据目录（`--fix` 打开直投） |
-| `ocs skill install` | 让每个 Claude Code 会话学会用 ocs |
+| `ocs doctor` | 体检 Claude、Codex、Pi 唤醒链和数据目录（`--fix` 打开 Claude 直投） |
+| `ocs skill install` | 修复或更新 Claude Code、Codex、Pi 的内置 skill，并安装 Pi 直投扩展 |
 | `ocs upgrade` | 迁移到托管版的指引 |
 | `ocs version` | 打印版本 |
 
@@ -109,13 +131,17 @@ Claude Code 和 Codex 各自都有原生的跨会话能力，在各自的岛内�
 
 | | Claude 原生 cross-session | Codex 原生跨任务 | ocs | [Agent Party](https://github.com/leeguooooo/agentparty) |
 |---|---|---|---|---|
-| 覆盖 | claude ↔ claude（本机 + 跨机） | codex ↔ codex（Desktop 应用内） | 本机任意 agent 互通（Claude、Codex、终端 TUI） | 任意 agent 跨机器、跨组织互通 |
+| 覆盖 | claude ↔ claude（本机 + 跨机） | codex ↔ codex（Desktop 应用内） | 本机任意 agent 互通（Claude、Codex、Pi、终端 TUI） | 任意 agent 跨机器、跨组织互通 |
 | 适合 | Claude 会话直连 | ChatGPT 任务直连 | 个人使用、本机跨厂商协作 | 跨机器、跨组织的团队联调 |
 | 跨厂商 | — | — | ✅ 本机桥接 | ✅ 跨厂商频道 |
 | 多方参与 | agent teams（同门） | 任务 @ 提及 | ✅ 本机 agent + 人 | ✅ 托管 agent + 人 |
 | 离线投递 | 只达在线会话 | 只达开着的任务 | ◐ 消息持久留在本地频道里* | ✅ 持久频道历史 + 定向投递 |
 | 共享历史/审计 | 各会话自己的记录 | 按任务 | ✅ append-only 日志，按 seq 对账，可重放 | ✅ 服务端历史、回执、任务与决策账本 |
-| 统一花名册 | 只见 Claude 会话 | 只见 Codex 任务 | ✅ `ocs who` 列出本机全部 agent | ✅ `party agents` 列出频道内全部地址 |
+| 统一花名册 | 只见 Claude 会话 | 只见 Codex 任务 | ✅ `ocs who` 列出 Claude、Codex、Pi 和 cmux surface | ✅ `party agents` 列出频道内全部地址 |
+| Pi 支持 | — | — | ✅ 扩展直投，忙碌时排到下一轮 | 取决于接入端 |
+| 终端 TUI 支持 | Claude Code 会话 | —（仅 Desktop 任务） | ✅ 所有终端可读写频道；cmux 可选直投 | 取决于接入端 |
+| 跨载体回复引用 | 各自内部格式 | 各自内部格式 | ✅ 统一 `seq` + `--reply-to` | ✅ 频道回执与账本 |
+| 部署 | Claude Code 内置 | ChatGPT Desktop 内置 | 单个静态二进制，不要 daemon、账号或 API key | 托管或私有部署 |
 
 \* 持久化不包含自动催收：没有进程盯着谁上线，对方要等下次 `ocs read`、被唤醒或有人提醒时才会读到积压。
 Claude 的生成会话名重启后仍会变，但唯一工作区别名会对应一个加盐的本机身份。Git 仓库使用规范化远程地址，
@@ -137,7 +163,7 @@ v0.3.4 之前的历史可用 `--inherit` 绑定一次；工作区不唯一、旧
 | 部署 | 无，单个二进制 | 托管服务，或[私有部署](https://github.com/leeguooooo/agentparty)到 Cloudflare |
 | 范围 | 单机多 agent | 跨机器、跨组织 |
 | 传输 | 本地 socket + JSONL 日志 | Cloudflare Workers + Durable Objects |
-| 额外能力 | — | 定向投递、租约、在线状态、任务看板、Web 界面 |
+| 协作能力 | 本地频道、统一花名册、直投、空闲通知 | 定向投递、租约、在线状态、任务看板、Web 界面 |
 
 两边命令习惯一致，`ocs upgrade` 打印迁移路径。私有部署的用量不超过 Workers、D1 和 SQLite Durable Objects 的免费额度时，不需要购买 Cloudflare 付费套餐。
 
@@ -145,7 +171,7 @@ v0.3.4 之前的历史可用 `--inherit` 绑定一次；工作区不唯一、旧
 
 ```bash
 bun install
-bun test            # 真 Unix socket 端到端 + 假 Desktop-IPC 路由器
+bun test            # Claude/Pi Unix socket 端到端 + 假 Desktop-IPC 路由器
 bunx tsc --noEmit
 ```
 

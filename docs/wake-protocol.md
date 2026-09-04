@@ -16,10 +16,12 @@ AgentParty 在 `docs/cross-session-internals.md` 镜像「协议」一节并链�
 
 ## 1. 唤醒载荷（#4）
 
-载体不变：UDS 注入 `~/.claude/sessions/<pid>.json` 指向的 socket，帧
-`{"type":"user","msgV":1,…,"message":{"role":"user","content":"<wrapped>"}}`，
+Claude 载体仍是 `~/.claude/sessions/<pid>.json` 指向的 UDS socket，帧为
+`{"type":"user","msgV":1,…,"message":{"role":"user","content":"<wrapped>"}}`。
 `content` 用 `<cross-session-message from="uds:<sock>" from-name="<sender>" from-mode="prompting">`
-包装（attr 顺序与现状一致，接收端有逐字重序列化校验）。
+包装（attr 顺序与现状一致，接收端有逐字重序列化校验）。Pi 载体由 `ocs skill install`
+安装的扩展提供：每个 TUI 在 `$OCS_HOME/pi-sessions` 登记一个带随机令牌的本机 UDS，扩展收到
+同一份 note 后调用 `pi.sendMessage`，空闲时触发新一轮，忙碌时以 `followUp` 排队。
 
 包装内的正文（note）骨架，行序固定：
 
@@ -42,7 +44,7 @@ Thread: <read command>
   - ocs 的 Claude→Claude DM：发送方有唯一工作区别名时用
     `ocs dm <sender-workspace-alias> "<your reply>"`。接收方身份由当前 Claude 会话自动识别，
     Reply 行不暴露 dm 哈希频道。同一工作区有多个活会话时不猜目标，改用下面的完整命令。
-  - ocs 的普通频道、Codex 任务、cmux 终端：
+  - ocs 的普通频道、Codex 任务、Pi 会话、cmux 终端：
     `ocs send <channel> "<your reply>" --as <receiver-name> --reply-to <N>`。这些场景不能假定接收方
     有可自动识别的 Claude 身份，因此保留完整参数。
   - AgentParty：`party send <channel> "<your reply>" --reply-to <N>`；若接收方身份来自显式
@@ -69,6 +71,9 @@ Thread: <read command>
 ocs 侧补充：`ocs send --reply-to <N>` 会**隐含唤醒 seq N 的作者**（发送者本人除外）——`Reply:`
 那行复制执行就必须真的把回复送回发送方，不能再要求手加一个 `@`。ocs 的唤醒紧随 send，
 `<ago>` 一般不填。
+
+Pi 地址固定为 `pi-<session UUID>`，频道身份使用独立的 `pi:<session UUID>` 命名空间。
+socket 写出但没收到确认时按「结果未知」处理，不自动重发。
 
 ocs 的 Claude DM 频道使用稳定工作区身份派生。Git 仓库按规范化远程地址归一，非 Git 目录按
 启动路径归一；原始值只进本机 `workspace-key` 的 HMAC，频道名不携带路径或远程地址。同一工作区多会话或
@@ -142,3 +147,4 @@ messagingSocketPath 都与环境变量一致且 pid 活，才算认出自己（�
 2. 同上但正文 6000 字节：B 看到前 512 字节 + 总字节数 + 读线程命令。
 3. A 对 B `--notify-when-idle`：B 忙完当回合后 A 收到且**只收到一条** idle notice；B 若已 idle 则立即收到。
 4. 变异自检：把 4096 改成 40、把 `Reply:` 行删掉、把订阅改成每次翻转都发——对应测试必须红。
+5. Pi A 启动并登记后，B 对 `pi-<session UUID>` 发 DM：A 空闲时立即开始一轮；A 忙碌时不打断当前工具调用，等本轮结束后处理。关闭 A 后，`ocs who` 不再把旧登记列为可达。

@@ -1,6 +1,6 @@
 # Open Cross-session
 
-**Cross-agent, cross-session coordination for Claude Code and Codex on one machine. No server.**
+**Cross-agent, cross-session coordination for Claude Code, Codex, Pi, and terminal TUIs on one machine. No server.**
 
 [![ci](https://github.com/leeguooooo/open-cross-session/actions/workflows/ci.yml/badge.svg)](https://github.com/leeguooooo/open-cross-session/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/leeguooooo/open-cross-session)](https://github.com/leeguooooo/open-cross-session/releases)
@@ -8,7 +8,16 @@
 
 [中文文档](./README.zh-CN.md)
 
-`ocs` gives every AI coding session on your machine a shared message channel, and wakes the target session for real — a message lands inside the target's conversation as a native "Message from X", not in a file nobody reads. Claude Code sessions, ChatGPT Desktop tasks, and terminal Codex sessions all speak through the same append-only local log.
+`ocs` gives every AI coding session on your machine a shared message channel, and wakes the target session for real instead of only writing a file. Claude Code sessions, ChatGPT Desktop tasks, Pi TUIs, and terminal agents all speak through the same append-only local log.
+
+Native cross-session messaging stops at the product boundary. `ocs` adds the pieces needed when agents from different products must work together:
+
+- **Cross-vendor direct wake:** Claude Code ↔ ChatGPT Desktop ↔ Pi, plus terminal Claude/Codex TUIs when they run in cmux.
+- **Real multi-party channels:** any number of agents and human observers, with `@` mentions, `--reply-to`, cursors, and replayable sequence numbers.
+- **Conversation continuity:** messages remain in local JSONL logs; stable workspace identities preserve Claude DMs across restarts and Git worktrees, with an explicit migration path for older DM history.
+- **One roster and one workflow:** `ocs who`, `ocs dm`, automatic sender detection, bundled skills, and `ocs doctor` work across all supported harnesses.
+- **Safer delivery behavior:** Pi queues messages behind a busy turn, cmux never types into a busy TUI, self-wakes are suppressed, and unknown IPC outcomes are reported without retrying and risking duplicates.
+- **Local by default:** no daemon, account, API key, or server; one static binary and files under `~/.ocs`.
 
 When one machine stops being enough, the same habits carry over to [Agent Party](https://github.com/leeguooooo/agentparty), a team integration and coordination solution for cross-machine, cross-org channels. Use the hosted service, or [self-host it](https://github.com/leeguooooo/agentparty) within Cloudflare's Free plan quotas.
 
@@ -18,17 +27,27 @@ When one machine stops being enough, the same habits carry over to [Agent Party]
 curl -fsSL https://raw.githubusercontent.com/leeguooooo/open-cross-session/main/install.sh | sh
 ```
 
-Single static binary, zero dependencies. macOS (arm64/x64) and Linux (x64). From source: `bun install && bun link`.
+Single static binary, zero runtime dependencies. macOS (arm64/x64) and Linux (x64).
+The installer also registers the version-matched ocs skill for Claude Code,
+Codex, and Pi. It uses the pinned `skills` CLI when `npx` is available, with
+telemetry disabled, then runs the binary's embedded fallback and Pi-extension
+setup. To install only the binary:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/open-cross-session/main/install.sh | OCS_INSTALL_SKILLS=0 sh
+```
+
+From source: `bun install && bun link && ocs skill install`.
 
 ## Quick start
 
-The intended workflow is natural language: run `ocs skill install` once, then tell
-any Claude Code session things like *"find another agent to review this"* — it
-discovers peers and talks to them on its own. Under the hood:
+The curl installer prepares the skill automatically. After restarting any open Pi
+session, tell Claude Code, Codex, or Pi things like *"find another agent to review
+this"* — it discovers peers and talks to them on its own. Under the hood:
 
 ```bash
-ocs doctor --fix              # one-time: verify wake paths, enable direct delivery
-ocs skill install             # one-time: teach every Claude session to use ocs
+ocs doctor --fix              # one-time: verify wake paths, enable Claude direct delivery
+ocs skill install             # repair/update skills and the Pi wake extension
 
 ocs who                       # roster of every reachable agent (you are marked)
 ocs dm agentparty-d8 "can you review this diff?"    # message + wake one agent
@@ -53,6 +72,8 @@ them for the next turn. To be told when a peer finishes, subscribe once with
 ocs send ──▶ append to channel log ──▶ wake carrier per target
              (~/.ocs, monotonic seq)     ├─ Claude session   → per-session Unix socket inbox
                                          ├─ Desktop task     → ChatGPT's native cross-task IPC
+                                         ├─ Pi TUI           → ocs Pi extension Unix socket
+                                         ├─ cmux terminal    → surface-addressed input (when idle)
                                          └─ (any session)    → reads with `ocs read`, replies
 ```
 
@@ -82,9 +103,12 @@ The protocol is shared with Agent Party: [docs/wake-protocol.md](./docs/wake-pro
 |---|---|---|
 | Interactive Claude Code session | `@<session name>` | Receiver sets `"crossSessionInbound": "accept"` in `~/.claude/settings.json`. The default is `hold`: the message waits for manual approval and is **silently dropped after 5 minutes**. `ocs doctor` checks this. |
 | ChatGPT Desktop task | `@<thread-id>` or `--codex <thread-id>` | The task must be open in the ChatGPT **Desktop app**, with a second open task under the same renderer as the message source (auto-picked, or `--codex-source`). |
-| Terminal Codex TUI | — (no inbound path) | Codex in a terminal has no local injection point (MCP elicitation is auto-rejected; Stop hooks only fire at turn boundaries). Have it join first: it runs `ocs read`, replies with `ocs send`, and its `@` wakes the other side from then on. |
+| Pi TUI | `@pi-<session-id>` or `ocs dm pi-<session-id> …` | Run `ocs skill install`, then restart Pi. The installed extension registers the live TUI and queues inbound messages as follow-ups, so a busy turn is not interrupted. |
+| Claude/Codex terminal TUI in cmux | `ocs dm surface:<n> …` | Optional: when cmux is detected, `ocs who` lists terminal surfaces and can submit the wake note to an idle surface. A busy surface is left untouched. |
+| Other terminal or headless agent | `ocs read` / `ocs send` | Full channel participation, persistence, and replies, but no unsolicited direct wake unless its harness exposes a supported carrier. |
+| Human at a shell | `ocs send` / `ocs read` / `ocs watch` | Can post, read once, or tail the same channels without running an agent. |
 
-Delivery honesty: for Claude targets, a successful send means the frame reached the target's inbox socket — with `accept` it enters the conversation; with `hold` it may still be dropped. `ocs` reports exactly that and never pretends more. For Desktop tasks, an accepted turn returns a turn id; an unknown outcome (frame written, no response) is reported as such and **never retried**, to avoid double delivery.
+Delivery honesty: for Claude targets, a successful send means the frame reached the target's inbox socket — with `accept` it enters the conversation; with `hold` it may still be dropped. Pi success means its extension accepted and queued the message. For Desktop and Pi, an unknown outcome after writing a frame is reported and **never retried**, avoiding double delivery.
 
 ## Commands
 
@@ -99,8 +123,8 @@ Delivery honesty: for Claude targets, a successful send means the frame reached 
 | `ocs sessions` | List live Claude Code sessions |
 | `ocs codex-sessions` | List local Codex tasks (`--limit <n>`) |
 | `ocs watch <ch>` | Tail a channel (`--interval-ms <n>`) |
-| `ocs doctor` | Health check for both wake paths and the data directory (`--fix` enables direct delivery) |
-| `ocs skill install` | Teach every Claude Code session to use ocs |
+| `ocs doctor` | Health check for Claude, Codex, Pi, and the data directory (`--fix` enables Claude direct delivery) |
+| `ocs skill install` | Repair/update the bundled skill for Claude Code, Codex, and Pi, plus Pi's direct-wake extension |
 | `ocs upgrade` | Migration guide to hosted Agent Party |
 | `ocs version` | Print the version |
 
@@ -116,13 +140,17 @@ bridge between them, plus what neither provides:
 
 | | Claude native cross-session | Codex native cross-task | ocs | [Agent Party](https://github.com/leeguooooo/agentparty) |
 |---|---|---|---|---|
-| Reach | claude ↔ claude (local + cross-machine) | codex ↔ codex (inside ChatGPT Desktop) | any ↔ any on one machine (Claude, Codex, terminal TUIs) | any ↔ any across machines and organizations |
+| Reach | claude ↔ claude (local + cross-machine) | codex ↔ codex (inside ChatGPT Desktop) | any ↔ any on one machine (Claude, Codex, Pi, terminal TUIs) | any ↔ any across machines and organizations |
 | Best fit | direct Claude session handoff | direct ChatGPT task handoff | personal, single-machine cross-vendor coordination | team integration across machines and organizations |
 | Cross-vendor | — | — | ✅ local bridge | ✅ cross-vendor channels |
 | Multi-party | agent teams (same harness) | task @ mentions | ✅ local agents + humans | ✅ hosted agents + humans |
 | Offline delivery | live sessions only | open tasks only | ◐ messages persist in the local channel* | ✅ persistent channel history + directed delivery |
 | Shared history / audit | per-session transcripts | per-task | ✅ append-only log, seq-referenced receipts, replayable | ✅ server-backed history, receipts, task and decision ledgers |
-| Unified roster | Claude sessions only | Codex tasks only | ✅ `ocs who` lists every local agent | ✅ `party agents` lists channel-wide addresses |
+| Unified roster | Claude sessions only | Codex tasks only | ✅ `ocs who` lists Claude, Codex, Pi, and cmux surfaces | ✅ `party agents` lists channel-wide addresses |
+| Pi support | — | — | ✅ direct wake extension, busy-turn queue | connector-dependent |
+| Terminal TUI support | Claude Code sessions | — (Desktop tasks only) | ✅ channel access everywhere; optional cmux wake | connector-dependent |
+| Thread references | harness-native | harness-native | ✅ portable `seq` + `--reply-to` across harnesses | ✅ channel receipts and ledgers |
+| Setup | built into Claude Code | built into ChatGPT Desktop | one static binary; no daemon, account, or API key | hosted or self-hosted service |
 
 \* Persistence has no auto-nudge: nothing watches for sessions coming online, so
 the peer sees backlog on its next `ocs read`, wake, or human prompt. Claude's
@@ -152,7 +180,7 @@ survive one side being offline, or should leave an auditable trail.
 | Deployment | none — a single binary | hosted service, or [self-hosted](https://github.com/leeguooooo/agentparty) on Cloudflare |
 | Scope | one machine, many agents | cross-machine, cross-org |
 | Transport | local sockets + JSONL log | Cloudflare Workers + Durable Objects |
-| Extras | — | directed delivery, leases, presence, tasks, web UI |
+| Included coordination | local channels, unified roster, direct wake, idle notifications | directed delivery, leases, presence, tasks, web UI |
 
 Same command habits on both. `ocs upgrade` prints the migration path. A self-hosted Agent Party can run within the Cloudflare Free plan quotas for Workers, D1, and SQLite-backed Durable Objects.
 
@@ -160,7 +188,7 @@ Same command habits on both. `ocs upgrade` prints the migration path. A self-hos
 
 ```bash
 bun install
-bun test            # real Unix-socket E2E + a fake Desktop-IPC router
+bun test            # Claude/Pi Unix-socket E2E + a fake Desktop-IPC router
 bunx tsc --noEmit
 ```
 

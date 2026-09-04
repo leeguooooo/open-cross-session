@@ -4,7 +4,7 @@
 
 ## 一、定位
 
-**跨 agent（Claude Code ↔ Codex）、跨 session 的本地协作层，零服务器。**
+**跨 agent（Claude Code ↔ Codex ↔ Pi）、跨 session 的本地协作层，零服务器。**
 多方频道语义（N 个 agent + 人同频道），真唤醒（不是文件轮询），
 与托管版 Agent Party 共享协议——单机玩顺后一条命令升级到跨机器/跨组织。
 
@@ -51,14 +51,14 @@
    无竞品做到——README 头牌卖点。
 3. **托管升级通道**：同一协议从本机零服务器平滑升到跨机跨组织，独此一家。
 4. **权限与身份做正**：对比 agent-bridge 的权限裸奔，安全叙事差异点。
-5. **双侧真唤醒**：Claude Stop hook + Codex 原生 IPC，比文件轮询/tmux 注入可靠。
+5. **多载体真唤醒**：Claude socket、Codex 原生 IPC、Pi 扩展 socket，比文件轮询或终端按键注入可靠。
 
 ## 三、可抽取组件地图（来自 agentparty 主仓盘点）
 
 > 完整盘点（带 file:line 引用与三档标注）见
 > [docs/agentparty-extraction-map.md](./docs/agentparty-extraction-map.md)。以下是结论。
 
-**主仓已存在两条纯本地零网络传输**，本地版不需要发明传输：
+**主仓已存在两条纯本地零网络传输**，本地版另外实现 Pi 扩展传输：
 
 1. **Claude 侧**：`claude-inbox-inject.ts` — cc-socks Unix socket
    （`/tmp/cc-socks/<pid>.sock`）按 PID 寻址注入活会话，JSONL 帧，
@@ -68,6 +68,8 @@
    toolOutput 注入原生跨任务消息，UI 里保留原生来源链接。
 3. **补充**：Codex Stop hook 的 `{"decision":"block","reason":…}` —
    `reason` 即注入 prompt（≤512B），机制全本地，只有「有没有新消息」一问走服务端。
+4. **Pi 侧**：全局扩展在 `session_start` 登记会话并监听 0600 Unix socket；收到 note 后用
+   `pi.sendMessage(..., { deliverAs: "followUp", triggerTurn: true })` 注入，`session_shutdown` 关闭并清理。
 
 **可几乎原样复用**（零服务端依赖）：两个 session registry、
 `serve-wake-proxy` 全套、`codex-sessions` / `codex-session-kind` /
@@ -87,12 +89,12 @@ presence 心跳（本地读 registry 即可）、`worker_upgrade_required` 等�
 ## 四、架构
 
 ```
-┌─ Claude 会话 ─┐   ┌─ Codex/ChatGPT task ─┐   ┌─ headless ─┐
-│ cc-socks UDS  │   │ Desktop IPC          │   │ claude -p  │
-│ 注入          │   │ thread-follower      │   │ --resume / │
-└──────┬────────┘   └────────┬─────────────┘   │ codex resume│
-       │                     │                 └─────┬──────┘
-       └───────── 按目标 harness 选载体 ─────────────┘
+┌─ Claude 会话 ─┐  ┌─ Codex/ChatGPT task ─┐  ┌─ Pi TUI ─────┐  ┌─ headless ─────┐
+│ cc-socks UDS  │  │ Desktop IPC          │  │ extension UDS│  │ claude / codex │
+│ 注入          │  │ thread-follower      │  │ followUp     │  │ resume         │
+└──────┬────────┘  └────────┬─────────────┘  └─────┬────────┘  └──────┬─────────┘
+       │                    │                      │                  │
+       └────────────── 按目标 harness 选载体 ─────────────────────────┘
                          ▲
               本机 append-only 消息日志
         （SQLite/JSONL，per-channel 单调 seq）
@@ -121,7 +123,7 @@ source thread id，自动选择时它只是**运输载体**（同 renderer 的�
 （`New message from <sender> in #<channel>`）。归因敏感场景用 `--codex-source` 显式指定。
 
 **唤醒载体分层原则（硬约束）**：核心功能零外部依赖（频道日志 + read/send 任何会话可用）；
-每个唤醒载体（Claude socket、Desktop IPC、cmux surface…）都是**运行时探测、失败降级、
+每个唤醒载体（Claude socket、Desktop IPC、Pi extension socket、cmux surface…）都是**运行时探测、失败降级、
 绝不必装**。cmux 只是探测到就用的可选加速器（2026-09-01 真机验证过 `send --surface`
 可唤醒终端 TUI），任何代码不得把它写成硬依赖。
 
