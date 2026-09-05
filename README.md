@@ -104,7 +104,7 @@ The protocol is shared with Agent Party: [docs/wake-protocol.md](./docs/wake-pro
 | Target | How | Requirement |
 |---|---|---|
 | Interactive Claude Code session | `@<session name>` | Receiver sets `"crossSessionInbound": "accept"` in `~/.claude/settings.json`. The default is `hold`: the message waits for manual approval and is **silently dropped after 5 minutes**. `ocs doctor` checks this. |
-| ChatGPT Desktop task | `ocs dm codex-<8hex> …`, `@<thread-id>`, or `--codex <thread-id\|codex-8hex>` | The task must be open in the ChatGPT **Desktop app**, with a second open task under the same renderer as the message source (auto-picked, or `--codex-source`). |
+| ChatGPT Desktop task / cmux Codex TUI | `ocs dm codex-<8hex> …`, `@<thread-id>`, or `--codex <thread-id\|codex-8hex>` | Desktop delivery needs the task open plus a second open task under the same renderer. If that path is definitely unavailable, ocs safely falls back to a uniquely matched, idle cmux surface that still has a live Codex process. |
 | Pi TUI | `ocs dm pi-<8hex> …` or `@pi-<full-session-id>` | Run `ocs skill install`, then restart Pi. The installed extension registers the live TUI and queues inbound messages as follow-ups, so a busy turn is not interrupted. |
 | Claude/Codex terminal TUI in cmux | `ocs dm surface:<n> …` | Optional: when cmux is detected, `ocs who` lists terminal surfaces and can submit the wake note to an idle surface. A busy surface is left untouched. |
 | Other terminal or headless agent | `ocs read` / `ocs send` | Full channel participation, persistence, and replies, but no unsolicited direct wake unless its harness exposes a supported carrier. |
@@ -113,9 +113,13 @@ The protocol is shared with Agent Party: [docs/wake-protocol.md](./docs/wake-pro
 Delivery honesty: the first line says `stored #<channel> seq <n>` once the append-only log commit succeeds; it does not claim wake delivery. Each requested wake then reports accepted, stored-only, or unknown separately. Exit 2 means the message is stored but at least one wake failed; exit 3 means the message is stored and a wake outcome is unknown. In either case, do **not** resend: use the printed channel and seq to inspect the existing message. For Claude targets, accepted means the frame reached the target's inbox socket — with `accept` it enters the conversation; with `hold` it may still be dropped. Pi acceptance means its extension queued the message.
 
 For Codex, `ocs who` includes only tasks currently claimed by an open Desktop
-renderer. `ocs codex-sessions` is rollout history, not presence. A DM to a task
-that is no longer open remains in the append-only log and is reported as parked;
-the target can recover it with `ocs inbox`, but it is not described as woken.
+renderer. `ocs codex-sessions` is rollout history, not presence. When Desktop
+definitely reports `unavailable`, `not-open`, or `no-source`, ocs may reuse the
+same stored channel/seq to wake a uniquely matched idle cmux Codex surface. The
+fallback requires both an exact task suffix in the surface title and a live
+foreground Codex process; stale shells and ambiguous matches fail closed. It is
+never attempted after an unknown IPC outcome. Without a safe carrier match, the
+message stays in the append-only log for recovery with `ocs inbox`.
 
 ## Commands
 

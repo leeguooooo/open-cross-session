@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexSessionsRoot, listCodexSessions } from "../src/codex-sessions.ts";
 import { discoverCodexDesktopOwners } from "../src/codex-ipc.ts";
-import { readMessages } from "../src/store.ts";
+import { appendMessage, readMessages } from "../src/store.ts";
 import { pickCodexSourceThread, splitWakeMentions, wakeCodexTask } from "../src/wake.ts";
 import { autoCleanupTempDirs, tempDir } from "./tmp";
 
@@ -136,6 +136,50 @@ function fakeRouter(
   server.listen(sockPath);
   chmodSync(sockPath, 0o600);
   return { env: { CODEX_HOME: codexHome }, server, startTurnRequests, close: () => server.close() };
+}
+
+function fakeCmux(
+  threadId: string,
+  options: { busy?: boolean } = {},
+): { env: Record<string, string>; log: string } {
+  const root = tempDir("ocs-codex-cmux-");
+  const bin = join(root, "bin");
+  const log = join(root, "cmux.log");
+  mkdirSync(bin);
+  writeFileSync(log, "");
+  const top = JSON.stringify({
+    windows: [{
+      workspaces: [{
+        panes: [{
+          surfaces: [{
+            kind: "surface",
+            ref: "surface:77",
+            title: `open-cross-session · codex-${threadId.slice(0, 8)}-1`,
+            processes: [{ kind: "process", name: "codex" }],
+          }],
+        }],
+      }],
+    }],
+  });
+  const screen = options.busy ? "Working (esc to interrupt)" : "› Ask Codex to do anything";
+  const executable = join(bin, "cmux");
+  writeFileSync(executable, `#!/bin/sh
+case "$1" in
+  ping) exit 0 ;;
+  top) printf '%s\\n' '${top}' ;;
+  read-screen) printf '%s\\n' '${screen}' ;;
+  send|send-key) printf '%s\\n' "$*" >> "$OCS_TEST_CMUX_LOG" ;;
+  *) exit 1 ;;
+esac
+`);
+  chmodSync(executable, 0o700);
+  return {
+    env: {
+      PATH: `${bin}:/usr/bin:/bin`,
+      OCS_TEST_CMUX_LOG: log,
+    },
+    log,
+  };
 }
 
 async function runCli(
@@ -298,8 +342,72 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
     }
   }, T);
 
+  test("#30：Desktop 明确未认领时自动降级到唯一的活 cmux Codex surface", async () => {
+    const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_B]) });
+    const cmux = fakeCmux(THREAD_B);
+    const home = tempDir("ocs-codex-cmux-fallback-");
+    try {
+      appendMessage({
+        channel: "dev",
+        from: THREAD_B,
+        from_identity: `codex:${THREAD_B}`,
+        to_identity: "name:alice",
+        body: "please report back",
+        env: { OCS_HOME: home },
+      });
+      const result = await runCli(router, [
+        "send",
+        "dev",
+        "reply through the same stored message",
+        "--as",
+        "alice",
+        "--reply-to",
+        "1",
+      ], { ...cmux.env, OCS_HOME: home });
+
+      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(result.stdout).toContain("stored #dev seq 2");
+      expect(result.stdout).toContain(`Desktop not-open for ${THREAD_B}`);
+      expect(result.stdout).toContain("woke terminal surface:77 via cmux fallback");
+      expect(result.stdout).not.toContain("stored-only");
+      expect(readMessages("dev", { env: { OCS_HOME: home } })).toHaveLength(2);
+      const calls = readFileSync(cmux.log, "utf8");
+      expect(calls).toContain("send --surface surface:77 [ocs wake]");
+      expect(calls).toContain("reply to seq 1");
+      expect(calls).toContain("Thread: ocs read dev");
+      expect(calls).toContain("send-key --surface surface:77 enter");
+      expect(router.startTurnRequests).toEqual([]);
+    } finally {
+      router.close();
+    }
+  }, T);
+
+  test("#30：匹配到的 cmux Codex 正在工作时不敲键打断", async () => {
+    const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_B]) });
+    const cmux = fakeCmux(THREAD_B, { busy: true });
+    try {
+      const result = await runCli(router, [
+        "send",
+        "dev",
+        "do not interrupt",
+        "--as",
+        "alice",
+        "--codex",
+        THREAD_B,
+      ], cmux.env);
+
+      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 2, stderr: "" });
+      expect(result.stdout).toContain("wake(codex): stored-only (not-open)");
+      expect(readFileSync(cmux.log, "utf8")).toBe("");
+      expect(router.startTurnRequests).toEqual([]);
+    } finally {
+      router.close();
+    }
+  }, T);
+
   test("Codex 唤醒结果未知返回退出码 3，且明确禁止重发", async () => {
     const router = fakeRouter({ startTurnWithoutId: true });
+    const cmux = fakeCmux(THREAD_B);
     const home = tempDir("ocs-codex-unknown-outcome-");
     try {
       const result = await runCli(router, [
@@ -312,7 +420,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
         "codex-bbbbbbbb",
         "--codex-source",
         "codex-aaaaaaaa",
-      ], { OCS_HOME: home });
+      ], { ...cmux.env, OCS_HOME: home });
 
       expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 3, stderr: "" });
       expect(result.stdout).toContain("stored #dev seq 1");
@@ -320,6 +428,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
       expect(result.stdout).toContain("do NOT resend");
       expect(readMessages("dev", { env: { OCS_HOME: home } })).toHaveLength(1);
       expect(router.startTurnRequests).toHaveLength(1);
+      expect(readFileSync(cmux.log, "utf8")).toBe("");
     } finally {
       router.close();
     }

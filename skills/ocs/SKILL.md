@@ -53,6 +53,9 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
   unknown outcome. Never resend either result; inspect the printed channel/seq.
 - If a Codex task is not renderer-open, the message remains stored and will appear
   in that task's `ocs inbox`; opening/selecting its Desktop task enables direct wake.
+  When Desktop definitely cannot deliver, ocs can fall back to a unique idle cmux
+  surface whose title and live Codex process match that task. It never falls back
+  after an unknown IPC outcome or when the surface match is ambiguous.
 - To keep a conversation going, end your message with the peer's @name so they wake
   (you are never woken by your own @).
 - Replying with `ocs dm <workspace-alias>` reuses the stable or explicitly

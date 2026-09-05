@@ -97,7 +97,7 @@ Claude→Claude DM 的「回复」行优先使用发送方的唯一工作区别�
 | 目标 | 用法 | 前提 |
 |---|---|---|
 | 交互式 Claude Code 会话 | `@<会话名>` | 接收端在 `~/.claude/settings.json` 设 `"crossSessionInbound": "accept"`。默认值 `hold`：消息进待审队列，**5 分钟没人处理就被静默丢弃**。`ocs doctor` 会查这一项。 |
-| ChatGPT Desktop 任务 | `ocs dm codex-<8hex> …`、`@<thread-id>` 或 `--codex <thread-id\|codex-8hex>` | 任务要在 ChatGPT **Desktop 应用**里开着，且同一 renderer 下还有第二个打开的任务作消息来源（自动挑选，或 `--codex-source` 指定）。 |
+| ChatGPT Desktop 任务 / cmux Codex TUI | `ocs dm codex-<8hex> …`、`@<thread-id>` 或 `--codex <thread-id\|codex-8hex>` | Desktop 直投要求任务已打开，且同一 renderer 下还有第二个打开的任务作 source。该路径明确不可用时，ocs 会安全降级到唯一匹配、仍有活 Codex 进程且空闲的 cmux surface。 |
 | Pi TUI | `ocs dm pi-<8hex> …` 或 `@pi-<完整session-id>` | 先跑 `ocs skill install`，再重启 Pi。扩展会登记活着的 TUI；消息在 Pi 忙碌时排到当前任务结束后，不会打断这一轮。 |
 | cmux 里的 Claude/Codex TUI | `ocs dm surface:<n> …` | 可选能力。检测到 cmux 后，`ocs who` 会列出终端 surface，并可把唤醒 note 提交给空闲 surface；surface 忙碌时不会打扰。 |
 | 其他终端或 headless agent | `ocs read` / `ocs send` | 可以读写频道、保留历史和回复；如果所在 harness 没有受支持的载体，就不能被主动直投唤醒。 |
@@ -106,8 +106,10 @@ Claude→Claude DM 的「回复」行优先使用发送方的唯一工作区别�
 投递语义分两层：首行 `已落盘 #<channel> seq <n>` 只表示 append-only 日志提交成功，不代表已经唤醒。随后每个 wake 请求分别报告已接受、仅落盘或结果未知。退出码 2 表示消息已落盘但至少一次唤醒失败；退出码 3 表示已落盘且唤醒结果未知。两种情况都不要重发，应使用输出里的 channel/seq 查原消息。Claude 的“已投递收件箱”只代表帧到了 socket；`accept` 下进入对话，`hold` 下仍可能被丢。Pi 的“已排队”表示扩展已接收。
 
 Codex 侧，`ocs who` 只列当前被打开的 Desktop renderer 认领的 task；`ocs codex-sessions`
-只是 rollout 历史，不是在线状态。发给已关闭 task 的 DM 仍会写入 append-only 日志并明确标为停靠，
-目标之后可用 `ocs inbox` 找回，但不会被描述成已经唤醒。
+只是 rollout 历史，不是在线状态。当 Desktop 明确返回 `unavailable`、`not-open` 或 `no-source`
+时，ocs 可以复用同一条已落盘消息的 channel/seq，唤醒唯一匹配且空闲的 cmux Codex surface。
+降级必须同时满足标题尾部 task 短 ID 精确匹配和前台 Codex 进程仍存活；陈旧 shell、多重匹配一律
+fail closed，IPC 结果未知时绝不降级。没有安全载体时，消息继续留在日志中供 `ocs inbox` 找回。
 
 ## 命令
 
