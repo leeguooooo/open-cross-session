@@ -58,6 +58,7 @@ import {
 import {
   buildRoster,
   dmChannel,
+  findCodexCmuxSurface,
   findDmReplyChannel,
   resolveDmTarget,
   resolveSelfName,
@@ -75,6 +76,7 @@ import {
   wakeCodexTask,
   wakeNote,
   wakeSessions,
+  type WakeNoteInput,
 } from "./wake.ts";
 
 export const OCS_VERSION = "0.4.2";
@@ -218,6 +220,31 @@ function resolveCodexFlagAddress(flag: "codex" | "codex-source", value: string):
   fail(M.failCodexAddress(flag, value));
 }
 
+/**
+ * #30：Desktop 明确没有投递时，若同一个 task 仍运行在唯一可验证的 cmux Codex surface，
+ * 用同一条已落盘消息的 channel/seq 唤醒它。unknown-outcome 绝不能走这里，避免重复投递。
+ */
+function tryCodexCmuxFallback(
+  targetThreadId: string,
+  reason: string,
+  wakeInput: Omit<WakeNoteInput, "receiver">,
+): boolean {
+  if (reason !== "unavailable" && reason !== "not-open" && reason !== "no-source") return false;
+  const surface = findCodexCmuxSurface(targetThreadId);
+  if (surface === null) return false;
+  const result = wakeCmuxSurface(
+    surface.ref,
+    wakeNote({
+      ...wakeInput,
+      receiver: `codex-${targetThreadId.slice(0, 8)}`,
+      implicitReceiver: true,
+    }),
+  );
+  if (!result.ok) return false;
+  console.log(M.codexCmuxFallback(targetThreadId, reason, surface.ref));
+  return true;
+}
+
 function printMessage(m: { seq: number; ts: string; from: string; body: string }): void {
   console.log(`#${m.seq} ${m.ts} <${m.from}> ${m.body}`);
 }
@@ -337,6 +364,8 @@ async function cmdSend(parsed: Parsed): Promise<void> {
       // 上游铁律：帧已写出但结果未知——如实报告、绝不重放
       console.log(M.codexUnknownOutcome(result.detail ?? ""));
       markStoredDeliveryFailure("unknown");
+    } else if (tryCodexCmuxFallback(target, result.reason, wakeInput)) {
+      // cmux 只复用同一 channel/seq 做唤醒，没有再次落盘。
     } else {
       console.log(M.codexFailed(result.reason, result.detail ?? ""));
       markStoredDeliveryFailure("failed");
@@ -553,6 +582,8 @@ async function cmdDm(parsed: Parsed): Promise<void> {
     else if (result.reason === "unknown-outcome") {
       console.log(M.codexUnknownOutcome(result.detail ?? ""));
       markStoredDeliveryFailure("unknown");
+    } else if (tryCodexCmuxFallback(resolved.threadId, result.reason, wakeInput)) {
+      // cmux 只复用同一 channel/seq 做唤醒，没有再次落盘。
     } else {
       console.log(M.codexFailed(result.reason, result.detail ?? ""));
       markStoredDeliveryFailure("failed");
@@ -980,6 +1011,9 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
   unknown outcome. Never resend either result; inspect the printed channel/seq.
 - If a Codex task is not renderer-open, the message remains stored and will appear
   in that task's \`ocs inbox\`; opening/selecting its Desktop task enables direct wake.
+  When Desktop definitely cannot deliver, ocs can fall back to a unique idle cmux
+  surface whose title and live Codex process match that task. It never falls back
+  after an unknown IPC outcome or when the surface match is ambiguous.
 - To keep a conversation going, end your message with the peer's @name so they wake
   (you are never woken by your own @).
 - Replying with \`ocs dm <workspace-alias>\` reuses the stable or explicitly

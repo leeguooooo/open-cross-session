@@ -7,7 +7,9 @@ import {
   dmChannel,
   buildRoster,
   claudeWorkspaceAlias,
+  findCodexCmuxSurface,
   findDmReplyChannel,
+  parseActiveCodexCmuxSurfaces,
   resolveDmTarget,
   resolveSelfName,
   selfIdentity,
@@ -23,6 +25,39 @@ import { autoCleanupTempDirs, tempDir } from "./tmp";
 autoCleanupTempDirs();
 
 const THREAD = "aaaaaaaa-1111-2222-3333-444444444444";
+
+describe("Codex 的 cmux 安全降级", () => {
+  const top = (surfaces: unknown[]) => ({ windows: [{ workspaces: [{ panes: [{ surfaces }] }] }] });
+  const codexSurface = (ref: string, title: string) => ({
+    kind: "surface",
+    ref,
+    title,
+    processes: [{ kind: "process", name: "codex" }],
+  });
+
+  test("只从仍有前台 Codex 进程的 surface 中按标题尾部短 id 唯一匹配", () => {
+    const active = codexSurface("surface:27", "open-cross-session · Ping · codex-aaaaaaaa-1");
+    const staleShell = {
+      kind: "surface",
+      ref: "surface:28",
+      title: "stale · codex-aaaaaaaa-1",
+      processes: [{ kind: "process", name: "zsh" }],
+    };
+    const parsed = parseActiveCodexCmuxSurfaces(top([active, staleShell]));
+    expect(parsed).toEqual([{ ref: "surface:27", title: active.title }]);
+    expect(findCodexCmuxSurface(THREAD, parsed)).toEqual({ ref: "surface:27", title: active.title });
+  });
+
+  test("短 id 多命中、前缀更长或标题不以 task id 收尾时 fail closed", () => {
+    const exact = codexSurface("surface:27", "project · codex-aaaaaaaa-1");
+    const duplicate = codexSurface("surface:29", "other · codex-aaaaaaaa-2");
+    const longer = codexSurface("surface:30", "project · codex-aaaaaaaa0");
+    const embedded = codexSurface("surface:31", "codex-aaaaaaaa-1 · copied text");
+    expect(findCodexCmuxSurface(THREAD, [exact, duplicate])).toBeNull();
+    expect(findCodexCmuxSurface(THREAD, [longer, embedded])).toBeNull();
+    expect(findCodexCmuxSurface("not-a-thread", [exact])).toBeNull();
+  });
+});
 
 function sessionsFixture(options: { name?: string; cwd?: string } = {}): NodeJS.ProcessEnv {
   const dir = tempDir("ocs-roster-");

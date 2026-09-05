@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Codex Desktop 明确不可投递时，自动降级唤醒唯一匹配的空闲 cmux Codex surface；匹配会验证标题 task 短 ID 与活 Codex 进程，陈旧 shell、多匹配和 IPC `unknown-outcome` 均 fail closed（#30）
+
 ## v0.4.2
 
 - 发送输出明确区分 `stored` 与 wake 结果；唤醒失败返回退出码 2、结果未知返回退出码 3，并提醒消息已落盘、不可重发
