@@ -78,8 +78,15 @@ import {
   wakeSessions,
   type WakeNoteInput,
 } from "./wake.ts";
+import {
+  checkUpgrade,
+  OCS_INSTALL_SCRIPT_URL,
+  OCS_UPGRADE_INSTALLER_ENV,
+  runInstaller,
+  upgradeCheckEnabled,
+} from "./upgrade.ts";
 
-export const OCS_VERSION = "0.4.2";
+export const OCS_VERSION = "0.4.3";
 
 const LANG = detectLang();
 const M = messages(LANG);
@@ -119,7 +126,7 @@ const COMMAND_SPECS: Record<string, CommandSpec> = {
   watch: { value: ["interval-ms"], bool: [], minPos: 1, maxPos: 1 },
   doctor: { value: [], bool: ["fix"], minPos: 0, maxPos: 0 },
   skill: { value: [], bool: [], minPos: 1, maxPos: 1 },
-  upgrade: NO_ARGS,
+  upgrade: { value: [], bool: ["check", "party"], minPos: 0, maxPos: 0 },
   version: NO_ARGS,
   "--version": NO_ARGS,
   "--help": NO_ARGS,
@@ -826,6 +833,43 @@ function cmdCodexSessions(parsed: Parsed): void {
   for (const s of sessions) console.log(formatCodexSessionLine(s));
 }
 
+/** `ocs upgrade`：查最新 release 并复用 install.sh 升级；--check 只报告；--party 打印迁移指南。 */
+async function cmdUpgrade(parsed: Parsed): Promise<void> {
+  if (parsed.flags.has("party")) {
+    console.log(M.upgrade);
+    return;
+  }
+  console.log(M.upgradeChecking);
+  const check = await checkUpgrade(OCS_VERSION);
+  if (check.status === "unknown") {
+    console.error(M.upgradeCheckFailed(check.error));
+    process.exitCode = 1;
+    return;
+  }
+  if (check.status === "current") {
+    console.log(M.upgradeCurrent(check.current));
+    console.log(M.upgradePartyHint);
+    return;
+  }
+  if (check.status === "ahead") {
+    console.log(M.upgradeAhead(check.current, check.latest));
+    return;
+  }
+  console.log(M.upgradeBehind(check.current, check.latest));
+  if (parsed.flags.has("check")) return;
+  // installer 自带 sha256 校验 + 冒烟 + 原子替换；失败时现有二进制不受影响。
+  const local = process.env[OCS_UPGRADE_INSTALLER_ENV];
+  console.log(M.upgradeRunning(local ? `sh ${local}` : `curl -fsSL ${OCS_INSTALL_SCRIPT_URL} | sh`));
+  const run = runInstaller();
+  if (run.code === 0) {
+    console.log(M.upgradeDone);
+    console.log(M.upgradePartyHint);
+  } else {
+    console.error(M.upgradeFailed(String(run.code ?? "spawn-failed")));
+    process.exitCode = run.code ?? 1;
+  }
+}
+
 async function cmdDoctor(parsed: Parsed): Promise<void> {
   const ok = (s: string) => console.log(`  ✅ ${s}`);
   const warn = (s: string) => console.log(`  ⚠️  ${s}`);
@@ -866,6 +910,17 @@ async function cmdDoctor(parsed: Parsed): Promise<void> {
     }
   } else {
     warn(M.doctorSkillsMissing(missingSkills.length));
+  }
+
+  console.log(M.doctorVersion);
+  if (!upgradeCheckEnabled()) {
+    warn(M.doctorVersionSkipped);
+  } else {
+    const upgrade = await checkUpgrade(OCS_VERSION);
+    if (upgrade.status === "unknown") warn(M.doctorVersionUnknown(upgrade.error));
+    else if (upgrade.status === "current") ok(M.doctorVersionOk(upgrade.current));
+    else if (upgrade.status === "behind") warn(M.doctorVersionBehind(upgrade.current, upgrade.latest));
+    else ok(M.doctorVersionAhead(upgrade.current, upgrade.latest));
   }
 
   console.log(M.doctorCodex);
@@ -965,6 +1020,15 @@ description: Talk to any other AI coding agent on this machine (Claude Code sess
 
 Discover who is reachable, then message them. Channels are plumbing — you never
 need to create or manage them.
+
+## Install / upgrade
+
+If \`ocs\` is not on PATH, install the GitHub Release binary (no token needed):
+
+    curl -fsSL https://raw.githubusercontent.com/leeguooooo/open-cross-session/main/install.sh | sh
+
+Keep it current: \`ocs upgrade\` fetches the latest release (\`ocs upgrade --check\` only
+reports); \`ocs doctor\` warns when the installed binary is behind.
 
 \`\`\`bash
 ocs who                          # same-project peers + pending notices; you are marked
@@ -1173,7 +1237,7 @@ async function main(): Promise<void> {
       await cmdDoctor(parsed);
       break;
     case "upgrade":
-      console.log(M.upgrade);
+      await cmdUpgrade(parsed);
       break;
     case "watch":
       await cmdWatch(parsed);

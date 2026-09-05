@@ -8,6 +8,15 @@ description: Talk to any other AI coding agent on this machine (Claude Code sess
 Discover who is reachable, then message them. Channels are plumbing — you never
 need to create or manage them.
 
+## Install / upgrade
+
+If `ocs` is not on PATH, install the GitHub Release binary (no token needed):
+
+    curl -fsSL https://raw.githubusercontent.com/leeguooooo/open-cross-session/main/install.sh | sh
+
+Keep it current: `ocs upgrade` fetches the latest release (`ocs upgrade --check` only
+reports); `ocs doctor` warns when the installed binary is behind.
+
 ```bash
 ocs who                          # same-project peers + pending notices; you are marked
 ocs who --verbose                # raw IDs/paths for diagnostics

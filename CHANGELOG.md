@@ -1,7 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.4.3
 
+- `ocs upgrade` 真的升级二进制：查 GitHub 最新 Release，落后时复用 install.sh（sha256 校验 + 冒烟 + 原子替换）；`--check` 只报告；原来的托管版迁移指南移到 `--party`。此前该命令只打印迁移文案，装了旧版的用户无从得知有新版
+- `ocs doctor` 新增版本检查：二进制落后于最新 Release 时给出警告并指向 `ocs upgrade`；离线/CI 可用 `OCS_UPGRADE_CHECK=0` 跳过
+- Codex IPC 建连预算独立于 owner 探测 deadline：此前 500ms 的探测 deadline 也套在 socket 建连上，机器繁忙时「未认领」会被误报成可重试的传输故障 `failed`，而非应停靠 inbox 的 `not-open`（#28）
+- skill 文档补上安装/升级入口，agent 缺二进制时能自愈
 - Codex Desktop 明确不可投递时，自动降级唤醒唯一匹配的空闲 cmux Codex surface；匹配会验证标题 task 短 ID 与活 Codex 进程，陈旧 shell、多匹配和 IPC `unknown-outcome` 均 fail closed（#30）
 
 ## v0.4.2

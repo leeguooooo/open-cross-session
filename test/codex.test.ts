@@ -192,6 +192,7 @@ async function runCli(
     ...router.env,
     OCS_HOME: tempDir("ocs-codex-cli-"),
     OCS_LANG: "en",
+    OCS_UPGRADE_CHECK: "0",
     ...extraEnv,
   } as Record<string, string>;
   delete env.CLAUDE_CODE_SESSION_ID;

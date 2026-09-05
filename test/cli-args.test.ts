@@ -22,7 +22,7 @@ const T = 60_000;
 function runCli(args: string[]): { code: number; stderr: string; stdout: string } {
   const home = tempDir("ocs-cli-");
   const proc = Bun.spawnSync(["bun", join(import.meta.dir, "..", "src", "cli.ts"), ...args], {
-    env: { ...process.env, CODEX_HOME: join(home, "codex"), OCS_HOME: home, OCS_LANG: "en" },
+    env: { ...process.env, CODEX_HOME: join(home, "codex"), OCS_HOME: home, OCS_LANG: "en", OCS_UPGRADE_CHECK: "0" },
   });
   return {
     code: proc.exitCode,
@@ -90,6 +90,7 @@ describe("命令级参数 schema", () => {
         OCS_CLAUDE_SETTINGS_PATH: settings,
         PI_CODING_AGENT_DIR: piAgentDir,
         OCS_LANG: "en",
+        OCS_UPGRADE_CHECK: "0",
       },
     });
     const stdout = proc.stdout.toString();
