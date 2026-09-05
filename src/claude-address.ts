@@ -30,15 +30,31 @@ export function resetClaudeAddressCachesForTest(): void {
   keyCache.clear();
 }
 
+/** git 子进程没能给出答案（超时 / 起不来）——和「git 明确回答没有」是两回事。 */
+class GitUnavailableError extends Error {}
+
 function git(cwd: string, args: string[]): string | null {
-  try {
-    const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 1_000 });
+  // 「git 明确说没有」（非零退出，例如没配 remote）返回 null，调用方据此换用
+  // gitdir / cwd 作为锚点——这是身份定义的一部分，必须稳定。
+  // 「git 没能回答」（超时、spawn 失败）绝不能也返回 null：那会让锚点 material
+  // 从 git:<remote> 悄悄换成 gitdir:<path>，对同一个 workspace-key 算出另一个
+  // 稳定身份并写进注册表；此后该别名永远「conflicts with saved state」、稳定
+  // 频道被永久禁用。机器负载高时 1s 超时并不稀奇（#27 的负载放大就是这个）。
+  // 所以：没能回答就重试一次并放宽超时；还不行就抛出，由 workspaceAnchor
+  // 显式降级为「无锚点」，而不是编造一个不同的身份。
+  for (const timeout of [1_000, 4_000]) {
+    let result: ReturnType<typeof spawnSync>;
+    try {
+      result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout });
+    } catch {
+      continue;
+    }
+    if (result.error !== undefined || result.status === null) continue;
     if (result.status !== 0 || typeof result.stdout !== "string") return null;
     const value = result.stdout.trim();
     return value === "" ? null : value;
-  } catch {
-    return null;
   }
+  throw new GitUnavailableError(`git did not answer for ${cwd}`);
 }
 
 function normalizeRemote(raw: string): string {
@@ -80,11 +96,21 @@ function workspaceAnchor(session: NativeClaudeSession): WorkspaceAnchor | null {
   if (typeof session.cwd !== "string" || !isAbsolute(session.cwd)) return null;
   const cached = anchorCache.get(session.cwd);
   if (cached !== undefined) return cached;
-  const remoteRaw = git(session.cwd, ["config", "--get", "remote.origin.url"]);
+  let remoteRaw: string | null;
+  let top: string | null;
+  let commonRaw: string | null;
+  try {
+    remoteRaw = git(session.cwd, ["config", "--get", "remote.origin.url"]);
+    const remoteKnown = remoteRaw !== null;
+    // 有 remote 时 alias/material 已全部确定，不再额外启两个 git 进程。
+    top = remoteKnown ? null : git(session.cwd, ["rev-parse", "--show-toplevel"]);
+    commonRaw = remoteKnown ? null : git(session.cwd, ["rev-parse", "--git-common-dir"]);
+  } catch (error) {
+    if (!(error instanceof GitUnavailableError)) throw error;
+    // 不缓存：下一次调用再问 git。返回 null 走的是既有的「无稳定身份」路径。
+    return null;
+  }
   const remote = remoteRaw === null ? null : normalizeRemote(remoteRaw);
-  // 有 remote 时 alias/material 已全部确定，不再额外启两个 git 进程。
-  const top = remote === null ? git(session.cwd, ["rev-parse", "--show-toplevel"]) : null;
-  const commonRaw = remote === null ? git(session.cwd, ["rev-parse", "--git-common-dir"]) : null;
   const common = commonRaw === null
     ? null
     : canonicalPath(isAbsolute(commonRaw) ? commonRaw : resolve(session.cwd, commonRaw));
@@ -161,11 +187,21 @@ function workspaceKey(env: NodeJS.ProcessEnv): Buffer {
   let key = read();
   if (key === null) {
     if (readId() !== null) {
-      throw new Error(`workspace key is missing but ${idPath} still exists; restore the original workspace-key`);
+      // 这里没有锁（本函数先于注册表锁执行）。首次创建时两个进程可以这样交错：
+      // 我方 read() → ENOENT；对方 writeOnce(key) → read() → writeOnce(id)；
+      // 我方 readId() → 存在。此时 key 并没有丢，只是刚被对方写好——再读一次
+      // 就能拿到赢家的 key。真正的「key 丢了、id 还在」再读一次仍是 null，
+      // 照旧抛错，降级语义不变。不加这一步，输家会抛错、被 cli 吞成 stdout
+      // warning、退回会话级频道，一次首次并发 DM 就此分裂成两条历史。
+      key = read();
+      if (key === null) {
+        throw new Error(`workspace key is missing but ${idPath} still exists; restore the original workspace-key`);
+      }
+    } else {
+      const raw = randomBytes(32).toString("hex");
+      writeOnce(path, raw);
+      key = read();
     }
-    const raw = randomBytes(32).toString("hex");
-    writeOnce(path, raw);
-    key = read();
   }
   if (key === null) throw new Error(`invalid workspace key: ${path}`);
   const expectedId = createHash("sha256").update(key).digest("hex").slice(0, 16);
