@@ -91,6 +91,21 @@ interface Catalog {
   doctorDataUnsafe: (path: string, mode: string) => string;
   doctorDataNotDirectory: (path: string) => string;
   upgrade: string;
+  upgradeChecking: string;
+  upgradeCurrent: (version: string) => string;
+  upgradeBehind: (current: string, latest: string) => string;
+  upgradeAhead: (current: string, latest: string) => string;
+  upgradeCheckFailed: (error: string) => string;
+  upgradeRunning: (command: string) => string;
+  upgradeDone: string;
+  upgradeFailed: (code: string) => string;
+  upgradePartyHint: string;
+  doctorVersion: string;
+  doctorVersionOk: (version: string) => string;
+  doctorVersionBehind: (current: string, latest: string) => string;
+  doctorVersionAhead: (current: string, latest: string) => string;
+  doctorVersionUnknown: (error: string) => string;
+  doctorVersionSkipped: string;
   failSendUsage: string;
   failDmUsage: string;
   failReadUsage: string;
@@ -178,8 +193,9 @@ Usage:
       data-directory permissions, and crossSessionInbound (backing up settings first).
   ocs skill install
       Install the ocs skill for Claude, Codex, and Pi, plus Pi's direct-wake extension.
-  ocs upgrade
-      Migration guide to hosted Agent Party (cross-machine channels).
+  ocs upgrade [--check | --party]
+      Upgrade the ocs binary to the latest GitHub Release. --check only reports;
+      --party prints the migration guide to hosted Agent Party (cross-machine channels).
   ocs version | help
 
 --as is optional inside Claude, Codex, and Pi sessions (auto-detected; OCS_NAME also works).
@@ -294,6 +310,21 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   3. History:   optionally export with \`ocs read <channel> --as migrator --peek --json\` and replay via party send
 
 Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-machine goes party.`,
+  upgradeChecking: "checking the latest GitHub Release…",
+  upgradeCurrent: (version) => `ocs ${version} is already the latest release`,
+  upgradeBehind: (current, latest) => `ocs ${current} is behind the latest release ${latest}`,
+  upgradeAhead: (current, latest) => `ocs ${current} is ahead of the latest release ${latest} (development build); nothing to do`,
+  upgradeCheckFailed: (error) => `could not determine the latest release: ${error}`,
+  upgradeRunning: (command) => `running installer: ${command}`,
+  upgradeDone: "upgrade complete — run `ocs version` to confirm",
+  upgradeFailed: (code) => `installer failed (exit ${code}); the existing binary was left untouched`,
+  upgradePartyHint: "cross-machine channels? see `ocs upgrade --party` for hosted Agent Party",
+  doctorVersion: "Version",
+  doctorVersionOk: (version) => `ocs ${version} is the latest release`,
+  doctorVersionBehind: (current, latest) => `ocs ${current} is behind ${latest} — run \`ocs upgrade\``,
+  doctorVersionAhead: (current, latest) => `ocs ${current} is ahead of the latest release ${latest} (development build)`,
+  doctorVersionUnknown: (error) => `could not check the latest release (${error}); run \`ocs upgrade --check\` when online`,
+  doctorVersionSkipped: "version check skipped (OCS_UPGRADE_CHECK=0)",
   failSendUsage: "usage: ocs send <channel> <body> [--as <name>]",
   failDmUsage: "usage: ocs dm <name-or-id> <body> [--as <name>]",
   failReadUsage: "usage: ocs read <channel> [--as <name>]",
@@ -396,8 +427,9 @@ const zh: Catalog = {
       并在备份后把 crossSessionInbound 设为 accept
   ocs skill install
       给 Claude、Codex、Pi 安装 ocs skill，并安装 Pi 直投扩展
-  ocs upgrade
-      迁移到托管版 Agent Party（跨机器、跨组织频道）
+  ocs upgrade [--check | --party]
+      把 ocs 二进制升级到最新 GitHub Release。--check 只报告不安装；
+      --party 打印迁移到托管版 Agent Party（跨机器频道）的指南。
   ocs version | help
 
 在 Claude、Codex、Pi 会话里 --as 可省略（自动识别；OCS_NAME 也行）。
@@ -503,6 +535,21 @@ const zh: Catalog = {
   3. 迁历史: ocs read <channel> --as migrator --peek --json 导出后用 party send 回放（可选）
 
 本地 ocs 与托管 party 可以并存：本机小事走 ocs，跨机协作走 party。`,
+  upgradeChecking: "正在查询 GitHub 最新 Release…",
+  upgradeCurrent: (version) => `ocs ${version} 已是最新版本`,
+  upgradeBehind: (current, latest) => `ocs ${current} 落后于最新版本 ${latest}`,
+  upgradeAhead: (current, latest) => `ocs ${current} 比最新版本 ${latest} 更新（开发版），无需操作`,
+  upgradeCheckFailed: (error) => `无法确定最新版本：${error}`,
+  upgradeRunning: (command) => `正在运行安装脚本：${command}`,
+  upgradeDone: "升级完成——运行 `ocs version` 确认",
+  upgradeFailed: (code) => `安装脚本失败（退出码 ${code}），现有二进制未改动`,
+  upgradePartyHint: "需要跨机器频道？看 `ocs upgrade --party` 了解托管版 Agent Party",
+  doctorVersion: "版本",
+  doctorVersionOk: (version) => `ocs ${version} 已是最新版本`,
+  doctorVersionBehind: (current, latest) => `ocs ${current} 落后于 ${latest}——运行 \`ocs upgrade\``,
+  doctorVersionAhead: (current, latest) => `ocs ${current} 比最新版本 ${latest} 更新（开发版）`,
+  doctorVersionUnknown: (error) => `无法检查最新版本（${error}）；联网后运行 \`ocs upgrade --check\``,
+  doctorVersionSkipped: "已跳过版本检查（OCS_UPGRADE_CHECK=0）",
   failSendUsage: "用法: ocs send <channel> <body> [--as <name>]",
   failDmUsage: "用法: ocs dm <名字或id> <内容> [--as <name>]",
   failReadUsage: "用法: ocs read <channel> [--as <name>]",
