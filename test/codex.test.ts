@@ -14,6 +14,9 @@ autoCleanupTempDirs();
 const THREAD_A = "aaaaaaaa-1111-2222-3333-444444444444";
 const THREAD_B = "bbbbbbbb-1111-2222-3333-444444444444";
 const THREAD_C = "cccccccc-1111-2222-3333-444444444444";
+// 冷启动 CLI 子进程可达数秒，负载下会撞上 bun 默认的 5s 单测预算（实测 5006.96ms
+// 超时红）。与 cli-e2e.test.ts 同样给 spawn CLI 的用例 60s。
+const T = 60_000;
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 
 function rolloutFixture(options: { withThreadC?: boolean } = {}): NodeJS.ProcessEnv {
@@ -85,6 +88,8 @@ function fakeRouter(
     withThreadC?: boolean;
     ignoreOwnerFor?: ReadonlySet<string>;
     startTurnWithoutId?: boolean;
+    /** 让 initialize 慢于 owner 探测 deadline，模拟机器繁忙时的建连开销。 */
+    delayInitializeMs?: number;
   } = {},
 ): FakeRouter {
   const codexHome = rolloutFixture({ withThreadC: options.withThreadC ?? false }).CODEX_HOME!;
@@ -109,7 +114,9 @@ function fakeRouter(
         const reply = (extra: Record<string, unknown>) =>
           socket.write(encodeFrame({ type: "response", requestId: message.requestId, resultType: "success", ...extra }));
         if (message.method === "initialize") {
-          reply({ result: { clientId: "test-client" } });
+          const send = () => reply({ result: { clientId: "test-client" } });
+          if (options.delayInitializeMs === undefined) send();
+          else setTimeout(send, options.delayInitializeMs);
         } else if (message.method === "thread-owner-discovery") {
           if (options.ignoreOwnerFor?.has(params.conversationId as string)) continue;
           reply({ handledByClientId: ownerOf(params.conversationId as string) });
@@ -183,7 +190,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
     } finally {
       router.close();
     }
-  });
+  }, T);
 
   test("ocs doctor 区分 router socket、当前 task ownership 与 rollout 历史", async () => {
     const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_B]) });
@@ -196,7 +203,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
     } finally {
       router.close();
     }
-  });
+  }, T);
 
   test("批量 owner 探测只返回被打开 renderer 认领的 task", async () => {
     const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_A]) });
@@ -262,7 +269,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
     } finally {
       router.close();
     }
-  });
+  }, T);
 
   test("Codex 唤醒失败返回 stored-only 与退出码 2，且已落盘消息不丢", async () => {
     const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_A]) });
@@ -289,7 +296,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
     } finally {
       router.close();
     }
-  });
+  }, T);
 
   test("Codex 唤醒结果未知返回退出码 3，且明确禁止重发", async () => {
     const router = fakeRouter({ startTurnWithoutId: true });
@@ -316,7 +323,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
     } finally {
       router.close();
     }
-  });
+  }, T);
 
   test("无效 Codex 短地址在消息落盘前失败", async () => {
     const router = fakeRouter();
@@ -339,7 +346,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
     } finally {
       router.close();
     }
-  });
+  }, T);
 
   test("source/target 不同 renderer 拒投（route-mismatch）", async () => {
     const router = fakeRouter({ ownerOf: (t) => (t === THREAD_B ? "renderer-1" : "renderer-2") });
@@ -379,6 +386,28 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
       });
       expect(result.ok).toBe(true);
       if (result.ok) expect(result.sourceThreadId).toBe(THREAD_C);
+    } finally {
+      router.close();
+    }
+  });
+
+  // #28：owner 探测的 deadline 故意很短（判"没人认领"要快），但它一度也被当成建连预算。
+  // 机器一忙，30ms 还没握上 socket 就超时，调用方收到的是 failed（会被当传输故障重试），
+  // 而不是 not-open（该停靠 inbox）。建连必须有独立预算。
+  test("建连慢于 owner 探测 deadline 时，仍按未认领报 not-open，不退化成 failed", async () => {
+    const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_B]), delayInitializeMs: 120 });
+    try {
+      const result = await wakeCodexTask({
+        targetThreadId: THREAD_B,
+        channel: "dm-test",
+        body: "park me",
+        seq: 3,
+        from: "a",
+        env: router.env,
+        ownerDiscoveryTimeoutMs: 30,
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toBe("not-open");
     } finally {
       router.close();
     }

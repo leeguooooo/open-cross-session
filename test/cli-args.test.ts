@@ -14,6 +14,9 @@ import { join } from "node:path";
 import { autoCleanupTempDirs, tempDir } from "./tmp";
 
 autoCleanupTempDirs();
+// 冷启动 CLI 子进程可达数秒，负载下会撞上 bun 默认的 5s 单测预算（实测 5006.96ms
+// 超时红）。与 cli-e2e.test.ts 同样给 spawn CLI 的用例 60s。
+const T = 60_000;
 
 // review #14 回归：缺值/未知 flag/多余参数必须报错退出，不许静默吞掉。
 function runCli(args: string[]): { code: number; stderr: string; stdout: string } {
@@ -34,25 +37,25 @@ describe("命令级参数 schema", () => {
     expect(r.code).toBe(1);
     expect(r.stderr).toContain("--codex requires a value");
     expect(r.stdout).not.toContain("stored");
-  });
+  }, T);
 
   test("未知 flag 报错", () => {
     const r = runCli(["read", "chat", "--as", "a", "--sneaky"]);
     expect(r.code).toBe(1);
     expect(r.stderr).toContain("unknown flag: --sneaky");
-  });
+  }, T);
 
   test("read 多余 positional 报错", () => {
     const r = runCli(["read", "chat", "extra", "--as", "a"]);
     expect(r.code).toBe(1);
     expect(r.stderr).toContain("unexpected extra arguments");
-  });
+  }, T);
 
   test("合法 send 正常走通", () => {
     const r = runCli(["send", "chat", "hello world", "--as", "a", "--no-wake"]);
     expect(r.code).toBe(0);
     expect(r.stdout).toContain("stored #chat seq 1");
-  });
+  }, T);
 
   test("常见的 --help 与 who --json 都是有效命令", () => {
     const help = runCli(["--help"]);
@@ -62,7 +65,7 @@ describe("命令级参数 schema", () => {
     const who = runCli(["who", "--json"]);
     expect(who.code).toBe(0);
     expect(JSON.parse(who.stdout)).toHaveProperty("entries");
-  });
+  }, T);
 
   test("doctor --fix 一次修复三端 skill、Pi 扩展和数据目录权限", () => {
     const root = tempDir("ocs-doctor-fix-");
@@ -102,5 +105,5 @@ describe("命令级参数 schema", () => {
     expect(stdout).toContain("updated the ocs skill for Claude, Codex, and Pi");
     expect(stdout).toContain("direct-wake extension installed");
     expect(stdout).toContain("owner-only permissions");
-  });
+  }, T);
 });
