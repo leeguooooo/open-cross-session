@@ -116,6 +116,10 @@ export interface CmuxSurface {
   title: string;
 }
 
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function cmuxAvailable(): boolean {
   try {
     return spawnSync("cmux", ["ping"], { encoding: "utf8", timeout: 2000 }).status === 0;
@@ -141,6 +145,69 @@ export function listCmuxSurfaces(): CmuxSurface[] {
     if (match) surfaces.push({ ref: match[1]!, title: match[2]! });
   }
   return surfaces;
+}
+
+/**
+ * 从 `cmux top --all --processes --json` 里只取仍有前台 Codex 进程的 terminal surface。
+ * 自动降级绝不能只信可能陈旧/可伪造的标题，否则 Codex 退出后会把唤醒正文敲进 shell。
+ */
+export function parseActiveCodexCmuxSurfaces(value: unknown): CmuxSurface[] {
+  const surfaces: CmuxSurface[] = [];
+  const seen = new Set<string>();
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    if (!record(node)) return;
+    if (
+      node.kind === "surface" &&
+      typeof node.ref === "string" && /^surface:\d+$/.test(node.ref) &&
+      typeof node.title === "string" &&
+      Array.isArray(node.processes) &&
+      node.processes.some((process) =>
+        record(process) && process.kind === "process" && process.name === "codex"
+      )
+    ) {
+      if (!seen.has(node.ref)) {
+        seen.add(node.ref);
+        surfaces.push({ ref: node.ref, title: node.title });
+      }
+      return;
+    }
+    for (const child of Object.values(node)) visit(child);
+  };
+  visit(value);
+  return surfaces;
+}
+
+function listActiveCodexCmuxSurfaces(): CmuxSurface[] {
+  try {
+    const proc = spawnSync("cmux", ["top", "--all", "--processes", "--json"], {
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    if (proc.status !== 0) return [];
+    return parseActiveCodexCmuxSurfaces(JSON.parse(proc.stdout) as unknown);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * #30：给 Desktop 未认领的 Codex task 找唯一的活 cmux TUI 兜底。
+ * cmux 自动标题以 `codex-<8hex>[-suffix]` 收尾；多命中或非活 Codex surface 都 fail closed。
+ */
+export function findCodexCmuxSurface(
+  threadId: string,
+  surfaces?: readonly CmuxSurface[],
+): CmuxSurface | null {
+  if (!isCodexThreadId(threadId)) return null;
+  const prefix = threadId.slice(0, 8).toLowerCase();
+  const suffix = new RegExp(`(?:^|[^a-z0-9])codex-${prefix}(?:-[0-9a-f]+)?$`, "i");
+  const matches = (surfaces ?? listActiveCodexCmuxSurfaces())
+    .filter(({ title }) => suffix.test(title.trim()));
+  return matches.length === 1 ? matches[0]! : null;
 }
 
 export type CmuxWakeResult =

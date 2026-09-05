@@ -38,6 +38,7 @@ interface Catalog {
   codexAccepted: (thread: string, turnId: string) => string;
   codexUnknownOutcome: (detail: string) => string;
   codexFailed: (reason: string, detail: string) => string;
+  codexCmuxFallback: (thread: string, reason: string, ref: string) => string;
   piWakeAccepted: (target: string) => string;
   piWakeUnknownOutcome: (target: string, detail: string) => string;
   piWakeFailed: (target: string, reason: string, detail: string) => string;
@@ -220,6 +221,8 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   codexUnknownOutcome: (detail) => `wake(codex): outcome unknown (frame was written — do NOT resend): ${detail}`,
   codexFailed: (reason, detail) =>
     `wake(codex): stored-only (${reason})${detail ? `: ${detail}` : ""} (message is already stored; do not resend)`,
+  codexCmuxFallback: (thread, reason, ref) =>
+    `wake(codex): Desktop ${reason} for ${thread}; woke terminal ${ref} via cmux fallback`,
   piWakeAccepted: (target) => `wake(pi): queued → ${target}`,
   piWakeUnknownOutcome: (target, detail) =>
     `wake(pi): outcome unknown for ${target} (frame was written — do NOT resend)${detail ? `: ${detail}` : ""}`,
@@ -430,6 +433,8 @@ const zh: Catalog = {
   codexUnknownOutcome: (detail) => `wake(codex): 结果未知（帧已写出，勿重发）: ${detail}`,
   codexFailed: (reason, detail) =>
     `wake(codex): 仅落盘（${reason}）${detail ? `: ${detail}` : ""}（消息已经落盘，请勿重发）`,
+  codexCmuxFallback: (thread, reason, ref) =>
+    `wake(codex): Desktop 对 ${thread} 返回 ${reason}；已自动降级由 cmux 唤醒终端 ${ref}`,
   piWakeAccepted: (target) => `wake(pi): 已排队 → ${target}`,
   piWakeUnknownOutcome: (target, detail) =>
     `wake(pi): ${target} 结果未知（帧已写出，勿重发）${detail ? `: ${detail}` : ""}`,
