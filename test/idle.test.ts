@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -175,6 +175,35 @@ describe("notify-when-idle watcher", () => {
       expect(content(frame)).toContain("[Cross-session idle notice] worker-b exited before going idle.");
       expect((await watcher)?.state).toBe("exited");
       expect(f.frames.length).toBe(1);
+    } finally {
+      f.close();
+    }
+  });
+
+  test("订阅方会话文件一瞬间读不到不算没了，恢复后继续盯 (#27)", async () => {
+    // observeIdleTarget 归根到底是读 sessions/<pid>.json。这个文件随时可能一瞬间
+    // 读不到——正在被重写、机器负载高、watcher 刚 spawn 就先跑了一轮。单次读失败
+    // 就把订阅落 failed 终态，这条订阅再也不会触发，而且后续 notify-when-idle
+    // 的去重也认不出它（pendingIdleSubscriptions 只认 pending），于是又建一条。
+    const f = fixture();
+    try {
+      f.setTarget("busy");
+      const { sub } = subscribe(f);
+      const subscriberPath = join(f.sessionsDir, `${process.pid}.json`);
+      const saved = readFileSync(subscriberPath, "utf8");
+      const watcher = runIdleWatch(sub.id, { env: f.env, pollMs: 20 });
+      await sleep(40);
+
+      unlinkSync(subscriberPath); // 一次瞬时读失败
+      await sleep(30);
+      writeFileSync(subscriberPath, saved, { mode: 0o600 }); // 立刻恢复
+
+      // 没有被误判成 failed，仍然在盯着目标。
+      await sleep(80);
+      f.setTarget("idle");
+      const frame = await f.nextFrame();
+      expect(content(frame)).toContain("is now idle");
+      expect((await watcher)?.state).toBe("fired");
     } finally {
       f.close();
     }

@@ -28,6 +28,19 @@ export const IDLE_SUB_TTL_MS = 6 * 60 * 60 * 1000;
 /** watcher 轮询间隔；测试用 env 调小。 */
 export const IDLE_POLL_MS_ENV = "OCS_IDLE_POLL_MS";
 export const IDLE_POLL_DEFAULT_MS = 2000;
+/**
+ * 判定某一方「消失」需要连续观测到多少次。
+ *
+ * observeIdleTarget 归根到底是读 `~/.claude/sessions/<pid>.json`。这个文件随时
+ * 可能一瞬间读不到——正在被重写、机器负载高、watcher 刚 spawn 起来就先跑了一轮，
+ * 而写方还没落盘。单次读失败就当对方没了，代价很重：订阅方被误判会让订阅立刻
+ * 落 failed 终态、watcher 退出，这条订阅再也不会触发，而且后续 notify-when-idle
+ * 的去重也认不出它（pendingIdleSubscriptions 只认 pending），于是又建一条。
+ * 目标方被误判则更糟——会真的投出一条「对方已退出」的假通知。
+ *
+ * 连续 3 次（默认 6 秒）才认定，瞬时读失败自愈，真的退出最多晚 4 秒发现。
+ */
+export const IDLE_GONE_CONFIRMATIONS = 3;
 export const IDLE_WATCH_COMMAND = "_idle-watch";
 
 export type IdleSubState = "pending" | "fired" | "exited" | "expired" | "failed";
@@ -268,22 +281,37 @@ export async function runIdleWatch(
     return sub;
   };
 
+  // 连续观测到「消失」的次数，读到一次正常就清零。见 IDLE_GONE_CONFIRMATIONS。
+  let subscriberGone = 0;
+  let targetGone = 0;
+
   for (;;) {
     const now = Date.now();
     // 订阅方自己没了（会话退出 / pid 复用）：没人可收通知，立刻收工——否则 watcher 会
     // 盯着目标空转到 6 小时过期（被 kill 的测试跑遗留过一个）。
     if (observeIdleTarget(sub.subscriber, env).kind === "exited") {
-      sub = { ...sub, state: "failed", detail: "subscriber gone" };
-      saveIdleSubscription(sub, env);
-      return sub;
+      subscriberGone += 1;
+      if (subscriberGone >= IDLE_GONE_CONFIRMATIONS) {
+        sub = { ...sub, state: "failed", detail: "subscriber gone" };
+        saveIdleSubscription(sub, env);
+        return sub;
+      }
+    } else {
+      subscriberGone = 0;
     }
     if (now >= Date.parse(sub.expires)) {
       return finish(M.idleNoticeExpired(sub.target.name), "expired");
     }
     const seen = observeIdleTarget(sub.target, env);
     if (seen.kind === "exited") {
-      return finish(M.idleNoticeExited(sub.target.name), "exited");
+      targetGone += 1;
+      if (targetGone >= IDLE_GONE_CONFIRMATIONS) {
+        return finish(M.idleNoticeExited(sub.target.name), "exited");
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+      continue;
     }
+    targetGone = 0;
     if (seen.kind === "idle") {
       const busyFor = sub.busySince === undefined ? 0 : now - sub.busySince;
       return finish(M.idleNoticeIdle(sub.target.name, formatDuration(busyFor)), "fired");
