@@ -73,6 +73,7 @@ import {
   codexHosts,
   codexQueueSupported,
   codexThreadLivePid,
+  psTable,
   queueCodexThread,
 } from "./codex-queue.ts";
 import {
@@ -92,7 +93,7 @@ import {
   upgradeCheckEnabled,
 } from "./upgrade.ts";
 
-export const OCS_VERSION = "0.4.9";
+export const OCS_VERSION = "0.4.10";
 
 const LANG = detectLang();
 const M = messages(LANG);
@@ -281,7 +282,8 @@ async function deliverToCodexTask(
     console.log(M.codexWakeSelfSkipped(targetThreadId));
     return true;
   }
-  const livePid = codexThreadLivePid(targetThreadId);
+  const ps = psTable();
+  const livePid = codexThreadLivePid(targetThreadId, process.env, ps);
   // 载体按宿主选，不是一律 queue：
   //   * Desktop 托管的 task —— 先走 Desktop IPC。两条路都能送达并触发新 turn，但 IPC 在
   //     rollout 里留的是 `send_message_to_thread` + `<codex_delegation><source_thread_id>`
@@ -289,7 +291,7 @@ async function deliverToCodexTask(
   //     「用户自己敲的」。跨会话内容必须看得出是数据而不是用户指令（Claude 侧用原生
   //     "Message from X" 包装是同一个理由），所以 Desktop 上不拿来源换便利。
   //   * 其它宿主（终端 TUI）—— IPC 根本够不着，queue 是唯一的路。
-  const desktopHosted = livePid !== null && codexHosts([livePid]).get(livePid)?.app === "ChatGPT";
+  const desktopHosted = livePid !== null && codexHosts([livePid], process.env, ps).get(livePid)?.app === "ChatGPT";
   if (livePid !== null && !desktopHosted) {
     const queued = queueCodexThread({
       threadId: targetThreadId,

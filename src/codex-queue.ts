@@ -111,8 +111,9 @@ export function codexRolloutPath(
 export function codexThreadLivePid(
   threadId: string,
   env: NodeJS.ProcessEnv = process.env,
+  table?: ReadonlyMap<number, PsEntry>,
 ): number | null {
-  return codexThreadLivePids([threadId], env).get(threadId.toLowerCase()) ?? null;
+  return codexThreadLivePids([threadId], env, table).get(threadId.toLowerCase()) ?? null;
 }
 
 /**
@@ -122,10 +123,12 @@ export function codexThreadLivePid(
 export function codexThreadLivePids(
   threadIds: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
+  /** 已解出的进程表；`ocs who` 传进来跟宿主解析共用一次 ps。 */
+  table_?: ReadonlyMap<number, PsEntry>,
 ): Map<string, number> {
   const holders = codexRolloutHolderPids(threadIds, env);
   if (holders.size === 0) return holders;
-  const table = psTable(env);
+  const table = table_ ?? psTable(env);
   const live = new Map<string, number>();
   for (const [threadId, pid] of holders) {
     if (isCodexRolloutHolder(pid, table)) live.set(threadId, pid);
@@ -315,10 +318,12 @@ const APP_BUNDLE_RE = /\/([^/]+)\.app\//;
 export function codexHosts(
   pids: readonly number[],
   env: NodeJS.ProcessEnv = process.env,
+  /** 已解出的进程表；判活刚查过就别再 spawn 一次 ps。 */
+  table_?: ReadonlyMap<number, PsEntry>,
 ): Map<number, CodexHost> {
   const hosts = new Map<number, CodexHost>();
   if (pids.length === 0) return hosts;
-  const table = psTable(env);
+  const table = table_ ?? psTable(env);
   for (const pid of pids) {
     const self = table.get(pid);
     if (self === undefined) {
