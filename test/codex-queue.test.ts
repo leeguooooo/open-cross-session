@@ -7,6 +7,8 @@ import {
   codexQueueAvailable,
   codexQueueSupported,
   codexRolloutPath,
+  codexRolloutHolderPids,
+  isCodexRolloutHolder,
   codexThreadLivePid,
   codexThreadLivePids,
   queueCodexThread,
@@ -65,30 +67,62 @@ describe("codex-queue：thread → rollout 路径", () => {
 });
 
 describe("codex-queue：活性判定（rollout fd 持有者）", () => {
-  test("有人持有 rollout fd 即为活；无人持有为死", () => {
+  test("原始持有者探测：有人持有 rollout fd 即命中；无人持有为空", () => {
     const { env, live } = rolloutFixture();
     const fd = openSync(live, "r");
     try {
       // 本测试进程自己持有 fd，所以 lsof 报出来的就是我们自己的 pid。
-      expect(codexThreadLivePid(THREAD_LIVE, env)).toBe(process.pid);
-      expect(codexThreadLivePid(THREAD_DEAD, env)).toBeNull();
+      expect(codexRolloutHolderPids([THREAD_LIVE], env).get(THREAD_LIVE)).toBe(process.pid);
+      expect(codexRolloutHolderPids([THREAD_DEAD], env).size).toBe(0);
     } finally {
       closeSync(fd);
     }
-    expect(codexThreadLivePid(THREAD_LIVE, env)).toBeNull();
+    expect(codexRolloutHolderPids([THREAD_LIVE], env).size).toBe(0);
   });
 
   test("批量探测只认真正被持有的那个（部分未命中时 lsof 退 1，不算失败）", () => {
     const { env, live } = rolloutFixture();
     const fd = openSync(live, "r");
     try {
-      const live_ = codexThreadLivePids([THREAD_LIVE, THREAD_DEAD, UNKNOWN], env);
-      expect(live_.get(THREAD_LIVE)).toBe(process.pid);
-      expect(live_.has(THREAD_DEAD)).toBe(false);
-      expect(live_.has(UNKNOWN)).toBe(false);
+      const holders = codexRolloutHolderPids([THREAD_LIVE, THREAD_DEAD, UNKNOWN], env);
+      expect(holders.get(THREAD_LIVE)).toBe(process.pid);
+      expect(holders.has(THREAD_DEAD)).toBe(false);
+      expect(holders.has(UNKNOWN)).toBe(false);
     } finally {
       closeSync(fd);
     }
+  });
+
+  test("持有 rollout 的非 codex 进程不算活会话（issue #35）", () => {
+    const { env, live } = rolloutFixture();
+    const fd = openSync(live, "r");
+    try {
+      // 跑测试的 bun/node 持有着 fd，但它不是 codex 会话——判活必须拒绝它。
+      expect(codexThreadLivePid(THREAD_LIVE, env)).toBeNull();
+      expect(codexThreadLivePids([THREAD_LIVE], env).size).toBe(0);
+    } finally {
+      closeSync(fd);
+    }
+  });
+});
+
+describe("codex-queue：持有者身份校验", () => {
+  const table = new Map([
+    // 索引类第三方进程：名字里带 codex，但 basename 不是 codex。
+    [755, { ppid: 1, tty: "??", comm: "/opt/tools/codex-issue-runner" }],
+    // 终端里裸跑的 codex TUI。
+    [65_597, { ppid: 4200, tty: "ttys002", comm: "/opt/homebrew/bin/codex" }],
+    [4200, { ppid: 1, tty: "ttys002", comm: "/bin/zsh" }],
+    // Desktop 托管：持有者挂在 ChatGPT.app 进程树下。
+    [900, { ppid: 800, tty: "??", comm: "/usr/bin/some-helper" }],
+    [800, { ppid: 1, tty: "??", comm: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" }],
+  ]);
+
+  test("codex 二进制本身算，ChatGPT.app 后代算，其它持有者一律不算", () => {
+    expect(isCodexRolloutHolder(65_597, table)).toBe(true);
+    expect(isCodexRolloutHolder(900, table)).toBe(true);
+    expect(isCodexRolloutHolder(755, table)).toBe(false);
+    expect(isCodexRolloutHolder(999_999, table)).toBe(false);
   });
 });
 
@@ -99,7 +133,14 @@ describe("codex-queue：投递", () => {
     const env = { ...rollout.env, ...bin.env };
     const fd = openSync(rollout.live, "r");
     try {
-      const result = queueCodexThread({ threadId: THREAD_LIVE, prompt: "hello", env });
+      // livePid 由调用方传入（复用 who/dm 已经做过的、校验过身份的探测）；测试进程
+      // 自己不是 codex，现场探测会（正确地）判死。
+      const result = queueCodexThread({
+        threadId: THREAD_LIVE,
+        prompt: "hello",
+        env,
+        livePid: process.pid,
+      });
       expect(result.ok).toBe(true);
       if (!result.ok) throw new Error("unreachable");
       expect(result.threadId).toBe(THREAD_LIVE);

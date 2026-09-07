@@ -78,8 +78,12 @@
    2026-09-07 实测 v0.153.4：往 tmux 里一个纯终端 TUI queue 一条唤醒载荷，TUI 真的跑了那一轮
    并用 `ocs send` 回了话。
    **活性必须自己判**：`queue` 是往 thread store 写待处理输入，不是投递——目标已退出时它
-   照样 exit=0 并打印 "Queued message …"。判据取 rollout 文件的 fd 持有者（`lsof`），
-   查不到就不发（fail closed），欠账留给 inbox。
+   照样 exit=0 并打印 "Queued message …"。判据取 rollout 文件的 fd 持有者（`lsof`，只认
+   REG 类型的这条文件本身），查不到就不发（fail closed），欠账留给 inbox。
+   **持有 rollout 只是必要条件**：索引/监控 `~/.codex/sessions` 的第三方进程一样会打开这些
+   文件（issue #35 里的 `codex-issue-runner`），不校验身份会把几个月前退出的会话全标成可达。
+   持有者还要么自己（或祖先）是 `codex` 二进制（basename 精确匹配，不用子串），要么挂在
+   ChatGPT.app 进程树下（Desktop 托管）——对应铁律 10 的两种载体。
 2b. **`codex-desktop-ipc.ts`**（#1012）— ChatGPT Desktop 自己的
    `~/.codex/ipc/ipc.sock`，用 `thread-follower-start-turn` + `codex_app`
    toolOutput 注入原生跨任务消息，UI 里保留原生来源链接。私有协议，宿主升级可能破，

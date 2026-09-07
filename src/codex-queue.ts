@@ -102,29 +102,44 @@ export function codexRolloutPath(
  * 活性证据：拿着这个 thread 的 rollout 文件的进程 pid。
  * 活着的 codex 会话（终端 TUI 或 Desktop 任务）全程持有自己的 rollout fd；会话退出后
  * 没人持有。查不到就是查不到——宁可判死也不要往死会话投递（fail closed）。
+ *
+ * 「持有 rollout」是必要条件，不是充分条件：索引/监控类的第三方进程（issue #35 里那个
+ * `codex-issue-runner`）同样会打开这些文件，把它们当成活会话会让 fail-closed 形同虚设
+ * ——把消息 queue 给一个早退出的 thread，永远没人读。所以持有者还要过一遍身份校验
+ * （见 isCodexRolloutHolder）。
  */
 export function codexThreadLivePid(
   threadId: string,
   env: NodeJS.ProcessEnv = process.env,
 ): number | null {
-  const path = codexRolloutPath(threadId, env);
-  if (path === null) return null;
-  const probe = spawnSync("lsof", ["-t", "--", realpathOrSelf(path)], {
-    encoding: "utf8",
-    timeout: CODEX_LSOF_TIMEOUT_MS,
-    env: lsofEnv(env),
-  });
-  // lsof 没命中时 status=1 且无输出，这是正常的「不在跑」，不是错误。
-  const pid = Number((probe.stdout ?? "").split("\n").map((l) => l.trim()).find((l) => l !== ""));
-  return Number.isInteger(pid) && pid > 0 ? pid : null;
+  return codexThreadLivePids([threadId], env).get(threadId.toLowerCase()) ?? null;
 }
 
 /**
  * 批量版活性探测：一次 lsof 查多个 thread，给 `ocs who` 用（逐个 spawn 会把 who 拖慢）。
- * `lsof -F pn` 逐文件输出 `p<pid>` / `n<path>`；部分文件无人持有时 lsof 退 1，这是正常
- * 结果不是错误，只按输出解析。
+ * 结果已经过持有者身份校验（见 isCodexRolloutHolder）。
  */
 export function codexThreadLivePids(
+  threadIds: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): Map<string, number> {
+  const holders = codexRolloutHolderPids(threadIds, env);
+  if (holders.size === 0) return holders;
+  const table = psTable(env);
+  const live = new Map<string, number>();
+  for (const [threadId, pid] of holders) {
+    if (isCodexRolloutHolder(pid, table)) live.set(threadId, pid);
+  }
+  return live;
+}
+
+/**
+ * 原始持有者：rollout 文件的 fd 持有者，**不做**身份校验。
+ * `lsof -F pftn` 逐文件输出 `f<fd>` / `t<TYPE>` / `n<path>`；部分文件无人持有时 lsof 退 1，
+ * 这是正常结果不是错误，只按输出解析。只认 REG（这条 rollout 文件本身）——只持有所在
+ * 目录 fd 的进程不是持有者。
+ */
+export function codexRolloutHolderPids(
   threadIds: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
 ): Map<string, number> {
@@ -140,17 +155,24 @@ export function codexThreadLivePids(
     byPath.set(realpathOrSelf(file.path), file.threadId);
   }
   if (byPath.size === 0) return live;
-  const probe = spawnSync("lsof", ["-F", "pn", "--", ...byPath.keys()], {
+  const probe = spawnSync("lsof", ["-F", "pftn", "--", ...byPath.keys()], {
     encoding: "utf8",
     timeout: CODEX_LSOF_TIMEOUT_MS,
     env: lsofEnv(env),
   });
   let pid: number | null = null;
+  let isReg = false;
   for (const line of (probe.stdout ?? "").split("\n")) {
-    if (line.startsWith("p")) {
+    const tag = line[0];
+    if (tag === "p") {
       const parsed = Number(line.slice(1));
       pid = Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-    } else if (line.startsWith("n") && pid !== null) {
+    } else if (tag === "f") {
+      // 每条文件记录以 f 开头：类型状态必须在这里清掉，否则会串到下一个 fd。
+      isReg = false;
+    } else if (tag === "t") {
+      isReg = line.slice(1) === "REG";
+    } else if (tag === "n" && pid !== null && isReg) {
       const id = byPath.get(line.slice(1));
       if (id !== undefined && !live.has(id)) live.set(id, pid);
     }
@@ -296,18 +318,7 @@ export function codexHosts(
 ): Map<number, CodexHost> {
   const hosts = new Map<number, CodexHost>();
   if (pids.length === 0) return hosts;
-  const probe = spawnSync("ps", ["-A", "-o", "pid=,ppid=,tty=,comm="], {
-    encoding: "utf8",
-    timeout: CODEX_LSOF_TIMEOUT_MS,
-    env: lsofEnv(env), // ps 同样是系统工具，不看调用方的 PATH
-  });
-  const table = new Map<number, { ppid: number; tty: string; comm: string }>();
-  for (const line of (probe.stdout ?? "").split("\n")) {
-    // comm 可能带空格（"Visual Studio Code"），所以只按前三列切，剩下全归 comm。
-    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
-    if (match === null) continue;
-    table.set(Number(match[1]), { ppid: Number(match[2]), tty: match[3]!, comm: match[4]! });
-  }
+  const table = psTable(env);
   for (const pid of pids) {
     const self = table.get(pid);
     if (self === undefined) {
@@ -330,4 +341,56 @@ export function codexHosts(
     hosts.set(pid, { tty: self.tty === "??" ? null : self.tty, app });
   }
   return hosts;
+}
+
+/** 一行进程表：`ps -A -o pid=,ppid=,tty=,comm=` 解出来的祖先链原料。 */
+export interface PsEntry {
+  ppid: number;
+  tty: string;
+  /** 可执行文件的完整路径（macOS 的 `comm` 就是路径）。 */
+  comm: string;
+}
+
+/** 全机进程表。一次 spawn，判活和宿主解析共用。 */
+export function psTable(env: NodeJS.ProcessEnv = process.env): Map<number, PsEntry> {
+  const probe = spawnSync("ps", ["-A", "-o", "pid=,ppid=,tty=,comm="], {
+    encoding: "utf8",
+    timeout: CODEX_LSOF_TIMEOUT_MS,
+    env: lsofEnv(env), // ps 同样是系统工具，不看调用方的 PATH
+  });
+  const table = new Map<number, PsEntry>();
+  for (const line of (probe.stdout ?? "").split("\n")) {
+    // comm 可能带空格（"Visual Studio Code"），所以只按前三列切，剩下全归 comm。
+    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+    if (match === null) continue;
+    table.set(Number(match[1]), { ppid: Number(match[2]), tty: match[3]!, comm: match[4]! });
+  }
+  return table;
+}
+
+const CHATGPT_BUNDLE_RE = /\/ChatGPT\.app\//;
+
+/**
+ * 这个 rollout 持有者是不是一个真的 codex 会话。
+ *
+ * 为什么需要（issue #35）：任何索引/监控 `~/.codex/sessions` 的第三方进程都会打开
+ * rollout 文件，光看「有人持有」会把几个月前退出的会话全标成可达，投递报 queued 却
+ * 永远没人读——正是 fail-closed 想拦的场景。
+ *
+ * 两条合法路径，对应铁律 10 的两种载体：
+ *   * 终端 TUI：持有者自己（或祖先）就是 `codex` 二进制；
+ *   * Desktop 托管：持有者挂在 ChatGPT.app 的进程树下。
+ * 名字按 basename 精确比，不用 includes ——`codex-issue-runner` 正是靠子串混进来的。
+ */
+export function isCodexRolloutHolder(pid: number, table: ReadonlyMap<number, PsEntry>): boolean {
+  let cursor: number | undefined = pid;
+  // 深度封顶同 codexHosts：pid 复用下的坏数据不该把判活卡死。
+  for (let hop = 0; hop < 12 && cursor !== undefined && cursor > 1; hop++) {
+    const node: PsEntry | undefined = table.get(cursor);
+    if (node === undefined) return false;
+    if (node.comm.split("/").pop() === "codex") return true;
+    if (CHATGPT_BUNDLE_RE.test(node.comm)) return true;
+    cursor = node.ppid;
+  }
+  return false;
 }
