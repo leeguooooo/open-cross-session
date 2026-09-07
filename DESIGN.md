@@ -63,7 +63,15 @@
 1. **Claude 侧**：`claude-inbox-inject.ts` — cc-socks Unix socket
    （`/tmp/cc-socks/<pid>.sock`）按 PID 寻址注入活会话，JSONL 帧，
    载荷按 docs/wake-protocol.md：正文 ≤4096B 逐字内联（超过带前 512B），Reply:/Thread: 命令填好。
-2. **Codex 侧（首选）**：`codex-queue.ts` — 官方 CLI 表面 `codex queue --thread <id>
+2. **Codex 侧（按宿主选载体）**：Desktop 托管的 task 先走 Desktop IPC，其它宿主
+   （终端 TUI）走 `codex queue`。2026-09-07 实测两条路都能送达并触发新 turn，但
+   rollout 记录形态不同：IPC 留下 `send_message_to_thread` + `<codex_delegation>
+   <source_thread_id>` 原生来源信封，queue 留下的是普通 `UserMessage`——会把别的
+   agent 发来的消息呈现成「用户自己敲的」。跨会话内容必须看得出是数据而不是用户
+   指令（Claude 侧用原生 "Message from X" 包装是同一个理由），所以 Desktop 上不拿
+   来源换便利；IPC 投不进时 queue 仍是最后一级兜底。
+
+2a. **`codex-queue.ts`** — 官方 CLI 表面 `codex queue --thread <id>
    --message <text>`。按 thread UUID 精确寻址（thread id 就是 rollout 文件名里的 UUID），
    **终端里裸跑的 codex TUI 和 Desktop 任务通吃**，不需要 cmux，也不需要目标被 Desktop
    renderer 认领，更不需要 `codex app-server daemon start`（那条另外要求官方 standalone 安装）。
@@ -72,10 +80,10 @@
    **活性必须自己判**：`queue` 是往 thread store 写待处理输入，不是投递——目标已退出时它
    照样 exit=0 并打印 "Queued message …"。判据取 rollout 文件的 fd 持有者（`lsof`），
    查不到就不发（fail closed），欠账留给 inbox。
-2b. **Codex 侧（降级）**：`codex-desktop-ipc.ts`（#1012）— ChatGPT Desktop 自己的
+2b. **`codex-desktop-ipc.ts`**（#1012）— ChatGPT Desktop 自己的
    `~/.codex/ipc/ipc.sock`，用 `thread-follower-start-turn` + `codex_app`
    toolOutput 注入原生跨任务消息，UI 里保留原生来源链接。私有协议，宿主升级可能破，
-   所以只在 `codex queue` 不可用/目标不在跑时才用；再之后才是 cmux 按键注入。
+   所以 Desktop 之外的目标一律不用它；它失败后依次是 cmux 按键注入、queue 兜底。
 3. **补充**：Codex Stop hook 的 `{"decision":"block","reason":…}` —
    `reason` 即注入 prompt（≤512B），机制全本地，只有「有没有新消息」一问走服务端。
 4. **Pi 侧**：全局扩展在 `session_start` 登记会话并监听 0600 Unix socket；收到 note 后用
@@ -100,8 +108,8 @@ presence 心跳（本地读 registry 即可）、`worker_upgrade_required` 等�
 
 ```
 ┌─ Claude 会话 ─┐  ┌─ Codex task/TUI ─────┐  ┌─ Pi TUI ─────┐  ┌─ headless ─────┐
-│ cc-socks UDS  │  │ codex queue（首选）  │  │ extension UDS│  │ claude / codex │
-│ 注入          │  │ → Desktop IPC → cmux │  │ followUp     │  │ resume         │
+│ cc-socks UDS  │  │ Desktop:IPC 终端:queue│  │ extension UDS│  │ claude / codex │
+│ 注入          │  │ 兜底 cmux / queue    │  │ followUp     │  │ resume         │
 └──────┬────────┘  └────────┬─────────────┘  └─────┬────────┘  └──────┬─────────┘
        │                    │                      │                  │
        └────────────── 按目标 harness 选载体 ─────────────────────────┘

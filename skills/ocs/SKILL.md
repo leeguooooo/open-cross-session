@@ -64,9 +64,11 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
   log commit succeeded. Requested wakes report accepted, stored-only, or unknown
   separately. Exit 2 means stored but wake failed; exit 3 means stored with an
   unknown outcome. Never resend either result; inspect the printed channel/seq.
-- Codex delivery ladder: `codex queue --thread` first (official CLI, addresses a
-  terminal TUI or a Desktop task alike, no cmux and no Desktop needed), then Desktop
-  IPC, then a cmux surface. ocs only queues to a thread whose rollout has a live
+- Codex delivery ladder depends on the host: a Desktop-hosted task goes through
+  Desktop IPC first (it keeps the native cross-task provenance envelope; a queued
+  message is recorded as a plain user message instead), while a terminal TUI goes
+  through `codex queue --thread` — the only route that reaches it, needing neither
+  cmux nor Desktop. Then a cmux surface, then queue as the last resort. ocs only queues to a thread whose rollout has a live
   process holder, because `codex queue` writes to the thread store and reports
   success even when nobody is running — queued is not read.
   If no rung delivers, the message remains stored and appears in that task's

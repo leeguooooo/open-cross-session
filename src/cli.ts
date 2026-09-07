@@ -69,7 +69,12 @@ import {
   wakeCmuxSurface,
 } from "./roster.ts";
 import { verifiedClaudeWorkspaceIdentity } from "./workspace-registry.ts";
-import { codexQueueAvailable, codexThreadLivePid, queueCodexThread } from "./codex-queue.ts";
+import {
+  codexHosts,
+  codexQueueAvailable,
+  codexThreadLivePid,
+  queueCodexThread,
+} from "./codex-queue.ts";
 import {
   findSelfClaudePid,
   selectWakeTargets,
@@ -87,7 +92,7 @@ import {
   upgradeCheckEnabled,
 } from "./upgrade.ts";
 
-export const OCS_VERSION = "0.4.6";
+export const OCS_VERSION = "0.4.7";
 
 const LANG = detectLang();
 const M = messages(LANG);
@@ -277,7 +282,15 @@ async function deliverToCodexTask(
     return true;
   }
   const livePid = codexThreadLivePid(targetThreadId);
-  if (livePid !== null) {
+  // 载体按宿主选，不是一律 queue：
+  //   * Desktop 托管的 task —— 先走 Desktop IPC。两条路都能送达并触发新 turn，但 IPC 在
+  //     rollout 里留的是 `send_message_to_thread` + `<codex_delegation><source_thread_id>`
+  //     原生来源信封，queue 留下的是普通 `UserMessage`——会把别的 agent 发来的消息呈现成
+  //     「用户自己敲的」。跨会话内容必须看得出是数据而不是用户指令（Claude 侧用原生
+  //     "Message from X" 包装是同一个理由），所以 Desktop 上不拿来源换便利。
+  //   * 其它宿主（终端 TUI）—— IPC 根本够不着，queue 是唯一的路。
+  const desktopHosted = livePid !== null && codexHosts([livePid]).get(livePid)?.app === "ChatGPT";
+  if (livePid !== null && !desktopHosted) {
     const queued = queueCodexThread({
       threadId: targetThreadId,
       livePid,
@@ -315,6 +328,28 @@ async function deliverToCodexTask(
   if (tryCodexCmuxFallback(targetThreadId, result.reason, wakeInput)) {
     // cmux 只复用同一 channel/seq 做唤醒，没有再次落盘。
     return true;
+  }
+  // Desktop 托管但 IPC 投不进（没被 renderer 认领等）时，queue 仍是可用的最后一级：
+  // 丢掉原生来源信封总好过完全投不到——正文里本来就带着 `[ocs wake] X mentioned you`。
+  if (desktopHosted && livePid !== null) {
+    const queued = queueCodexThread({
+      threadId: targetThreadId,
+      livePid,
+      prompt: wakeNote({
+        ...wakeInput,
+        receiver: `codex-${targetThreadId.slice(0, 8)}`,
+        implicitReceiver: true,
+      }),
+    });
+    if (queued.ok) {
+      console.log(M.codexQueued(queued.threadId, queued.pid, queued.messageId));
+      return true;
+    }
+    if (queued.reason === "unknown-outcome") {
+      console.log(M.codexUnknownOutcome(queued.detail ?? ""));
+      markStoredDeliveryFailure("unknown");
+      return true;
+    }
   }
   console.log(M.codexFailed(result.reason, result.detail ?? ""));
   markStoredDeliveryFailure("failed");
@@ -1131,9 +1166,11 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
   log commit succeeded. Requested wakes report accepted, stored-only, or unknown
   separately. Exit 2 means stored but wake failed; exit 3 means stored with an
   unknown outcome. Never resend either result; inspect the printed channel/seq.
-- Codex delivery ladder: \`codex queue --thread\` first (official CLI, addresses a
-  terminal TUI or a Desktop task alike, no cmux and no Desktop needed), then Desktop
-  IPC, then a cmux surface. ocs only queues to a thread whose rollout has a live
+- Codex delivery ladder depends on the host: a Desktop-hosted task goes through
+  Desktop IPC first (it keeps the native cross-task provenance envelope; a queued
+  message is recorded as a plain user message instead), while a terminal TUI goes
+  through \`codex queue --thread\` — the only route that reaches it, needing neither
+  cmux nor Desktop. Then a cmux surface, then queue as the last resort. ocs only queues to a thread whose rollout has a live
   process holder, because \`codex queue\` writes to the thread store and reports
   success even when nobody is running — queued is not read.
   If no rung delivers, the message remains stored and appears in that task's

@@ -26,7 +26,7 @@ bun src/cli.ts <cmd>   # 本地跑 CLI（who/dm/send/read/notify-when-idle/sessi
 7. 唤醒载荷按 **docs/wake-protocol.md**（与 AgentParty 共用，正本在本仓库）：正文 ≤4096B 逐字内联、超过只带前 512B、整条 ≤5120B，`Reply:`/`Thread:` 两行永不砍。改数字/文案先改协议文档，两边同步。
 8. **notify-when-idle 是一次性的**：watcher 投递一条通知后必须退出；每次翻转都发会把订阅方打成筛子（测试钉着）。
 9. **DM 路由身份是独立 route sidecar，不是 `OcsMessage v1` 字段**：旧二进制会严格拒绝未知消息字段。sidecar 与消息在同一频道 JSONL，必须先写 route、再写 message；这样消息写失败可以安全重试，旧读端仍会跳过 sidecar 并读取原消息。
-10. **Codex 首选 `codex queue --thread`，Desktop IPC 只是降级**：thread id 就是 rollout 文件名里的 UUID，官方 CLI 按它精确寻址，终端裸跑的 TUI 也能投（不需要 cmux / Desktop / app-server daemon）。但 **`queue` 是写 thread store 不是投递**——目标已退出时照样 exit=0，所以发之前必须用 rollout 文件的 fd 持有者（`lsof`）证明会话活着，查不到就不发（fail closed），欠账留 inbox。走到 Desktop IPC 那一层时旧规则依然成立：必须让 renderer owner claim 目标并为同 renderer 找到 source；Desktop 对无人认领的 discovery 会超时，候选并发短探测，未认领按 `not-open` 停靠 inbox，不当传输故障重试。可达性 = 「有活进程持有 rollout」**或**「被 renderer 认领」——`ocs who` 两者都列，只按后者过滤会把终端里的 codex 整个藏起来。
+10. **Codex 载体按宿主选，不是一律 queue**：Desktop 托管的 task 先走 Desktop IPC（它在 rollout 里留 `send_message_to_thread` + `<codex_delegation><source_thread_id>` 原生来源信封；`codex queue` 留下的是普通 `UserMessage`，会把别的 agent 的消息呈现成「用户自己敲的」——跨会话内容必须看得出是数据而不是用户指令）。终端 TUI 只有 `codex queue` 这一条路：thread id 就是 rollout 文件名里的 UUID，官方 CLI 按它精确寻址，不需要 cmux / Desktop / app-server daemon。但 **`queue` 是写 thread store 不是投递**——目标已退出时照样 exit=0，所以发之前必须用 rollout 文件的 fd 持有者（`lsof`）证明会话活着，查不到就不发（fail closed），欠账留 inbox。走到 Desktop IPC 那一层时旧规则依然成立：必须让 renderer owner claim 目标并为同 renderer 找到 source；Desktop 对无人认领的 discovery 会超时，候选并发短探测，未认领按 `not-open` 停靠 inbox，不当传输故障重试。可达性 = 「有活进程持有 rollout」**或**「被 renderer 认领」——`ocs who` 两者都列，只按后者过滤会把终端里的 codex 整个藏起来。
 
 ## 路线（owner 已拍板）
 

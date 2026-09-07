@@ -243,6 +243,44 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
     }
   }, T);
 
+  // 载体路由：非 Desktop 宿主（终端 TUI）用 queue，绝不去打 IPC。
+  // 反向的「Desktop 宿主优先 IPC」由本文件其余用例覆盖（fixture 的 rollout 无人持有，
+  // livePid 为 null，因此不是 Desktop 也不是 queue 可达，直接走 IPC）。
+  test("活着且非 Desktop 托管的 codex 走 codex queue，不碰 Desktop IPC", async () => {
+    const router = fakeRouter({});
+    const rollout = join(
+      router.env.CODEX_HOME!,
+      "sessions", "2026", "08", "31",
+      `rollout-2026-08-31T10-00-00-${THREAD_A}.jsonl`,
+    );
+    const bin = tempDir("ocs-fakecodex-");
+    const queueLog = join(bin, "queue.log");
+    writeFileSync(
+      join(bin, "codex"),
+      `#!/bin/sh
+if [ "$1" = "queue" ] && [ "$2" = "--help" ]; then echo "--thread"; exit 0; fi
+printf '%s\\n' "$*" >> ${JSON.stringify(queueLog)}
+echo "Queued message 01a079c9-7318-7192-ae2c-8078515ad91a for thread $3."
+`,
+      { mode: 0o755 },
+    );
+    const fd = openSync(rollout, "r"); // 本测试进程冒充活着的终端 codex
+    try {
+      const result = await runCli(
+        router,
+        ["send", "route", `hi @${THREAD_A}`, "--as", "tester"],
+        { PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}` },
+      );
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("via `codex queue`");
+      expect(router.startTurnRequests.length).toBe(0);
+      expect(readFileSync(queueLog, "utf8")).toContain(`--thread ${THREAD_A}`);
+    } finally {
+      closeSync(fd);
+      router.close();
+    }
+  }, T);
+
   // Claude 和 Pi 都有自我唤醒防回环，codex 一直缺；`codex queue` 稳定投递之后，
   // 一个 @ 到自己的会话会把自己反复唤醒。
   test("codex 会话 @ 到自己时不自我唤醒", async () => {
