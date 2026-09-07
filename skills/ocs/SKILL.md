@@ -36,9 +36,11 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
 - Your own identity is auto-detected inside Claude, Codex, and Pi sessions; `--as <name>` overrides.
 - Codex and Pi tasks have short `codex-<8hex>` / `pi-<8hex>` addresses in `ocs who`;
   use the full ID shown by `ocs who --verbose` only if a short prefix is ambiguous.
-- `ocs who` lists only Codex tasks claimed by an open Desktop renderer.
+- `ocs who` lists every reachable Codex task: one whose rollout is held open by a
+  live process (wakeable with `codex queue`, terminal TUIs included — shown as
+  `[queue pid N]`) or one claimed by an open Desktop renderer (`[desktop]`).
   `ocs codex-sessions` is rollout history and does not imply wakeability.
-  Codex wake also needs a second open task under the same Desktop renderer as
+  The Desktop path additionally needs a second open task under the same renderer as
   the source; `--codex-source` accepts either its full ID or short address.
 - A wake note you receive carries the message body (up to 4096 bytes; longer
   messages show the first 512 bytes plus a Thread: command). Claude-to-Claude DM
@@ -60,11 +62,14 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
   log commit succeeded. Requested wakes report accepted, stored-only, or unknown
   separately. Exit 2 means stored but wake failed; exit 3 means stored with an
   unknown outcome. Never resend either result; inspect the printed channel/seq.
-- If a Codex task is not renderer-open, the message remains stored and will appear
-  in that task's `ocs inbox`; opening/selecting its Desktop task enables direct wake.
-  When Desktop definitely cannot deliver, ocs can fall back to a unique idle cmux
-  surface whose title and live Codex process match that task. It never falls back
-  after an unknown IPC outcome or when the surface match is ambiguous.
+- Codex delivery ladder: `codex queue --thread` first (official CLI, addresses a
+  terminal TUI or a Desktop task alike, no cmux and no Desktop needed), then Desktop
+  IPC, then a cmux surface. ocs only queues to a thread whose rollout has a live
+  process holder, because `codex queue` writes to the thread store and reports
+  success even when nobody is running — queued is not read.
+  If no rung delivers, the message remains stored and appears in that task's
+  `ocs inbox`; opening/selecting its Desktop task enables direct wake. ocs never
+  falls back after an unknown outcome or when a cmux surface match is ambiguous.
 - To keep a conversation going, end your message with the peer's @name so they wake
   (you are never woken by your own @).
 - Replying with `ocs dm <workspace-alias>` reuses the stable or explicitly

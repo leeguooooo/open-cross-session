@@ -39,6 +39,8 @@ interface Catalog {
   codexUnknownOutcome: (detail: string) => string;
   codexFailed: (reason: string, detail: string) => string;
   codexCmuxFallback: (thread: string, reason: string, ref: string) => string;
+  codexQueued: (thread: string, pid: number, messageId: string | null) => string;
+  codexQueueSkipped: (thread: string, reason: string, detail: string) => string;
   piWakeAccepted: (target: string) => string;
   piWakeUnknownOutcome: (target: string, detail: string) => string;
   piWakeFailed: (target: string, reason: string, detail: string) => string;
@@ -66,6 +68,8 @@ interface Catalog {
   doctorSkillsFixed: string;
   doctorSkillsFixFailed: (detail: string) => string;
   doctorCodex: string;
+  doctorCodexQueueOk: string;
+  doctorCodexQueueMissing: string;
   doctorIpcOk: (path: string) => string;
   doctorIpcMissing: (path: string) => string;
   doctorIpcRouteOk: string;
@@ -118,6 +122,8 @@ interface Catalog {
   whoClaudeHeader: string;
   whoCodexHeader: (ipc: boolean) => string;
   whoCodexNone: (ipc: boolean) => string;
+  whoCodexViaQueue: (pid: number) => string;
+  whoCodexViaDesktop: string;
   whoPiHeader: string;
   whoCmuxHeader: string;
   whoSelfTag: string;
@@ -239,6 +245,11 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
     `wake(codex): stored-only (${reason})${detail ? `: ${detail}` : ""} (message is already stored; do not resend)`,
   codexCmuxFallback: (thread, reason, ref) =>
     `wake(codex): Desktop ${reason} for ${thread}; woke terminal ${ref} via cmux fallback`,
+  codexQueued: (thread, pid, messageId) =>
+    `wake(codex): queued → task ${thread} via \`codex queue\` (live pid ${pid}` +
+    `${messageId === null ? "" : `, message ${messageId}`}) — queued, not confirmed read`,
+  codexQueueSkipped: (thread, reason, detail) =>
+    `wake(codex): \`codex queue\` skipped for ${thread} (${reason})${detail ? `: ${detail}` : ""}; trying Desktop IPC`,
   piWakeAccepted: (target) => `wake(pi): queued → ${target}`,
   piWakeUnknownOutcome: (target, detail) =>
     `wake(pi): outcome unknown for ${target} (frame was written — do NOT resend)${detail ? `: ${detail}` : ""}`,
@@ -275,7 +286,11 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
     `${n} agent skill installation(s) missing or outdated — run \`ocs doctor --fix\``,
   doctorSkillsFixed: "updated the ocs skill for Claude, Codex, and Pi",
   doctorSkillsFixFailed: (detail) => `integration repair failed: ${detail}`,
-  doctorCodex: "Codex / ChatGPT Desktop side",
+  doctorCodex: "Codex side (`codex queue` preferred; Desktop IPC is the fallback)",
+  doctorCodexQueueOk:
+    "`codex queue` available — terminal Codex TUIs are wakeable without cmux or ChatGPT Desktop",
+  doctorCodexQueueMissing:
+    "`codex queue` unavailable (no codex CLI on PATH, or too old): only ChatGPT Desktop IPC / cmux remain",
   doctorIpcOk: (path) => `Desktop IPC router socket available (${path})`,
   doctorIpcMissing: (path) => `Desktop IPC unavailable (${path} missing or wrong perms) — is ChatGPT Desktop running?`,
   doctorIpcRouteOk: "this Codex task is claimed by an open Desktop renderer (wakeable)",
@@ -336,10 +351,12 @@ Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-m
   failLimit: "--limit must be a positive integer",
   whoClaudeHeader: "Claude Code sessions (wake: @name / ocs dm <name>)",
   whoCodexHeader: (_ipc) =>
-    "Open Codex tasks (wake: ocs dm codex-<short-id>; renderer ownership verified)",
+    "Reachable Codex tasks (wake: ocs dm codex-<short-id>; terminal TUIs included)",
   whoCodexNone: (ipc) => ipc
-    ? "Codex: no recent rollout is currently claimed by an open Desktop renderer (\`ocs codex-sessions\` shows history)"
-    : "Codex: Desktop IPC socket unavailable — open ChatGPT Desktop",
+    ? "Codex: no recent rollout is live or claimed by an open Desktop renderer (\`ocs codex-sessions\` shows history)"
+    : "Codex: no live rollout, and the Desktop IPC socket is unavailable — start a codex session or open ChatGPT Desktop",
+  whoCodexViaQueue: (pid) => `[queue pid ${pid}]`,
+  whoCodexViaDesktop: "[desktop]",
   whoPiHeader: "Pi sessions (wake: ocs dm pi-<short-id>; @ mentions use the full session id)",
   whoCmuxHeader: "cmux terminal surfaces (wake: ocs dm surface:N)",
   whoSelfTag: "  ← you",
@@ -467,6 +484,11 @@ const zh: Catalog = {
     `wake(codex): 仅落盘（${reason}）${detail ? `: ${detail}` : ""}（消息已经落盘，请勿重发）`,
   codexCmuxFallback: (thread, reason, ref) =>
     `wake(codex): Desktop 对 ${thread} 返回 ${reason}；已自动降级由 cmux 唤醒终端 ${ref}`,
+  codexQueued: (thread, pid, messageId) =>
+    `wake(codex): 已 queue → task ${thread}（\`codex queue\`，活进程 pid ${pid}` +
+    `${messageId === null ? "" : `，message ${messageId}`}）——已入队，未确认读取`,
+  codexQueueSkipped: (thread, reason, detail) =>
+    `wake(codex): ${thread} 跳过 \`codex queue\`（${reason}）${detail ? `: ${detail}` : ""}；改试 Desktop IPC`,
   piWakeAccepted: (target) => `wake(pi): 已排队 → ${target}`,
   piWakeUnknownOutcome: (target, detail) =>
     `wake(pi): ${target} 结果未知（帧已写出，勿重发）${detail ? `: ${detail}` : ""}`,
@@ -502,7 +524,11 @@ const zh: Catalog = {
   doctorSkillsMissing: (n) => `${n} 处 agent skill 缺失或版本过旧——运行 \`ocs doctor --fix\``,
   doctorSkillsFixed: "已更新 Claude、Codex、Pi 的 ocs skill",
   doctorSkillsFixFailed: (detail) => `集成修复失败：${detail}`,
-  doctorCodex: "Codex / ChatGPT Desktop 侧",
+  doctorCodex: "Codex 侧（首选 `codex queue`，Desktop IPC 为降级）",
+  doctorCodexQueueOk:
+    "`codex queue` 可用——终端里的 Codex TUI 无需 cmux、无需 ChatGPT Desktop 即可唤醒",
+  doctorCodexQueueMissing:
+    "`codex queue` 不可用（PATH 上没有 codex，或版本过旧）：只剩 ChatGPT Desktop IPC / cmux",
   doctorIpcOk: (path) => `Desktop IPC 路由 socket 存在（${path}）`,
   doctorIpcMissing: (path) => `Desktop IPC 不可用（${path} 缺失或权限不对）——ChatGPT Desktop 开着吗？`,
   doctorIpcRouteOk: "当前 Codex task 已被打开的 Desktop renderer 认领（可唤醒）",
@@ -561,10 +587,12 @@ const zh: Catalog = {
   failLimit: "--limit 必须是正整数",
   whoClaudeHeader: "Claude Code 会话（唤醒: @名字 / ocs dm <名字>）",
   whoCodexHeader: (_ipc) =>
-    "已打开的 Codex task（唤醒: ocs dm codex-<短id>；renderer ownership 已验证）",
+    "可达的 Codex task（唤醒: ocs dm codex-<短id>；终端里的 TUI 也在内）",
   whoCodexNone: (ipc) => ipc
-    ? "Codex：近期 rollout 当前都没有被打开的 Desktop renderer 认领（\`ocs codex-sessions\` 可看历史）"
-    : "Codex：Desktop IPC socket 不可用——请打开 ChatGPT Desktop",
+    ? "Codex：近期 rollout 既没有活进程，也没有被打开的 Desktop renderer 认领（\`ocs codex-sessions\` 可看历史）"
+    : "Codex：没有活着的 rollout，Desktop IPC socket 也不可用——起一个 codex 会话或打开 ChatGPT Desktop",
+  whoCodexViaQueue: (pid) => `[queue pid ${pid}]`,
+  whoCodexViaDesktop: "[desktop]",
   whoPiHeader: "Pi 会话（唤醒: ocs dm pi-<短id>；@ 提及仍使用完整 session id）",
   whoCmuxHeader: "cmux 终端 surface（唤醒: ocs dm surface:N）",
   whoSelfTag: "  ← 你自己",

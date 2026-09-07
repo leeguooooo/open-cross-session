@@ -16,6 +16,7 @@ import {
 } from "./claude-address.ts";
 import { listNativeSessions, type NativeClaudeSession } from "./claude-inject.ts";
 import { codexDesktopIpcAvailable } from "./codex-ipc.ts";
+import { codexThreadLivePids } from "./codex-queue.ts";
 import {
   codexSessionsRoot,
   isCodexThreadId,
@@ -264,6 +265,8 @@ export type RosterEntry =
       summary: string | null;
       cwd: string | null;
       self: boolean;
+      /** 持有该 thread rollout fd 的进程；非 null 即证明会话在跑（`codex queue` 可达）。 */
+      livePid: number | null;
     }
   | {
       kind: "pi";
@@ -314,7 +317,10 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env): Roster {
   const selfCodexThreadId = isCodexThreadId(env[CODEX_THREAD_ID_ENV] ?? "")
     ? env[CODEX_THREAD_ID_ENV]!.toLowerCase()
     : null;
-  for (const s of listCodexSessions(codexSessionsRoot(env), { limit: 10 })) {
+  const codexSessions = listCodexSessions(codexSessionsRoot(env), { limit: 10 });
+  // 一次 lsof 批量判活：rollout fd 的持有者证明会话在跑，终端 TUI 和 Desktop 任务通用。
+  const codexLive = codexThreadLivePids(codexSessions.map((s) => s.threadId), env);
+  for (const s of codexSessions) {
     entries.push({
       kind: "codex-task",
       target: `codex-${s.threadId.slice(0, 8)}`,
@@ -322,6 +328,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env): Roster {
       summary: s.summary,
       cwd: s.cwd,
       self: s.threadId === selfCodexThreadId,
+      livePid: codexLive.get(s.threadId) ?? null,
     });
   }
   const selfPiSessionId = env[OCS_PI_SESSION_ID_ENV]?.toLowerCase();

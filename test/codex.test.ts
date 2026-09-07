@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -208,7 +208,7 @@ async function runCli(
 }
 
 describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
-  test("ocs who 只展示被 open renderer 认领的 Codex task", async () => {
+  test("ocs who 展示被 open renderer 认领的 Codex task（无人持有 rollout 时 livePid 为 null）", async () => {
     const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_A]) });
     try {
       const result = await runCli(router, ["who", "--json"], { CODEX_THREAD_ID: THREAD_B });
@@ -221,6 +221,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
           summary?: string | null;
           cwd?: string | null;
           self?: boolean;
+          livePid?: number | null;
         }>;
       };
       const codex = roster.entries.filter((entry) => entry.kind === "codex-task");
@@ -231,8 +232,35 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
         summary: "hello world",
         cwd: "/tmp/b",
         self: true,
+        livePid: null,
       }]);
     } finally {
+      router.close();
+    }
+  }, T);
+
+  // 用户报的 bug：终端里裸跑的 codex 完全不出现在 who 里，因为过滤条件只认 Desktop
+  // renderer 认领。可达性现在等于「认领 或 rollout 有活进程」——后者是 `codex queue`
+  // 的投递条件，也是终端 TUI 唯一的存在证明。
+  test("ocs who 展示未被 renderer 认领但活着的 Codex task（终端 TUI）", async () => {
+    const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_A, THREAD_B]) });
+    const rollout = join(
+      router.env.CODEX_HOME!,
+      "sessions", "2026", "08", "31",
+      `rollout-2026-08-31T10-00-00-${THREAD_A}.jsonl`,
+    );
+    const fd = openSync(rollout, "r"); // 本测试进程冒充活着的 codex 会话
+    try {
+      const result = await runCli(router, ["who", "--json"]);
+      expect(result.code).toBe(0);
+      const roster = JSON.parse(result.stdout) as {
+        entries: Array<{ kind: string; threadId?: string; livePid?: number | null }>;
+      };
+      const codex = roster.entries.filter((entry) => entry.kind === "codex-task");
+      expect(codex.map((entry) => entry.threadId)).toEqual([THREAD_A]);
+      expect(codex[0]!.livePid).toBe(process.pid);
+    } finally {
+      closeSync(fd);
       router.close();
     }
   }, T);
