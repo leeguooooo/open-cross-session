@@ -71,7 +71,7 @@ import {
 import { verifiedClaudeWorkspaceIdentity } from "./workspace-registry.ts";
 import {
   codexHosts,
-  codexQueueAvailable,
+  codexQueueSupported,
   codexThreadLivePid,
   queueCodexThread,
 } from "./codex-queue.ts";
@@ -92,7 +92,7 @@ import {
   upgradeCheckEnabled,
 } from "./upgrade.ts";
 
-export const OCS_VERSION = "0.4.8";
+export const OCS_VERSION = "0.4.9";
 
 const LANG = detectLang();
 const M = messages(LANG);
@@ -1017,7 +1017,9 @@ async function cmdDoctor(parsed: Parsed): Promise<void> {
   console.log(M.doctorCodex);
   // 首选载体先报：`codex queue` 是官方 CLI 表面，终端 TUI 和 Desktop 任务都能投；
   // Desktop IPC 是私有协议降级路径，它不可用不再等于「codex 不可达」。
-  if (codexQueueAvailable()) ok(M.doctorCodexQueueOk);
+  // doctor 用完整探测（真起一次 codex queue --help）：热路径只做 PATH 检查图快，
+  // 诊断这里愿意为准确性付那半秒。
+  if (codexQueueSupported()) ok(M.doctorCodexQueueOk);
   else warn(M.doctorCodexQueueMissing);
   const ipcAvailable = codexDesktopIpcAvailable();
   if (ipcAvailable) {

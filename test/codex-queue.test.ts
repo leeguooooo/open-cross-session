@@ -5,6 +5,7 @@ import {
   classifyQueueOutcome,
   codexHosts,
   codexQueueAvailable,
+  codexQueueSupported,
   codexRolloutPath,
   codexThreadLivePid,
   codexThreadLivePids,
@@ -152,9 +153,18 @@ describe("codex-queue：投递", () => {
     resetCodexCliProbeCache();
   });
 
-  test("codex 太老、queue 没有 --thread 时视为通道不存在", () => {
-    const bin = fakeCodexBin({ queueSupported: false });
-    expect(codexQueueAvailable(bin.env)).toBe(false);
+  test("热路径只看 PATH 上有没有可执行的 codex（不 spawn）", () => {
+    const bin = fakeCodexBin();
+    expect(codexQueueAvailable(bin.env)).toBe(true);
+    resetCodexCliProbeCache();
+    expect(codexQueueAvailable({ PATH: tempDir("ocs-nobin-") })).toBe(false);
+    resetCodexCliProbeCache();
+  });
+
+  // doctor 才付得起那半秒：真起一次 `codex queue --help` 看有没有 --thread。
+  test("codexQueueSupported 能识别出没有 queue 子命令的老 codex", () => {
+    expect(codexQueueSupported(fakeCodexBin().env)).toBe(true);
+    expect(codexQueueSupported(fakeCodexBin({ queueSupported: false }).env)).toBe(false);
     resetCodexCliProbeCache();
   });
 });

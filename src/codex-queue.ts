@@ -18,7 +18,8 @@
 // 超时/信号杀死一律记 unknown-outcome：帧可能已写进 store（铁律 5，绝不重放）。
 
 import { spawnSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { accessSync, constants, realpathSync } from "node:fs";
+import { join } from "node:path";
 import { isCodexThreadId, listCodexRolloutFiles, codexSessionsRoot } from "./codex-sessions.ts";
 
 /** `codex --version` 探测预算。 */
@@ -44,19 +45,46 @@ export function resetCodexCliProbeCache(): void {
 }
 
 /**
- * 本机有没有可用的 `codex` CLI。只探一次并缓存——send 路径上每个 codex 目标都会问。
- * 探 `queue --help` 而不是 `--version`：老版本有 codex 但没有 queue 子命令，我们要的是
- * 「这条通道在不在」，不是「codex 在不在」。
+ * PATH 上可执行的 `codex` 路径；找不到返回 null。
+ *
+ * 这里刻意不 spawn：起一次 `codex queue --help` 实测 489ms，而 send 路径和 `ocs who`
+ * 每次都要问一遍，等于给每条消息白付半秒。可执行位检查是纯 stat，同样能答出「codex
+ * 是不是 PATH 上的真实二进制」——shell 别名/函数照样答 null，那正是我们要拦的情况。
+ * 「装了但版本太老、没有 queue 子命令」交给真实调用去报错（owner 已定：不考虑老版本），
+ * doctor 另有完整探测。
  */
+export function resolveCodexBinary(env: NodeJS.ProcessEnv = process.env): string | null {
+  for (const dir of (env.PATH ?? "").split(":")) {
+    if (dir === "") continue;
+    const candidate = join(dir, "codex");
+    try {
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // 下一个 PATH 段
+    }
+  }
+  return null;
+}
+
+/** 本机能不能走 `codex queue`。只判一次并缓存——send 路径上每个 codex 目标都会问。 */
 export function codexQueueAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
   if (cliProbeCache !== null) return cliProbeCache;
+  cliProbeCache = resolveCodexBinary(env) !== null;
+  return cliProbeCache;
+}
+
+/**
+ * 完整探测：真的起一次 `codex queue --help` 确认有 `--thread`。慢（约 0.5s），只给
+ * doctor 用——诊断愿意为准确性付这个钱，热路径不该付。
+ */
+export function codexQueueSupported(env: NodeJS.ProcessEnv = process.env): boolean {
   const probe = spawnSync("codex", ["queue", "--help"], {
     encoding: "utf8",
     timeout: CODEX_CLI_PROBE_TIMEOUT_MS,
     env,
   });
-  cliProbeCache = probe.status === 0 && (probe.stdout ?? "").includes("--thread");
-  return cliProbeCache;
+  return probe.status === 0 && (probe.stdout ?? "").includes("--thread");
 }
 
 /** 该 thread 的 rollout 文件路径（thread id 就是 rollout 文件名里的 UUID）。 */
@@ -101,12 +129,15 @@ export function codexThreadLivePids(
   env: NodeJS.ProcessEnv = process.env,
 ): Map<string, number> {
   const live = new Map<string, number>();
+  // 目录树只走一次：codexRolloutPath 每次都要遍历整棵 sessions 树（本机 2500+ 文件），
+  // 逐个 id 调用等于把它重复 N 遍。
+  const wanted = new Set(threadIds.map((id) => id.toLowerCase()));
   const byPath = new Map<string, string>();
-  for (const id of threadIds) {
-    const path = codexRolloutPath(id, env);
+  for (const file of listCodexRolloutFiles(codexSessionsRoot(env))) {
+    if (!wanted.has(file.threadId)) continue;
     // lsof 报的是解析过符号链接的真实路径（macOS 的 /var/folders → /private/var/folders），
     // 按原始路径匹配会全部落空。
-    if (path !== null) byPath.set(realpathOrSelf(path), id.toLowerCase());
+    byPath.set(realpathOrSelf(file.path), file.threadId);
   }
   if (byPath.size === 0) return live;
   const probe = spawnSync("lsof", ["-F", "pn", "--", ...byPath.keys()], {
@@ -200,10 +231,25 @@ export function queueCodexThread(input: {
   // 活性是投递前的快照：检查到 spawn 返回之间目标可能已经退出，那条消息就静静躺在
   // thread store 里没人读。投完复查一次持有者，把这个窗口收窄到「spawn 期间」——
   // 结果按 unknown-outcome 报（帧已写出，绝不重放，见铁律 5）。
-  const outcome = classifyQueueOutcome(pid, codexThreadLivePid(threadId, env));
+  const outcome = classifyQueueOutcome(pid, processAlive(pid) ? pid : null);
   if (outcome !== null) return outcome;
   const messageId = QUEUED_ID_RE.exec(proc.stdout ?? "")?.[1] ?? null;
   return { ok: true, messageId, threadId, pid };
+}
+
+/**
+ * 进程还在不在。复查用它而不是再跑一次 lsof：lsof 要扫全机进程表，实测 349ms，而这里
+ * 只需回答「刚才那个持有者是不是还活着」——一个已经在跑的 codex 不会撒手自己的 rollout。
+ * signal 0 不投递信号，只做存在性检查。
+ */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM = 进程还在，只是不归我们；只有 ESRCH 才是真的没了。
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 /**
