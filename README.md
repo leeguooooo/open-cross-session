@@ -137,8 +137,18 @@ message stays in the append-only log for recovery with `ocs inbox`.
 | `ocs watch <ch>` | Tail a channel (`--interval-ms <n>`) |
 | `ocs doctor` | Health check for Claude, Codex, Pi, skills, and the data directory; `--fix` repairs safe local setup and re-checks it |
 | `ocs skill install` | Repair/update the bundled skill for Claude Code, Codex, and Pi, plus Pi's direct-wake extension |
-| `ocs upgrade` | Migration guide to hosted Agent Party |
+| `ocs upgrade` | Fetch and install the latest GitHub Release binary (`--check` only reports; `--party` prints the hosted Agent Party migration path) |
 | `ocs version` | Print the version |
+
+**Stuck below 0.4.3?** `ocs upgrade` only started upgrading the binary in 0.4.3 — before
+that it just printed a migration blurb and exited, so an older install can never reach a
+newer release on its own and will keep looking current. Re-run the installer once:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/open-cross-session/main/install.sh | sh
+```
+
+After that `ocs upgrade` works, and `ocs doctor` warns when the binary falls behind.
 
 Data lives in `~/.ocs` (override with `OCS_HOME`). Channels are plain JSONL logs.
 Back up the whole directory, including `workspace-key`: that local secret keeps
@@ -220,7 +230,7 @@ example `workbox/reviewer`) so they cannot be confused with same-named local age
 | Transport | local sockets + JSONL log | Cloudflare Workers + Durable Objects |
 | Included coordination | local channels, unified roster, direct wake, idle notifications | directed delivery, leases, presence, tasks, web UI |
 
-Same command habits on both. `ocs upgrade` prints the migration path. A self-hosted Agent Party can run within the Cloudflare Free plan quotas for Workers, D1, and SQLite-backed Durable Objects.
+Same command habits on both. `ocs upgrade --party` prints the migration path. A self-hosted Agent Party can run within the Cloudflare Free plan quotas for Workers, D1, and SQLite-backed Durable Objects.
 
 ## Development
 
