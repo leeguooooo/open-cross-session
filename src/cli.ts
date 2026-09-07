@@ -92,7 +92,7 @@ import {
   upgradeCheckEnabled,
 } from "./upgrade.ts";
 
-export const OCS_VERSION = "0.4.7";
+export const OCS_VERSION = "0.4.8";
 
 const LANG = detectLang();
 const M = messages(LANG);
@@ -817,6 +817,12 @@ async function cmdWho(parsed: Parsed): Promise<void> {
     }
   } else if (codexCandidates.length > 0) {
     console.log(M.whoCodexNone(roster.codexIpc));
+  }
+  // 静默降级最难查：`codex` 是 shell 函数/别名时探测判不可用，终端里活着的 codex 就
+  // 只能靠 IPC/cmux 够——而它们够不着终端。有活的非 Desktop 目标时必须把这句说出来。
+  if (!roster.codexQueue &&
+      codex.some((entry) => entry.kind === "codex-task" && entry.livePid !== null)) {
+    console.log(M.whoCodexQueueMissing);
   }
   if (pi.length > 0) {
     console.log(M.whoPiHeader);

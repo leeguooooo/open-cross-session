@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { closeSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  classifyQueueOutcome,
   codexHosts,
   codexQueueAvailable,
   codexRolloutPath,
@@ -172,5 +173,20 @@ describe("codex-queue：宿主解析（tty + GUI 应用）", () => {
 
   test("空输入不 spawn ps", () => {
     expect(codexHosts([]).size).toBe(0);
+  });
+});
+
+describe("codex-queue：投递期间目标消失（活性快照的竞态窗口）", () => {
+  test("持有者不变=正常；消失或换人=unknown-outcome，绝不当成功", () => {
+    expect(classifyQueueOutcome(4242, 4242)).toBeNull();
+
+    const gone = classifyQueueOutcome(4242, null);
+    expect(gone?.ok).toBe(false);
+    expect(gone && !gone.ok ? gone.reason : null).toBe("unknown-outcome");
+    expect(gone && !gone.ok ? gone.detail : "").toContain("exited during delivery");
+
+    const swapped = classifyQueueOutcome(4242, 9001);
+    expect(swapped && !swapped.ok ? swapped.reason : null).toBe("unknown-outcome");
+    expect(swapped && !swapped.ok ? swapped.detail : "").toContain("4242 → 9001");
   });
 });

@@ -125,6 +125,7 @@ interface Catalog {
   whoCodexNone: (ipc: boolean) => string;
   whoCodexViaQueue: (pid: number, host: string | null, tty: string | null) => string;
   whoCodexViaDesktop: string;
+  whoCodexQueueMissing: string;
   whoPiHeader: string;
   whoCmuxHeader: string;
   whoSelfTag: string;
@@ -365,6 +366,8 @@ Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-m
     return `[queue pid ${pid}${where === "" ? "" : ` · ${where}`}]`;
   },
   whoCodexViaDesktop: "[desktop]",
+  whoCodexQueueMissing:
+    "  ｰ  `codex queue` not runnable from here (codex must be a real binary on PATH, not a shell alias/function): terminal Codex sessions above cannot be woken",
   whoPiHeader: "Pi sessions (wake: ocs dm pi-<short-id>; @ mentions use the full session id)",
   whoCmuxHeader: "cmux terminal surfaces (wake: ocs dm surface:N)",
   whoSelfTag: "  ← you",
@@ -606,6 +609,8 @@ const zh: Catalog = {
     return `[queue pid ${pid}${where === "" ? "" : ` · ${where}`}]`;
   },
   whoCodexViaDesktop: "[desktop]",
+  whoCodexQueueMissing:
+    "  ｰ  这里跑不了 `codex queue`（codex 必须是 PATH 上的真实二进制，不能是 shell 别名/函数）：上面那些终端 Codex 会话无法被唤醒",
   whoPiHeader: "Pi 会话（唤醒: ocs dm pi-<短id>；@ 提及仍使用完整 session id）",
   whoCmuxHeader: "cmux 终端 surface（唤醒: ocs dm surface:N）",
   whoSelfTag: "  ← 你自己",

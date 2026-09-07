@@ -16,7 +16,7 @@ import {
 } from "./claude-address.ts";
 import { listNativeSessions, type NativeClaudeSession } from "./claude-inject.ts";
 import { codexDesktopIpcAvailable } from "./codex-ipc.ts";
-import { codexHosts, codexThreadLivePids } from "./codex-queue.ts";
+import { codexHosts, codexQueueAvailable, codexThreadLivePids } from "./codex-queue.ts";
 import {
   codexSessionsRoot,
   isCodexThreadId,
@@ -287,6 +287,8 @@ export type RosterEntry =
 export interface Roster {
   entries: RosterEntry[];
   codexIpc: boolean;
+  /** `codex queue` 可用性；false 时终端里的 codex 只能靠 Desktop IPC / cmux 够。 */
+  codexQueue: boolean;
   cmux: boolean;
   home: string;
 }
@@ -359,7 +361,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env): Roster {
       entries.push({ kind: "cmux", ref: s.ref, title: s.title });
     }
   }
-  return { entries, codexIpc, cmux, home: ocsHome(env) };
+  return { entries, codexIpc, codexQueue: codexQueueAvailable(env), cmux, home: ocsHome(env) };
 }
 
 export type DmTargetKind = "claude" | "codex-task" | "pi" | "cmux";

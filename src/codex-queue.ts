@@ -197,8 +197,31 @@ export function queueCodexThread(input: {
       detail: (proc.stderr ?? proc.stdout ?? "").trim() || `codex queue exited ${proc.status}`,
     };
   }
+  // 活性是投递前的快照：检查到 spawn 返回之间目标可能已经退出，那条消息就静静躺在
+  // thread store 里没人读。投完复查一次持有者，把这个窗口收窄到「spawn 期间」——
+  // 结果按 unknown-outcome 报（帧已写出，绝不重放，见铁律 5）。
+  const outcome = classifyQueueOutcome(pid, codexThreadLivePid(threadId, env));
+  if (outcome !== null) return outcome;
   const messageId = QUEUED_ID_RE.exec(proc.stdout ?? "")?.[1] ?? null;
   return { ok: true, messageId, threadId, pid };
+}
+
+/**
+ * 比对投递前后的 rollout 持有者。返回 null 表示同一个进程仍在跑（正常送达）；
+ * 否则给出 unknown-outcome ——目标在投递期间换人或消失，消息可能已写进 store 但无人读。
+ */
+export function classifyQueueOutcome(
+  pidBefore: number,
+  pidAfter: number | null,
+): CodexQueueResult | null {
+  if (pidAfter === pidBefore) return null;
+  return {
+    ok: false,
+    reason: "unknown-outcome",
+    detail: pidAfter === null
+      ? `target exited during delivery (was pid ${pidBefore}); the queued message may sit unread in the thread store`
+      : `target changed during delivery (pid ${pidBefore} → ${pidAfter}); delivery target is ambiguous`,
+  };
 }
 
 /** 一个活会话的宿主环境：控制终端 + 往上追到的 GUI 应用。 */
