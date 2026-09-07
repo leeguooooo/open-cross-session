@@ -1,0 +1,158 @@
+import { describe, expect, test } from "bun:test";
+import { closeSync, mkdirSync, openSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  codexQueueAvailable,
+  codexRolloutPath,
+  codexThreadLivePid,
+  codexThreadLivePids,
+  queueCodexThread,
+  resetCodexCliProbeCache,
+} from "../src/codex-queue.ts";
+import { autoCleanupTempDirs, tempDir } from "./tmp";
+
+autoCleanupTempDirs();
+
+const THREAD_LIVE = "11111111-1111-2222-3333-444444444444";
+const THREAD_DEAD = "22222222-1111-2222-3333-444444444444";
+const UNKNOWN = "33333333-1111-2222-3333-444444444444";
+
+/** 两个 rollout：调用方自己决定给哪个开 fd（开着的那个就是「活会话」）。 */
+function rolloutFixture(): { env: NodeJS.ProcessEnv; live: string; dead: string } {
+  const codexHome = tempDir("ocs-codexq-");
+  const day = join(codexHome, "sessions", "2026", "09", "07");
+  mkdirSync(day, { recursive: true });
+  const live = join(day, `rollout-2026-09-07T10-00-00-${THREAD_LIVE}.jsonl`);
+  const dead = join(day, `rollout-2026-09-07T09-00-00-${THREAD_DEAD}.jsonl`);
+  writeFileSync(live, "");
+  writeFileSync(dead, "");
+  return { env: { CODEX_HOME: codexHome }, live, dead };
+}
+
+/** 假的 `codex`：记录收到的参数，永远成功。 */
+function fakeCodexBin(options: { queueSupported?: boolean } = {}): {
+  env: NodeJS.ProcessEnv;
+  argsLog: string;
+} {
+  const bin = tempDir("ocs-codexbin-");
+  const argsLog = join(bin, "args.log");
+  const help = options.queueSupported === false
+    ? "Usage: codex queue"
+    : "Usage: codex queue [OPTIONS] --thread <THREAD> --message <TEXT>";
+  writeFileSync(
+    join(bin, "codex"),
+    `#!/bin/sh
+if [ "$1" = "queue" ] && [ "$2" = "--help" ]; then printf '%s\\n' ${JSON.stringify(help)}; exit 0; fi
+printf '%s\\n' "$*" >> ${JSON.stringify(argsLog)}
+echo "Queued message 01a079c9-7318-7192-ae2c-8078515ad91a for thread $3."
+`,
+    { mode: 0o755 },
+  );
+  resetCodexCliProbeCache();
+  return { env: { PATH: `${bin}:/usr/bin:/bin` }, argsLog };
+}
+
+describe("codex-queue：thread → rollout 路径", () => {
+  test("按 thread id 找到 rollout；未知 thread 与非法 id 都是 null", () => {
+    const { env, live } = rolloutFixture();
+    expect(codexRolloutPath(THREAD_LIVE, env)).toBe(live);
+    expect(codexRolloutPath(UNKNOWN, env)).toBeNull();
+    expect(codexRolloutPath("not-a-uuid", env)).toBeNull();
+  });
+});
+
+describe("codex-queue：活性判定（rollout fd 持有者）", () => {
+  test("有人持有 rollout fd 即为活；无人持有为死", () => {
+    const { env, live } = rolloutFixture();
+    const fd = openSync(live, "r");
+    try {
+      // 本测试进程自己持有 fd，所以 lsof 报出来的就是我们自己的 pid。
+      expect(codexThreadLivePid(THREAD_LIVE, env)).toBe(process.pid);
+      expect(codexThreadLivePid(THREAD_DEAD, env)).toBeNull();
+    } finally {
+      closeSync(fd);
+    }
+    expect(codexThreadLivePid(THREAD_LIVE, env)).toBeNull();
+  });
+
+  test("批量探测只认真正被持有的那个（部分未命中时 lsof 退 1，不算失败）", () => {
+    const { env, live } = rolloutFixture();
+    const fd = openSync(live, "r");
+    try {
+      const live_ = codexThreadLivePids([THREAD_LIVE, THREAD_DEAD, UNKNOWN], env);
+      expect(live_.get(THREAD_LIVE)).toBe(process.pid);
+      expect(live_.has(THREAD_DEAD)).toBe(false);
+      expect(live_.has(UNKNOWN)).toBe(false);
+    } finally {
+      closeSync(fd);
+    }
+  });
+});
+
+describe("codex-queue：投递", () => {
+  test("目标活着时才真的 queue，参数按 --thread/--message 传", () => {
+    const rollout = rolloutFixture();
+    const bin = fakeCodexBin();
+    const env = { ...rollout.env, ...bin.env };
+    const fd = openSync(rollout.live, "r");
+    try {
+      const result = queueCodexThread({ threadId: THREAD_LIVE, prompt: "hello", env });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("unreachable");
+      expect(result.threadId).toBe(THREAD_LIVE);
+      expect(result.pid).toBe(process.pid);
+      expect(result.messageId).toBe("01a079c9-7318-7192-ae2c-8078515ad91a");
+    } finally {
+      closeSync(fd);
+    }
+    expect(Bun.file(bin.argsLog).text()).resolves.toContain(
+      `queue --thread ${THREAD_LIVE} --message hello`,
+    );
+  });
+
+  test("目标不在跑就绝不 queue：queue 是写 thread store，对死会话照样成功", async () => {
+    const rollout = rolloutFixture();
+    const bin = fakeCodexBin();
+    const result = queueCodexThread({
+      threadId: THREAD_DEAD,
+      prompt: "hello",
+      env: { ...rollout.env, ...bin.env },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("not-live");
+    // 关键：一个字都没发出去，欠账留给 inbox。
+    expect(await Bun.file(bin.argsLog).exists()).toBe(false);
+  });
+
+  test("非法 thread id 直接拒绝，不 spawn", async () => {
+    const bin = fakeCodexBin();
+    const result = queueCodexThread({ threadId: "nope", prompt: "x", env: bin.env });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("bad-thread-id");
+    expect(await Bun.file(bin.argsLog).exists()).toBe(false);
+  });
+
+  test("PATH 上没有 codex 时报 unavailable，不静默当成功", () => {
+    resetCodexCliProbeCache();
+    const rollout = rolloutFixture();
+    const empty = tempDir("ocs-nobin-");
+    const result = queueCodexThread({
+      threadId: THREAD_LIVE,
+      prompt: "x",
+      env: { ...rollout.env, PATH: empty },
+      livePid: process.pid,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("unavailable");
+    resetCodexCliProbeCache();
+  });
+
+  test("codex 太老、queue 没有 --thread 时视为通道不存在", () => {
+    const bin = fakeCodexBin({ queueSupported: false });
+    expect(codexQueueAvailable(bin.env)).toBe(false);
+    resetCodexCliProbeCache();
+  });
+});

@@ -69,6 +69,7 @@ import {
   wakeCmuxSurface,
 } from "./roster.ts";
 import { verifiedClaudeWorkspaceIdentity } from "./workspace-registry.ts";
+import { codexQueueAvailable, codexThreadLivePid, queueCodexThread } from "./codex-queue.ts";
 import {
   findSelfClaudePid,
   selectWakeTargets,
@@ -252,6 +253,66 @@ function tryCodexCmuxFallback(
   return true;
 }
 
+/**
+ * codex 目标的统一投递阶梯（消息此前已落盘，这里只负责唤醒）:
+ *   1. `codex queue --thread` —— 官方 CLI 表面，按 thread 精确寻址，终端 TUI / Desktop 通吃，
+ *      不需要 cmux，也不需要目标被 renderer 认领。先用 rollout fd 证明目标活着才发
+ *      （queue 对死会话照样 exit=0，见 codex-queue.ts 的送达语义）。
+ *   2. ChatGPT Desktop IPC —— 私有协议（铁律 5），保留作降级。
+ *   3. cmux 按键注入 —— 最后兜底。
+ * unknown-outcome 在任一层都立即停止：帧可能已写出，绝不重放（铁律 5）。
+ * 返回 false 表示三层都没投出去，调用方按「仅落盘」处理。
+ */
+async function deliverToCodexTask(
+  targetThreadId: string,
+  wakeInput: Omit<WakeNoteInput, "receiver">,
+  sourceThreadId?: string,
+): Promise<boolean> {
+  const livePid = codexThreadLivePid(targetThreadId);
+  if (livePid !== null) {
+    const queued = queueCodexThread({
+      threadId: targetThreadId,
+      livePid,
+      prompt: wakeNote({
+        ...wakeInput,
+        receiver: `codex-${targetThreadId.slice(0, 8)}`,
+        implicitReceiver: true,
+      }),
+    });
+    if (queued.ok) {
+      console.log(M.codexQueued(queued.threadId, queued.pid, queued.messageId));
+      return true;
+    }
+    if (queued.reason === "unknown-outcome") {
+      console.log(M.codexUnknownOutcome(queued.detail ?? ""));
+      markStoredDeliveryFailure("unknown");
+      return true; // 已上报，不再往下投，避免重复送达
+    }
+    console.log(M.codexQueueSkipped(targetThreadId, queued.reason, queued.detail ?? ""));
+  }
+  const result = await wakeCodexTask({
+    targetThreadId,
+    ...(sourceThreadId !== undefined ? { sourceThreadId } : {}),
+    ...wakeInput,
+  });
+  if (result.ok) {
+    console.log(M.codexAccepted(result.targetThreadId, result.turnId));
+    return true;
+  }
+  if (result.reason === "unknown-outcome") {
+    console.log(M.codexUnknownOutcome(result.detail ?? ""));
+    markStoredDeliveryFailure("unknown");
+    return true;
+  }
+  if (tryCodexCmuxFallback(targetThreadId, result.reason, wakeInput)) {
+    // cmux 只复用同一 channel/seq 做唤醒，没有再次落盘。
+    return true;
+  }
+  console.log(M.codexFailed(result.reason, result.detail ?? ""));
+  markStoredDeliveryFailure("failed");
+  return false;
+}
+
 function printMessage(m: { seq: number; ts: string; from: string; body: string }): void {
   console.log(`#${m.seq} ${m.ts} <${m.from}> ${m.body}`);
 }
@@ -360,23 +421,7 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     lang: LANG,
   };
   for (const target of codexTargets) {
-    const result = await wakeCodexTask({
-      targetThreadId: target,
-      ...(codexSource !== undefined ? { sourceThreadId: codexSource } : {}),
-      ...wakeInput,
-    });
-    if (result.ok) {
-      console.log(M.codexAccepted(result.targetThreadId, result.turnId));
-    } else if (result.reason === "unknown-outcome") {
-      // 上游铁律：帧已写出但结果未知——如实报告、绝不重放
-      console.log(M.codexUnknownOutcome(result.detail ?? ""));
-      markStoredDeliveryFailure("unknown");
-    } else if (tryCodexCmuxFallback(target, result.reason, wakeInput)) {
-      // cmux 只复用同一 channel/seq 做唤醒，没有再次落盘。
-    } else {
-      console.log(M.codexFailed(result.reason, result.detail ?? ""));
-      markStoredDeliveryFailure("failed");
-    }
+    await deliverToCodexTask(target, wakeInput, codexSource);
   }
 
   // Pi 侧：全局扩展登记活 TUI，并经私有 UDS 收件箱注入。忙碌时由 Pi 自己排成 follow-up。
@@ -584,17 +629,7 @@ async function cmdDm(parsed: Parsed): Promise<void> {
     }
     if (idleSubscriber !== null) subscribeIdle(idleSubscriber, [resolved.claude]);
   } else if (resolved.kind === "codex-task" && resolved.threadId !== undefined) {
-    const result = await wakeCodexTask({ targetThreadId: resolved.threadId, ...wakeInput });
-    if (result.ok) console.log(M.codexAccepted(result.targetThreadId, result.turnId));
-    else if (result.reason === "unknown-outcome") {
-      console.log(M.codexUnknownOutcome(result.detail ?? ""));
-      markStoredDeliveryFailure("unknown");
-    } else if (tryCodexCmuxFallback(resolved.threadId, result.reason, wakeInput)) {
-      // cmux 只复用同一 channel/seq 做唤醒，没有再次落盘。
-    } else {
-      console.log(M.codexFailed(result.reason, result.detail ?? ""));
-      markStoredDeliveryFailure("failed");
-    }
+    await deliverToCodexTask(resolved.threadId, wakeInput);
     if (idleSubscriber !== null) subscribeIdle(idleSubscriber, []);
   } else if (resolved.kind === "pi" && resolved.piSessionId !== undefined) {
     if (resolved.piSession === undefined) {
@@ -701,7 +736,10 @@ async function cmdWho(parsed: Parsed): Promise<void> {
       // Socket/router failure is reported below as no verified open tasks.
     }
   }
-  const codex = codexCandidates.filter((entry) => codexOwners[entry.threadId] !== undefined);
+  // 可达 = Desktop renderer 认领（IPC 可投）或 rollout fd 有活进程（`codex queue` 可投）。
+  // 只按前者过滤会把终端里裸跑的 codex 整个藏起来——那正是用户报的「cc 发现不了终端里的 codex」。
+  const codex = codexCandidates.filter((entry) =>
+    entry.kind === "codex-task" && (codexOwners[entry.threadId] !== undefined || entry.livePid !== null));
   const pi = relevantFirst(roster.entries.filter((e) => e.kind === "pi"));
   const cmux = roster.entries.filter((e) => e.kind === "cmux");
   if (json) {
@@ -724,10 +762,12 @@ async function cmdWho(parsed: Parsed): Promise<void> {
     for (const e of codex) {
       if (e.kind !== "codex-task") continue;
       const label = e.summary ?? (e.cwd === null ? "" : basename(e.cwd));
+      // 载体标注：queue 走官方 CLI（终端 TUI 也吃），desktop 是私有 IPC 降级路径。
+      const via = e.livePid === null ? M.whoCodexViaDesktop : M.whoCodexViaQueue(e.livePid);
       console.log(
         verbose
-          ? `  ${e.target}  thread=${e.threadId}  cwd=${e.cwd ?? "?"}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`
-          : `  ${e.target}  ${label.slice(0, 60)}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`,
+          ? `  ${e.target}  thread=${e.threadId}  cwd=${e.cwd ?? "?"}  ${via}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`
+          : `  ${e.target}  ${label.slice(0, 60)}  ${via}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`,
       );
     }
   } else if (codexCandidates.length > 0) {
@@ -924,6 +964,10 @@ async function cmdDoctor(parsed: Parsed): Promise<void> {
   }
 
   console.log(M.doctorCodex);
+  // 首选载体先报：`codex queue` 是官方 CLI 表面，终端 TUI 和 Desktop 任务都能投；
+  // Desktop IPC 是私有协议降级路径，它不可用不再等于「codex 不可达」。
+  if (codexQueueAvailable()) ok(M.doctorCodexQueueOk);
+  else warn(M.doctorCodexQueueMissing);
   const ipcAvailable = codexDesktopIpcAvailable();
   if (ipcAvailable) {
     ok(M.doctorIpcOk(codexDesktopIpcSocketPath()));
@@ -1049,9 +1093,11 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
 - Your own identity is auto-detected inside Claude, Codex, and Pi sessions; \`--as <name>\` overrides.
 - Codex and Pi tasks have short \`codex-<8hex>\` / \`pi-<8hex>\` addresses in \`ocs who\`;
   use the full ID shown by \`ocs who --verbose\` only if a short prefix is ambiguous.
-- \`ocs who\` lists only Codex tasks claimed by an open Desktop renderer.
+- \`ocs who\` lists every reachable Codex task: one whose rollout is held open by a
+  live process (wakeable with \`codex queue\`, terminal TUIs included — shown as
+  \`[queue pid N]\`) or one claimed by an open Desktop renderer (\`[desktop]\`).
   \`ocs codex-sessions\` is rollout history and does not imply wakeability.
-  Codex wake also needs a second open task under the same Desktop renderer as
+  The Desktop path additionally needs a second open task under the same renderer as
   the source; \`--codex-source\` accepts either its full ID or short address.
 - A wake note you receive carries the message body (up to 4096 bytes; longer
   messages show the first 512 bytes plus a Thread: command). Claude-to-Claude DM
@@ -1073,11 +1119,14 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
   log commit succeeded. Requested wakes report accepted, stored-only, or unknown
   separately. Exit 2 means stored but wake failed; exit 3 means stored with an
   unknown outcome. Never resend either result; inspect the printed channel/seq.
-- If a Codex task is not renderer-open, the message remains stored and will appear
-  in that task's \`ocs inbox\`; opening/selecting its Desktop task enables direct wake.
-  When Desktop definitely cannot deliver, ocs can fall back to a unique idle cmux
-  surface whose title and live Codex process match that task. It never falls back
-  after an unknown IPC outcome or when the surface match is ambiguous.
+- Codex delivery ladder: \`codex queue --thread\` first (official CLI, addresses a
+  terminal TUI or a Desktop task alike, no cmux and no Desktop needed), then Desktop
+  IPC, then a cmux surface. ocs only queues to a thread whose rollout has a live
+  process holder, because \`codex queue\` writes to the thread store and reports
+  success even when nobody is running — queued is not read.
+  If no rung delivers, the message remains stored and appears in that task's
+  \`ocs inbox\`; opening/selecting its Desktop task enables direct wake. ocs never
+  falls back after an unknown outcome or when a cmux surface match is ambiguous.
 - To keep a conversation going, end your message with the peer's @name so they wake
   (you are never woken by your own @).
 - Replying with \`ocs dm <workspace-alias>\` reuses the stable or explicitly

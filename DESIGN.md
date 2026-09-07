@@ -63,9 +63,19 @@
 1. **Claude 侧**：`claude-inbox-inject.ts` — cc-socks Unix socket
    （`/tmp/cc-socks/<pid>.sock`）按 PID 寻址注入活会话，JSONL 帧，
    载荷按 docs/wake-protocol.md：正文 ≤4096B 逐字内联（超过带前 512B），Reply:/Thread: 命令填好。
-2. **Codex 侧**：`codex-desktop-ipc.ts`（#1012）— ChatGPT Desktop 自己的
+2. **Codex 侧（首选）**：`codex-queue.ts` — 官方 CLI 表面 `codex queue --thread <id>
+   --message <text>`。按 thread UUID 精确寻址（thread id 就是 rollout 文件名里的 UUID），
+   **终端里裸跑的 codex TUI 和 Desktop 任务通吃**，不需要 cmux，也不需要目标被 Desktop
+   renderer 认领，更不需要 `codex app-server daemon start`（那条另外要求官方 standalone 安装）。
+   2026-09-07 实测 v0.153.4：往 tmux 里一个纯终端 TUI queue 一条唤醒载荷，TUI 真的跑了那一轮
+   并用 `ocs send` 回了话。
+   **活性必须自己判**：`queue` 是往 thread store 写待处理输入，不是投递——目标已退出时它
+   照样 exit=0 并打印 "Queued message …"。判据取 rollout 文件的 fd 持有者（`lsof`），
+   查不到就不发（fail closed），欠账留给 inbox。
+2b. **Codex 侧（降级）**：`codex-desktop-ipc.ts`（#1012）— ChatGPT Desktop 自己的
    `~/.codex/ipc/ipc.sock`，用 `thread-follower-start-turn` + `codex_app`
-   toolOutput 注入原生跨任务消息，UI 里保留原生来源链接。
+   toolOutput 注入原生跨任务消息，UI 里保留原生来源链接。私有协议，宿主升级可能破，
+   所以只在 `codex queue` 不可用/目标不在跑时才用；再之后才是 cmux 按键注入。
 3. **补充**：Codex Stop hook 的 `{"decision":"block","reason":…}` —
    `reason` 即注入 prompt（≤512B），机制全本地，只有「有没有新消息」一问走服务端。
 4. **Pi 侧**：全局扩展在 `session_start` 登记会话并监听 0600 Unix socket；收到 note 后用
@@ -89,9 +99,9 @@ presence 心跳（本地读 registry 即可）、`worker_upgrade_required` 等�
 ## 四、架构
 
 ```
-┌─ Claude 会话 ─┐  ┌─ Codex/ChatGPT task ─┐  ┌─ Pi TUI ─────┐  ┌─ headless ─────┐
-│ cc-socks UDS  │  │ Desktop IPC          │  │ extension UDS│  │ claude / codex │
-│ 注入          │  │ thread-follower      │  │ followUp     │  │ resume         │
+┌─ Claude 会话 ─┐  ┌─ Codex task/TUI ─────┐  ┌─ Pi TUI ─────┐  ┌─ headless ─────┐
+│ cc-socks UDS  │  │ codex queue（首选）  │  │ extension UDS│  │ claude / codex │
+│ 注入          │  │ → Desktop IPC → cmux │  │ followUp     │  │ resume         │
 └──────┬────────┘  └────────┬─────────────┘  └─────┬────────┘  └──────┬─────────┘
        │                    │                      │                  │
        └────────────── 按目标 harness 选载体 ─────────────────────────┘
@@ -115,7 +125,16 @@ presence 心跳（本地读 registry 即可）、`worker_upgrade_required` 等�
    批准就静默跳过。修复器可复用；绝不用 `--dangerously-bypass-hook-trust`。
 
 **风险**：Desktop IPC 依赖 ChatGPT.app 私有协议，宿主升级会破——需要版本探测 + 降级路径
-（headless spawn 兜底）。
+（headless spawn 兜底）。自 `codex queue` 接入后这条风险降级：私有 IPC 不再是 codex 的
+唯一入口，只是 `codex queue` 之后的第二顺位。
+
+**载体审计结论（2026-09-07）**：另外两条腿**不是绕路**，各自都已经在官方表面上——
+Claude 走的 cc-socks 收件箱就是 Claude Code 自己的跨会话消息通道（原生「Message from X」
+UX + `crossSessionInbound` 权限闸），`claude` CLI 没有等价的发送子命令；Pi 走的是 Pi 官方
+扩展 API，`pi` CLI 根本没有跨会话命令。两条已知的可改进项，都不需要换载体：
+- Claude 侧的「ok ≠ 送达」可以靠订阅 `peer_message_status` 回执收敛（今天只能靠对方回话）。
+- `claude agents --json` 能列出**后台会话**（`kind: "background"`），那是 ocs 今天完全没
+  寻址的一类本机 agent；但 `claude` 也没给后台会话提供发送口，所以是发现有、投递无。
 
 **已知限制（codex-ping 审查 #11）**：Desktop IPC 的 delegation envelope 需要一个
 source thread id，自动选择时它只是**运输载体**（同 renderer 的任一开着任务），不代表
