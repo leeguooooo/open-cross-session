@@ -243,6 +243,26 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
     }
   }, T);
 
+  // Claude 和 Pi 都有自我唤醒防回环，codex 一直缺；`codex queue` 稳定投递之后，
+  // 一个 @ 到自己的会话会把自己反复唤醒。
+  test("codex 会话 @ 到自己时不自我唤醒", async () => {
+    const router = fakeRouter({});
+    try {
+      const result = await runCli(
+        router,
+        ["send", "selfloop", `hello @${THREAD_B}`, "--as", "tester"],
+        { CODEX_THREAD_ID: THREAD_B },
+      );
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("skipped self-wake");
+      // 消息照常落盘，只是不回投给自己。
+      expect(result.stdout).toContain("stored");
+      expect(router.startTurnRequests.length).toBe(0);
+    } finally {
+      router.close();
+    }
+  }, T);
+
   // 用户报的 bug：终端里裸跑的 codex 完全不出现在 who 里，因为过滤条件只认 Desktop
   // renderer 认领。可达性现在等于「认领 或 rollout 有活进程」——后者是 `codex queue`
   // 的投递条件，也是终端 TUI 唯一的存在证明。

@@ -41,6 +41,7 @@ interface Catalog {
   codexCmuxFallback: (thread: string, reason: string, ref: string) => string;
   codexQueued: (thread: string, pid: number, messageId: string | null) => string;
   codexQueueSkipped: (thread: string, reason: string, detail: string) => string;
+  codexWakeSelfSkipped: (thread: string) => string;
   piWakeAccepted: (target: string) => string;
   piWakeUnknownOutcome: (target: string, detail: string) => string;
   piWakeFailed: (target: string, reason: string, detail: string) => string;
@@ -250,6 +251,8 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
     `${messageId === null ? "" : `, message ${messageId}`}) — queued, not confirmed read`,
   codexQueueSkipped: (thread, reason, detail) =>
     `wake(codex): \`codex queue\` skipped for ${thread} (${reason})${detail ? `: ${detail}` : ""}; trying Desktop IPC`,
+  codexWakeSelfSkipped: (thread) =>
+    `wake(codex): skipped self-wake for ${thread} (message is stored; you are already reading it)`,
   piWakeAccepted: (target) => `wake(pi): queued → ${target}`,
   piWakeUnknownOutcome: (target, detail) =>
     `wake(pi): outcome unknown for ${target} (frame was written — do NOT resend)${detail ? `: ${detail}` : ""}`,
@@ -494,6 +497,8 @@ const zh: Catalog = {
     `${messageId === null ? "" : `，message ${messageId}`}）——已入队，未确认读取`,
   codexQueueSkipped: (thread, reason, detail) =>
     `wake(codex): ${thread} 跳过 \`codex queue\`（${reason}）${detail ? `: ${detail}` : ""}；改试 Desktop IPC`,
+  codexWakeSelfSkipped: (thread) =>
+    `wake(codex): 跳过自我唤醒 ${thread}（消息已落盘；你本来就在读它）`,
   piWakeAccepted: (target) => `wake(pi): 已排队 → ${target}`,
   piWakeUnknownOutcome: (target, detail) =>
     `wake(pi): ${target} 结果未知（帧已写出，勿重发）${detail ? `: ${detail}` : ""}`,

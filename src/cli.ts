@@ -87,7 +87,7 @@ import {
   upgradeCheckEnabled,
 } from "./upgrade.ts";
 
-export const OCS_VERSION = "0.4.5";
+export const OCS_VERSION = "0.4.6";
 
 const LANG = detectLang();
 const M = messages(LANG);
@@ -268,6 +268,14 @@ async function deliverToCodexTask(
   wakeInput: Omit<WakeNoteInput, "receiver">,
   sourceThreadId?: string,
 ): Promise<boolean> {
+  // 自我唤醒防回环：Claude（findSelfClaudePid）和 Pi（piWakeSelfSkipped）两条路都有，
+  // codex 一直缺——以前 Desktop IPC 前置条件多不易触发，`codex queue` 又快又稳之后
+  // 一个 @ 到自己的会话会把自己反复唤醒。
+  const selfThreadId = process.env[CODEX_THREAD_ID_ENV];
+  if (typeof selfThreadId === "string" && selfThreadId.toLowerCase() === targetThreadId.toLowerCase()) {
+    console.log(M.codexWakeSelfSkipped(targetThreadId));
+    return true;
+  }
   const livePid = codexThreadLivePid(targetThreadId);
   if (livePid !== null) {
     const queued = queueCodexThread({
