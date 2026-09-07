@@ -200,3 +200,65 @@ export function queueCodexThread(input: {
   const messageId = QUEUED_ID_RE.exec(proc.stdout ?? "")?.[1] ?? null;
   return { ok: true, messageId, threadId, pid };
 }
+
+/** 一个活会话的宿主环境：控制终端 + 往上追到的 GUI 应用。 */
+export interface CodexHost {
+  /** `ttys002`；无控制终端（如 Desktop 托管的任务）为 null。 */
+  tty: string | null;
+  /** 祖先链里第一个 .app 包的名字（Terminal / iTerm2 / Ghostty / ChatGPT …）；查不到为 null。 */
+  app: string | null;
+}
+
+const APP_BUNDLE_RE = /\/([^/]+)\.app\//;
+
+/**
+ * 批量解析这些 pid 的宿主。
+ *
+ * 为什么要有这个：agent 自己说不清自己跑在哪 —— 2026-09-07 实测，一个明明在
+ * Terminal.app 里的 codex 会话自称「不挂在任何终端上」。诊断可达性只能看进程事实，
+ * 不能问 agent，所以 `ocs who` 直接把 tty 和宿主 app 显示出来。
+ *
+ * 宿主取祖先链上第一个 `.app` 包：Terminal.app 直接命中；VS Code 这类会先撞到嵌套的
+ * helper 包，所以取路径里**最先**出现的那个 .app（外层应用名）而不是最后一个。
+ */
+export function codexHosts(
+  pids: readonly number[],
+  env: NodeJS.ProcessEnv = process.env,
+): Map<number, CodexHost> {
+  const hosts = new Map<number, CodexHost>();
+  if (pids.length === 0) return hosts;
+  const probe = spawnSync("ps", ["-A", "-o", "pid=,ppid=,tty=,comm="], {
+    encoding: "utf8",
+    timeout: CODEX_LSOF_TIMEOUT_MS,
+    env: lsofEnv(env), // ps 同样是系统工具，不看调用方的 PATH
+  });
+  const table = new Map<number, { ppid: number; tty: string; comm: string }>();
+  for (const line of (probe.stdout ?? "").split("\n")) {
+    // comm 可能带空格（"Visual Studio Code"），所以只按前三列切，剩下全归 comm。
+    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+    if (match === null) continue;
+    table.set(Number(match[1]), { ppid: Number(match[2]), tty: match[3]!, comm: match[4]! });
+  }
+  for (const pid of pids) {
+    const self = table.get(pid);
+    if (self === undefined) {
+      hosts.set(pid, { tty: null, app: null });
+      continue;
+    }
+    let app: string | null = null;
+    let cursor: number | undefined = pid;
+    // 深度封顶：进程表理论上无环，但 pid 复用下的坏数据不该把 who 卡死。
+    for (let hop = 0; hop < 12 && cursor !== undefined && cursor > 1; hop++) {
+      const node: { ppid: number; tty: string; comm: string } | undefined = table.get(cursor);
+      if (node === undefined) break;
+      const bundle = APP_BUNDLE_RE.exec(node.comm);
+      if (bundle !== null) {
+        app = bundle[1]!;
+        break;
+      }
+      cursor = node.ppid;
+    }
+    hosts.set(pid, { tty: self.tty === "??" ? null : self.tty, app });
+  }
+  return hosts;
+}

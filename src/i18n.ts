@@ -122,7 +122,7 @@ interface Catalog {
   whoClaudeHeader: string;
   whoCodexHeader: (ipc: boolean) => string;
   whoCodexNone: (ipc: boolean) => string;
-  whoCodexViaQueue: (pid: number) => string;
+  whoCodexViaQueue: (pid: number, host: string | null, tty: string | null) => string;
   whoCodexViaDesktop: string;
   whoPiHeader: string;
   whoCmuxHeader: string;
@@ -355,7 +355,12 @@ Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-m
   whoCodexNone: (ipc) => ipc
     ? "Codex: no recent rollout is live or claimed by an open Desktop renderer (\`ocs codex-sessions\` shows history)"
     : "Codex: no live rollout, and the Desktop IPC socket is unavailable — start a codex session or open ChatGPT Desktop",
-  whoCodexViaQueue: (pid) => `[queue pid ${pid}]`,
+  whoCodexViaQueue: (pid, host, tty) => {
+    // agent 自己说不清宿主（实测有会话自称「不挂在任何终端上」，其实在 Terminal.app 里），
+    // 所以这里报进程事实：宿主应用 + 控制终端，查不到就只留 pid。
+    const where = [host, tty].filter((part) => part !== null).join(" ");
+    return `[queue pid ${pid}${where === "" ? "" : ` · ${where}`}]`;
+  },
   whoCodexViaDesktop: "[desktop]",
   whoPiHeader: "Pi sessions (wake: ocs dm pi-<short-id>; @ mentions use the full session id)",
   whoCmuxHeader: "cmux terminal surfaces (wake: ocs dm surface:N)",
@@ -591,7 +596,10 @@ const zh: Catalog = {
   whoCodexNone: (ipc) => ipc
     ? "Codex：近期 rollout 既没有活进程，也没有被打开的 Desktop renderer 认领（\`ocs codex-sessions\` 可看历史）"
     : "Codex：没有活着的 rollout，Desktop IPC socket 也不可用——起一个 codex 会话或打开 ChatGPT Desktop",
-  whoCodexViaQueue: (pid) => `[queue pid ${pid}]`,
+  whoCodexViaQueue: (pid, host, tty) => {
+    const where = [host, tty].filter((part) => part !== null).join(" ");
+    return `[queue pid ${pid}${where === "" ? "" : ` · ${where}`}]`;
+  },
   whoCodexViaDesktop: "[desktop]",
   whoPiHeader: "Pi 会话（唤醒: ocs dm pi-<短id>；@ 提及仍使用完整 session id）",
   whoCmuxHeader: "cmux 终端 surface（唤醒: ocs dm surface:N）",

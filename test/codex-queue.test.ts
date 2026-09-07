@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { closeSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  codexHosts,
   codexQueueAvailable,
   codexRolloutPath,
   codexThreadLivePid,
@@ -154,5 +155,22 @@ describe("codex-queue：投递", () => {
     const bin = fakeCodexBin({ queueSupported: false });
     expect(codexQueueAvailable(bin.env)).toBe(false);
     resetCodexCliProbeCache();
+  });
+});
+
+describe("codex-queue：宿主解析（tty + GUI 应用）", () => {
+  test("解析自己这个进程：tty 与进程表一致，未知 pid 给出 null 而不是抛错", () => {
+    const hosts = codexHosts([process.pid, 999_999]);
+    const self = hosts.get(process.pid);
+    expect(self).toBeDefined();
+    // 测试进程可能有 tty 也可能没有（CI 里无控制终端），两种都合法，
+    // 但绝不能是 ps 的 "??" 占位符原样透出。
+    expect(self!.tty === null || /^\S+$/.test(self!.tty)).toBe(true);
+    expect(self!.tty).not.toBe("??");
+    expect(hosts.get(999_999)).toEqual({ tty: null, app: null });
+  });
+
+  test("空输入不 spawn ps", () => {
+    expect(codexHosts([]).size).toBe(0);
   });
 });

@@ -16,7 +16,7 @@ import {
 } from "./claude-address.ts";
 import { listNativeSessions, type NativeClaudeSession } from "./claude-inject.ts";
 import { codexDesktopIpcAvailable } from "./codex-ipc.ts";
-import { codexThreadLivePids } from "./codex-queue.ts";
+import { codexHosts, codexThreadLivePids } from "./codex-queue.ts";
 import {
   codexSessionsRoot,
   isCodexThreadId,
@@ -267,6 +267,10 @@ export type RosterEntry =
       self: boolean;
       /** 持有该 thread rollout fd 的进程；非 null 即证明会话在跑（`codex queue` 可达）。 */
       livePid: number | null;
+      /** 活会话的控制终端（`ttys002`）；Desktop 托管等无 tty 的为 null。 */
+      tty: string | null;
+      /** 活会话的宿主应用（Terminal / iTerm2 / ChatGPT …）；查不到为 null。 */
+      hostApp: string | null;
     }
   | {
       kind: "pi";
@@ -320,7 +324,11 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env): Roster {
   const codexSessions = listCodexSessions(codexSessionsRoot(env), { limit: 10 });
   // 一次 lsof 批量判活：rollout fd 的持有者证明会话在跑，终端 TUI 和 Desktop 任务通用。
   const codexLive = codexThreadLivePids(codexSessions.map((s) => s.threadId), env);
+  // 宿主（tty + GUI 应用）只对活会话有意义，一次 ps 全解出来。
+  const codexHostByPid = codexHosts([...new Set(codexLive.values())], env);
   for (const s of codexSessions) {
+    const livePid = codexLive.get(s.threadId) ?? null;
+    const host = livePid === null ? undefined : codexHostByPid.get(livePid);
     entries.push({
       kind: "codex-task",
       target: `codex-${s.threadId.slice(0, 8)}`,
@@ -328,7 +336,9 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env): Roster {
       summary: s.summary,
       cwd: s.cwd,
       self: s.threadId === selfCodexThreadId,
-      livePid: codexLive.get(s.threadId) ?? null,
+      livePid,
+      tty: host?.tty ?? null,
+      hostApp: host?.app ?? null,
     });
   }
   const selfPiSessionId = env[OCS_PI_SESSION_ID_ENV]?.toLowerCase();

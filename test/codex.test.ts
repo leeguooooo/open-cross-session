@@ -222,6 +222,8 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
           cwd?: string | null;
           self?: boolean;
           livePid?: number | null;
+          tty?: string | null;
+          hostApp?: string | null;
         }>;
       };
       const codex = roster.entries.filter((entry) => entry.kind === "codex-task");
@@ -233,6 +235,8 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
         cwd: "/tmp/b",
         self: true,
         livePid: null,
+        tty: null,
+        hostApp: null,
       }]);
     } finally {
       router.close();

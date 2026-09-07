@@ -87,7 +87,7 @@ import {
   upgradeCheckEnabled,
 } from "./upgrade.ts";
 
-export const OCS_VERSION = "0.4.4";
+export const OCS_VERSION = "0.4.5";
 
 const LANG = detectLang();
 const M = messages(LANG);
@@ -763,7 +763,9 @@ async function cmdWho(parsed: Parsed): Promise<void> {
       if (e.kind !== "codex-task") continue;
       const label = e.summary ?? (e.cwd === null ? "" : basename(e.cwd));
       // 载体标注：queue 走官方 CLI（终端 TUI 也吃），desktop 是私有 IPC 降级路径。
-      const via = e.livePid === null ? M.whoCodexViaDesktop : M.whoCodexViaQueue(e.livePid);
+      const via = e.livePid === null
+        ? M.whoCodexViaDesktop
+        : M.whoCodexViaQueue(e.livePid, e.hostApp, e.tty);
       console.log(
         verbose
           ? `  ${e.target}  thread=${e.threadId}  cwd=${e.cwd ?? "?"}  ${via}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`
@@ -1095,7 +1097,9 @@ ocs whoami | sessions | watch <channel> | doctor [--fix] | version
   use the full ID shown by \`ocs who --verbose\` only if a short prefix is ambiguous.
 - \`ocs who\` lists every reachable Codex task: one whose rollout is held open by a
   live process (wakeable with \`codex queue\`, terminal TUIs included — shown as
-  \`[queue pid N]\`) or one claimed by an open Desktop renderer (\`[desktop]\`).
+  \`[queue pid N · <host app> <tty>]\`) or one claimed by an open Desktop renderer
+  (\`[desktop]\`). Trust that host line over what a session says about itself: a
+  Codex session cannot see which terminal it runs under and will guess wrong.
   \`ocs codex-sessions\` is rollout history and does not imply wakeability.
   The Desktop path additionally needs a second open task under the same renderer as
   the source; \`--codex-source\` accepts either its full ID or short address.
