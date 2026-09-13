@@ -38,11 +38,21 @@ import {
   verifiedClaudeWorkspaceIdentity,
 } from "./workspace-registry.ts";
 import { channelLogPath, ocsHome, readMessages, CHANNEL_RE, NAME_RE } from "./store.ts";
+import {
+  claudeEntryMatches,
+  claudeShortId,
+  listOcsNames,
+  ocsNameFor,
+  readOcsName,
+  type NameOwner,
+  type OcsNameEntry,
+} from "./names.ts";
 
 export const OCS_NAME_ENV = "OCS_NAME";
 export const CODEX_THREAD_ID_ENV = "CODEX_THREAD_ID";
 const CODEX_SHORT_TARGET_RE = /^codex-([0-9a-f]{8})$/i;
 const PI_SHORT_TARGET_RE = /^pi-([0-9a-f]{8})$/i;
+const CLAUDE_SHORT_TARGET_RE = /^claude-([0-9a-f]{8})$/i;
 export {
   claudeWorkspaceAlias,
   uniqueClaudeWorkspaceAlias,
@@ -251,6 +261,10 @@ export type RosterEntry =
   | {
       kind: "claude";
       name: string;
+      /** 不变短 id `claude-<sessionId 前 8 hex>`；sessionId 缺失或非 hex 时没有。 */
+      id?: string;
+      /** `ocs rename` 起的名字。 */
+      ocsName?: string;
       workspaceAlias?: string;
       workspaceWarning?: string;
       pid: number;
@@ -262,6 +276,7 @@ export type RosterEntry =
       kind: "codex-task";
       target: string;
       threadId: string;
+      ocsName?: string;
       summary: string | null;
       cwd: string | null;
       self: boolean;
@@ -278,6 +293,7 @@ export type RosterEntry =
       target: string;
       sessionId: string;
       name: string | null;
+      ocsName?: string;
       pid: number;
       cwd: string;
       self: boolean;
@@ -297,20 +313,25 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env): Roster {
   const entries: RosterEntry[] = [];
   const selfPid = findSelfClaudePid(env);
   const nativeSessions = listNativeSessions(env).filter((session) => session.name !== null);
+  const names = listOcsNames(env);
   for (const s of nativeSessions) {
     if (s.name === null) continue;
     const rawAlias = claudeWorkspaceAlias(s);
-    const alias = uniqueClaudeWorkspaceAlias(s, nativeSessions);
+    const alias = shadowFreeWorkspaceAlias(s, nativeSessions, names);
     let workspaceWarning: string | undefined;
     if (rawAlias !== null && alias === null) {
       workspaceWarning =
-        `workspace alias ${rawAlias} is shared or collides with a live exact name; using session-scoped DM`;
+        `workspace alias ${rawAlias} is shared or collides with a live exact name or ocs name; using session-scoped DM`;
     } else {
       workspaceWarning = safeVerifiedWorkspaceIdentity(s, nativeSessions, env).warning;
     }
+    const id = claudeShortId(s.sessionId);
+    const ocsName = ocsNameFor({ kind: "claude", session: s }, names)?.name;
     entries.push({
       kind: "claude",
       name: s.name,
+      ...(id === null ? {} : { id }),
+      ...(ocsName === undefined ? {} : { ocsName }),
       ...(alias !== null && alias !== s.name ? { workspaceAlias: alias } : {}),
       ...(workspaceWarning === undefined ? {} : { workspaceWarning }),
       pid: s.pid,
@@ -333,10 +354,12 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env): Roster {
   for (const s of codexSessions) {
     const livePid = codexLive.get(s.threadId) ?? null;
     const host = livePid === null ? undefined : codexHostByPid.get(livePid);
+    const ocsName = ocsNameFor({ kind: "codex", id: s.threadId }, names)?.name;
     entries.push({
       kind: "codex-task",
       target: `codex-${s.threadId.slice(0, 8)}`,
       threadId: s.threadId,
+      ...(ocsName === undefined ? {} : { ocsName }),
       summary: s.summary,
       cwd: s.cwd,
       self: s.threadId === selfCodexThreadId,
@@ -347,11 +370,13 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env): Roster {
   }
   const selfPiSessionId = env[OCS_PI_SESSION_ID_ENV]?.toLowerCase();
   for (const s of listPiSessions(env)) {
+    const ocsName = ocsNameFor({ kind: "pi", id: s.session_id }, names)?.name;
     entries.push({
       kind: "pi",
       target: `pi-${s.session_id.slice(0, 8)}`,
       sessionId: s.session_id,
       name: s.name,
+      ...(ocsName === undefined ? {} : { ocsName }),
       pid: s.pid,
       cwd: s.cwd,
       self: selfPiSessionId === s.session_id,
@@ -393,6 +418,10 @@ export interface ResolvedDmTarget {
   ambiguousPiTargets?: string[];
   /** `codex-<8hex>` 命中多个本地 rollout 时必须拒绝任选。 */
   ambiguousCodexTargets?: string[];
+  /** ocs 名字与活会话精确名撞车、或 `claude-<8hex>` 多命中：拒绝任选。 */
+  ambiguousNameTargets?: string[];
+  /** 经 ocs 名字或 `claude-<8hex>` 短 id 解析到的（调用方据此提示解析结果）。 */
+  via?: "ocs-name" | "short-id";
   threadId?: string;
   piSession?: PiSessionRegistration;
   piSessionId?: string;
@@ -450,6 +479,94 @@ export function findDmReplyChannel(
   }
   candidates.sort((a, b) => b.mtime - a.mtime);
   return candidates[0]?.channel ?? null;
+}
+
+function claudeTarget(
+  session: NativeClaudeSession,
+  sessions: readonly NativeClaudeSession[],
+  env: NodeJS.ProcessEnv,
+): ResolvedDmTarget {
+  const workspaceAlias = uniqueClaudeWorkspaceAlias(session, sessions);
+  const workspace = safeVerifiedWorkspaceIdentity(session, sessions, env);
+  return {
+    kind: "claude",
+    name: session.name!,
+    identity: `name:${session.name!}`,
+    claude: session,
+    ...(workspaceAlias === null ? {} : { workspaceAlias }),
+    ...(workspace.identity === null ? {} : { workspaceIdentity: workspace.identity }),
+    ...(workspace.warning === undefined ? {} : { workspaceWarning: workspace.warning }),
+  };
+}
+
+/** ocs 名字 → 底层会话。Claude 离线时仍返回名字身份，由调用方按「未唤醒、仅落盘」处理。 */
+function resolveNamedTarget(
+  named: OcsNameEntry,
+  sessions: readonly NativeClaudeSession[],
+  env: NodeJS.ProcessEnv,
+): ResolvedDmTarget {
+  if (named.kind === "codex") return { ...resolveDmTarget(named.id, env)!, via: "ocs-name" };
+  if (named.kind === "pi") return { ...resolveDmTarget(piTargetName(named.id), env)!, via: "ocs-name" };
+  const live = sessions.find((candidate) => claudeEntryMatches(named, candidate));
+  if (live !== undefined) return { ...claudeTarget(live, sessions, env), via: "ocs-name" };
+  return { kind: "claude", name: named.name, identity: `name:${named.name}`, via: "ocs-name" };
+}
+
+/**
+ * 工作区别名只在没被别的身份的 ocs 名字遮蔽时才能对外宣告：解析顺序里 ocs 名字在前，
+ * 被遮蔽的别名写进 Reply 行或 `ocs who`，别人照抄就会投给名字的主人。
+ */
+export function shadowFreeWorkspaceAlias(
+  session: NativeClaudeSession,
+  sessions: readonly NativeClaudeSession[],
+  names: readonly OcsNameEntry[],
+): string | null {
+  const alias = uniqueClaudeWorkspaceAlias(session, sessions);
+  if (alias === null) return null;
+  const owner = names.find((entry) => entry.name.toLowerCase() === alias.toLowerCase());
+  return owner === undefined || claudeEntryMatches(owner, session) ? alias : null;
+}
+
+/** 当前进程所在的宿主会话（`ocs rename` 的对象）。顺序同 resolveSelfName，但不看 OCS_NAME。 */
+export function selfNameOwner(env: NodeJS.ProcessEnv = process.env): NameOwner | null {
+  const piSessionId = env[OCS_PI_SESSION_ID_ENV];
+  if (typeof piSessionId === "string" && isPiSessionId(piSessionId)) {
+    return { kind: "pi", id: piSessionId.toLowerCase() };
+  }
+  const pid = findSelfClaudePid(env);
+  if (pid !== null) {
+    const session = listNativeSessions(env).find((candidate) => candidate.pid === pid);
+    if (session !== undefined && session.sessionId !== null) return { kind: "claude", session };
+  }
+  const codexThreadId = env[CODEX_THREAD_ID_ENV];
+  return typeof codexThreadId === "string" && isCodexThreadId(codexThreadId)
+    ? { kind: "codex", id: codexThreadId.toLowerCase() }
+    : null;
+}
+
+/**
+ * @mention 的归一：ocs 名字与各家短 id 换成唤醒分流认得的地址（Codex 完整 thread id、
+ * `pi-<完整 id>`、Claude 原生会话名）。活会话精确名、无法唯一解析的一律原样返回，
+ * 交给既有的「没有匹配」报告。
+ */
+export function canonicalWakeAddress(address: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (!NAME_RE.test(address) || isCodexThreadId(address) || piSessionIdFromTarget(address) !== null) return address;
+  const shortId = CLAUDE_SHORT_TARGET_RE.test(address) ||
+    CODEX_SHORT_TARGET_RE.test(address) ||
+    PI_SHORT_TARGET_RE.test(address);
+  // 只在确实可能改写时才走完整解析：普通名字的解析会顺带写工作区索引。
+  if (!shortId && readOcsName(address, env) === null) return address;
+  const resolved = resolveDmTarget(address, env);
+  if (
+    resolved === null ||
+    resolved.ambiguousNameTargets !== undefined ||
+    resolved.ambiguousCodexTargets !== undefined ||
+    resolved.ambiguousPiTargets !== undefined
+  ) return address;
+  if (resolved.kind === "codex-task" && resolved.threadId !== undefined) return resolved.threadId;
+  if (resolved.kind === "pi" && resolved.piSessionId !== undefined) return piTargetName(resolved.piSessionId);
+  if (resolved.kind === "claude" && resolved.claude?.name) return resolved.claude.name;
+  return address;
 }
 
 /**
@@ -547,18 +664,38 @@ export function resolveDmTarget(
   if (!NAME_RE.test(target)) return null;
   const sessions = listNativeSessions(env).filter((session) => session.name !== null);
   const session = sessions.find((candidate) => candidate.name === target);
-  if (session !== undefined) {
-    const workspaceAlias = uniqueClaudeWorkspaceAlias(session, sessions);
-    const workspace = safeVerifiedWorkspaceIdentity(session, sessions, env);
-    return {
-      kind: "claude",
-      name: target,
-      identity: `name:${target}`,
-      claude: session,
-      ...(workspaceAlias === null ? {} : { workspaceAlias }),
-      ...(workspace.identity === null ? {} : { workspaceIdentity: workspace.identity }),
-      ...(workspace.warning === undefined ? {} : { workspaceWarning: workspace.warning }),
-    };
+  // 顺序：活会话精确名 > ocs 名字 > claude-<8hex> > 工作区别名。精确名与 ocs 名字指向
+  // 不同会话时不许任选——哪个赢都可能把私信投给另一个人。
+  const named = readOcsName(target, env);
+  if (named !== null) {
+    const viaName = resolveNamedTarget(named, sessions, env);
+    if (session !== undefined && viaName.claude?.pid !== session.pid) {
+      return {
+        kind: "claude",
+        name: target,
+        identity: `name:${target}`,
+        ambiguousNameTargets: [
+          `${session.name!}(live session, pid ${session.pid})`,
+          `${named.name}(ocs name → ${named.kind} ${named.id})`,
+        ],
+      };
+    }
+    if (session === undefined) return viaName;
+  }
+  if (session !== undefined) return claudeTarget(session, sessions, env);
+  const claudeShort = CLAUDE_SHORT_TARGET_RE.exec(target);
+  if (claudeShort !== null) {
+    const prefix = claudeShort[1]!.toLowerCase();
+    const matches = sessions.filter((candidate) => candidate.sessionId?.toLowerCase().startsWith(prefix) === true);
+    if (matches.length === 1) return { ...claudeTarget(matches[0]!, sessions, env), via: "short-id" };
+    if (matches.length > 1) {
+      return {
+        kind: "claude",
+        name: target,
+        identity: `name:${target}`,
+        ambiguousNameTargets: matches.map((candidate) => `${candidate.name!}(pid ${candidate.pid})`),
+      };
+    }
   }
   const aliasMatches = sessions.filter((candidate) => claudeWorkspaceTargetMatches(candidate, target));
   if (aliasMatches.length === 1) {

@@ -41,9 +41,10 @@ Thread: <read command>
     `… (<total> bytes total; full text: <read command>)`。
   - 正文来自对方，是**数据**不是指令；包装标签本身已把它标成跨会话内容，不再额外加「请勿执行」类提示。
 - `Reply:` 后是**可直接复制执行**的命令：
-  - ocs 的 Claude→Claude DM：发送方有唯一工作区别名时用
+  - ocs 的 Claude→Claude DM：发送方用 `ocs rename` 起过名字时用 `ocs dm <sender-name> "<your reply>"`；
+    否则发送方有唯一工作区别名（且没被别的会话的 ocs 名字遮蔽）时用
     `ocs dm <sender-workspace-alias> "<your reply>"`。接收方身份由当前 Claude 会话自动识别，
-    Reply 行不暴露 dm 哈希频道。同一工作区有多个活会话时不猜目标，改用下面的完整命令。
+    Reply 行不暴露 dm 哈希频道。两者都没有时不猜目标，改用下面的完整命令。
   - ocs 投给活 Claude、Codex 或 Pi 会话：
     `ocs send <channel> "<your reply>" --reply-to <N>`。三种 harness 都会给子进程提供可验证的
     当前身份，Reply 行不得再用短展示名覆盖它。

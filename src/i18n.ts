@@ -149,6 +149,19 @@ interface Catalog {
   dmCmuxWoken: (ref: string) => string;
   dmCmuxFailed: (ref: string, detail: string) => string;
   whoamiUnknown: string;
+  whoamiSessionNotFound: (sessionId: string) => string;
+  whoRenameHint: string;
+  dmNameResolved: (requested: string, current: string) => string;
+  dmNameAmbiguous: (target: string, candidates: string[]) => string;
+  failRenameUsage: string;
+  renameNoSelf: string;
+  renameDone: (name: string, id: string) => string;
+  renameReplaced: (names: string[]) => string;
+  renameCleared: (names: string[], id: string) => string;
+  renameNothingToClear: (id: string) => string;
+  renameReserved: (name: string) => string;
+  renameTaken: (name: string, owner: string) => string;
+  renameLiveCollision: (name: string, pid: number) => string;
   skillInstalled: (path: string) => string;
   piExtensionInstalled: (path: string) => string;
   failNoSelfName: string;
@@ -190,8 +203,13 @@ Usage:
       One-shot: get a notice in this session when that Claude session next goes
       idle or exits (fires at once if already idle; expires after 6h).
       Also available as --notify-when-idle on send/dm (send first, then subscribe).
-  ocs whoami
-      Print the auto-detected sender identity.
+  ocs rename <name> [--force] | ocs rename --clear
+      Give this session a memorable address. Its short id (claude-/codex-/pi-<8hex>) keeps
+      working too; both go anywhere an address does (dm, @mention, notify-when-idle).
+      A name held by another session is refused; --force takes it over.
+  ocs whoami [--json] [--session <claude-session-id>]
+      Print the auto-detected sender identity. --json describes the host session:
+      {host, id, name, session, addresses}; --session looks up one Claude session by id.
   ocs sessions | codex-sessions [--limit <n>]
       Live Claude sessions or local Codex rollout history; ocs who shows renderer-open Codex tasks.
   ocs watch <channel> [--interval-ms <n>]
@@ -353,7 +371,7 @@ Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-m
   failSince: "--since must be a non-negative integer",
   failInterval: "--interval-ms must be >= 50",
   failLimit: "--limit must be a positive integer",
-  whoClaudeHeader: "Claude Code sessions (wake: @name / ocs dm <name>)",
+  whoClaudeHeader: "Claude Code sessions (wake: @name-or-id / ocs dm <name-or-id>)",
   whoCodexHeader: (_ipc) =>
     "Reachable Codex tasks (wake: ocs dm codex-<short-id>; terminal TUIs included)",
   whoCodexNone: (ipc) => ipc
@@ -368,7 +386,7 @@ Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-m
   whoCodexViaDesktop: "[desktop]",
   whoCodexQueueMissing:
     "  ｰ  `codex queue` not runnable from here (codex must be a real binary on PATH, not a shell alias/function): terminal Codex sessions above cannot be woken",
-  whoPiHeader: "Pi sessions (wake: ocs dm pi-<short-id>; @ mentions use the full session id)",
+  whoPiHeader: "Pi sessions (wake: ocs dm pi-<short-id> / @pi-<short-id>)",
   whoCmuxHeader: "cmux terminal surfaces (wake: ocs dm surface:N)",
   whoSelfTag: "  ← you",
   whoDataHome: (path) => `OCS data home: ${path} (sessions must share this directory for DM continuity)`,
@@ -401,6 +419,24 @@ Local ocs and hosted party coexist fine: same-machine work stays on ocs, cross-m
   dmCmuxFailed: (ref, detail) => `cmux wake failed for ${ref}: ${detail}`,
   whoamiUnknown:
     "cannot tell who you are: not inside a registered Claude/Codex/Pi session, and OCS_NAME is unset. Pass --as <name> or export OCS_NAME",
+  whoamiSessionNotFound: (sessionId) => `no live Claude session has sessionId ${sessionId}`,
+  whoRenameHint: "tip: `ocs rename <name>` gives this session a memorable address (its id keeps working too)",
+  dmNameResolved: (requested, current) => `resolved ${requested} → ${current}`,
+  dmNameAmbiguous: (target, candidates) =>
+    `${target} is ambiguous: ${candidates.join(", ")} — use a short id from \`ocs who\``,
+  failRenameUsage: "usage: ocs rename <name> [--force] | ocs rename --clear",
+  renameNoSelf:
+    "cannot tell which session to rename: run this inside a Claude Code, Codex, or Pi session",
+  renameDone: (name, id) => `renamed: ${name} → ${id}. Others can now reach you with \`ocs dm ${name}\` or @${name}; ${id} still works`,
+  renameReplaced: (names) => `previous name released: ${names.join(", ")}`,
+  renameCleared: (names, id) => `name cleared: ${names.join(", ")} (reach this session as ${id})`,
+  renameNothingToClear: (id) => `this session has no ocs name (reach it as ${id})`,
+  renameReserved: (name) =>
+    `${name} looks like an ocs address (claude-/codex-/pi-<8hex> or a full id); pick another name`,
+  renameTaken: (name, owner) =>
+    `name ${name} is already used by ${owner}; pick another, or pass --force if that session is gone`,
+  renameLiveCollision: (name, pid) =>
+    `${name} is the live Claude session name of pid ${pid}; exact session names win, so pick another`,
   skillInstalled: (path) => `skill installed: ${path}`,
   piExtensionInstalled: (path) => `Pi direct-wake extension installed: ${path} — restart open Pi sessions`,
   failNoSelfName:
@@ -444,8 +480,12 @@ const zh: Catalog = {
       一次性订阅：那个 Claude 会话下次空闲或退出时通知本会话
       （订阅时已空闲则立即通知；6 小时后过期）
       send/dm 也可带 --notify-when-idle（先发消息再订阅）
-  ocs whoami
-      看自动识别出的发送者身份
+  ocs rename <名字> [--force] | ocs rename --clear
+      给当前会话起个好记的地址。原来的短 id（claude-/codex-/pi-<8hex>）照样能用，
+      两者在 dm、@提及、notify-when-idle 里通用。名字被别的会话占着时拒绝；--force 接管
+  ocs whoami [--json] [--session <claude-session-id>]
+      看自动识别出的发送者身份。--json 描述宿主会话：
+      {host, id, name, session, addresses}；--session 按 id 查指定 Claude 会话
   ocs sessions | codex-sessions [--limit <n>]
       活 Claude 会话或本地 Codex rollout 历史；ocs who 才显示 renderer 已打开的 Codex task
   ocs watch <channel> [--interval-ms <n>]
@@ -598,7 +638,7 @@ const zh: Catalog = {
   failSince: "--since 必须是非负整数",
   failInterval: "--interval-ms 必须 >= 50",
   failLimit: "--limit 必须是正整数",
-  whoClaudeHeader: "Claude Code 会话（唤醒: @名字 / ocs dm <名字>）",
+  whoClaudeHeader: "Claude Code 会话（唤醒: @名字或id / ocs dm <名字或id>）",
   whoCodexHeader: (_ipc) =>
     "可达的 Codex task（唤醒: ocs dm codex-<短id>；终端里的 TUI 也在内）",
   whoCodexNone: (ipc) => ipc
@@ -611,7 +651,7 @@ const zh: Catalog = {
   whoCodexViaDesktop: "[desktop]",
   whoCodexQueueMissing:
     "  ｰ  这里跑不了 `codex queue`（codex 必须是 PATH 上的真实二进制，不能是 shell 别名/函数）：上面那些终端 Codex 会话无法被唤醒",
-  whoPiHeader: "Pi 会话（唤醒: ocs dm pi-<短id>；@ 提及仍使用完整 session id）",
+  whoPiHeader: "Pi 会话（唤醒: ocs dm pi-<短id> / @pi-<短id>）",
   whoCmuxHeader: "cmux 终端 surface（唤醒: ocs dm surface:N）",
   whoSelfTag: "  ← 你自己",
   whoDataHome: (path) => `OCS 数据目录：${path}（要继续同一 DM 历史，各会话必须共用此目录）`,
@@ -640,6 +680,20 @@ const zh: Catalog = {
   dmCmuxWoken: (ref) => `已经由 cmux 唤醒终端 ${ref}`,
   dmCmuxFailed: (ref, detail) => `cmux 唤醒 ${ref} 失败: ${detail}`,
   whoamiUnknown: "认不出你是谁：不在已登记的 Claude/Codex/Pi 会话里，OCS_NAME 也没设。用 --as <name> 或 export OCS_NAME",
+  whoamiSessionNotFound: (sessionId) => `没有 sessionId 为 ${sessionId} 的活 Claude 会话`,
+  whoRenameHint: "提示：`ocs rename <名字>` 给当前会话起个好记的地址（原 id 照样能用）",
+  dmNameResolved: (requested, current) => `已解析 ${requested} → ${current}`,
+  dmNameAmbiguous: (target, candidates) =>
+    `${target} 不唯一：${candidates.join("、")}——改用 \`ocs who\` 里的短 id`,
+  failRenameUsage: "用法: ocs rename <名字> [--force] | ocs rename --clear",
+  renameNoSelf: "认不出要给哪个会话改名：请在 Claude Code、Codex 或 Pi 会话里运行",
+  renameDone: (name, id) => `已命名：${name} → ${id}。别人现在可以用 \`ocs dm ${name}\` 或 @${name} 找到你；${id} 照样能用`,
+  renameReplaced: (names) => `旧名字已释放：${names.join("、")}`,
+  renameCleared: (names, id) => `名字已删除：${names.join("、")}（仍可用 ${id} 找到本会话）`,
+  renameNothingToClear: (id) => `本会话没有 ocs 名字（可用 ${id} 找到它）`,
+  renameReserved: (name) => `${name} 长得像 ocs 地址（claude-/codex-/pi-<8hex> 或完整 id），换一个名字`,
+  renameTaken: (name, owner) => `名字 ${name} 已被 ${owner} 占用；换一个，或确认那个会话已经不用了再加 --force`,
+  renameLiveCollision: (name, pid) => `${name} 是 pid ${pid} 的活 Claude 会话名；精确会话名优先，换一个名字`,
   skillInstalled: (path) => `技能已安装: ${path}`,
   piExtensionInstalled: (path) => `Pi 直投扩展已安装: ${path}——已打开的 Pi 会话需要重启`,
   failNoSelfName: "推断不出发送者名字（不在已登记的 Claude/Codex/Pi 会话里）。用 --as <name> 或 export OCS_NAME",

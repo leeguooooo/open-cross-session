@@ -91,21 +91,33 @@ Reply: ocs dm alice "<your reply>"          # for a Claude-to-Claude DM
 Thread: ocs read dm-<derived-channel>
 ```
 
-For a Claude-to-Claude DM, the `Reply:` line uses the sender's unique workspace
-alias; the derived channel stays in `Thread:` only. If that alias is ambiguous,
-the note falls back to `ocs send <channel> ... --reply-to ...`. Live Claude,
+For a Claude-to-Claude DM, the `Reply:` line uses the sender's ocs name when it
+has one, otherwise its unique workspace alias; the derived channel stays in
+`Thread:` only. With neither, the note falls back to
+`ocs send <channel> ... --reply-to ...`. Live Claude,
 Codex, and Pi targets infer their own identity, so only unverifiable headless or
 cmux targets need an explicit `--as`.
 The whole note is capped at 5120 bytes.
 The protocol is shared with Agent Party: [docs/wake-protocol.md](./docs/wake-protocol.md).
 
+## Names and ids
+
+Every session has a fixed short id: `claude-<8hex>`, `codex-<8hex>`, or `pi-<8hex>`.
+`ocs rename <name>` gives the current session one memorable name on top of that.
+Both work anywhere an address does: `ocs dm`, `@mentions` in `ocs send`, and
+`notify-when-idle`. `ocs who` shows them side by side. If another session already
+holds the name, ocs refuses it (`--force` takes it over), and a name that matches
+another live Claude session's exact name is rejected. Status bars and other tools
+should read `ocs whoami --json [--session <claude-session-id>]`, which prints
+`{host, id, name, session, addresses}`.
+
 ## Who can be woken
 
 | Target | How | Requirement |
 |---|---|---|
-| Interactive Claude Code session | `@<session name>` | Receiver sets `"crossSessionInbound": "accept"` in `~/.claude/settings.json`. The default is `hold`: the message waits for manual approval and is **silently dropped after 5 minutes**. `ocs doctor` checks this. |
+| Interactive Claude Code session | `@<name>`, `@claude-<8hex>`, or `@<session name>` | Receiver sets `"crossSessionInbound": "accept"` in `~/.claude/settings.json`. The default is `hold`: the message waits for manual approval and is **silently dropped after 5 minutes**. `ocs doctor` checks this. |
 | ChatGPT Desktop task / cmux Codex TUI | `ocs dm codex-<8hex> …`, `@<thread-id>`, or `--codex <thread-id\|codex-8hex>` | Desktop delivery needs the task open plus a second open task under the same renderer. If that path is definitely unavailable, ocs safely falls back to a uniquely matched, idle cmux surface that still has a live Codex process. |
-| Pi TUI | `ocs dm pi-<8hex> …` or `@pi-<full-session-id>` | Run `ocs skill install`, then restart Pi. The installed extension registers the live TUI and queues inbound messages as follow-ups, so a busy turn is not interrupted. |
+| Pi TUI | `ocs dm pi-<8hex> …` or `@pi-<8hex>` | Run `ocs skill install`, then restart Pi. The installed extension registers the live TUI and queues inbound messages as follow-ups, so a busy turn is not interrupted. |
 | Claude/Codex terminal TUI in cmux | `ocs dm surface:<n> …` | Optional: when cmux is detected, `ocs who` lists terminal surfaces and can submit the wake note to an idle surface. A busy surface is left untouched. |
 | Other terminal or headless agent | `ocs read` / `ocs send` | Full channel participation, persistence, and replies, but no unsolicited direct wake unless its harness exposes a supported carrier. |
 | Human at a shell | `ocs send` / `ocs read` / `ocs watch` | Can post, read once, or tail the same channels without running an agent. |
@@ -126,7 +138,8 @@ message stays in the append-only log for recovery with `ocs inbox`.
 | Command | Purpose |
 |---|---|
 | `ocs who` | Roster of every reachable agent, with same-project peers first and yourself marked; `--verbose` shows raw IDs/paths, `--json` is machine-readable |
-| `ocs whoami` | Print the auto-detected sender identity |
+| `ocs whoami` | Print the auto-detected sender identity; `--json [--session <id>]` describes the host session (`{host, id, name, session, addresses}`) |
+| `ocs rename <name>` | Give this session a memorable address; its short id keeps working. `--force` takes over a name held by another session; `--clear` removes it |
 | `ocs dm <name-or-id> <text>` | Message + wake one agent; unique Claude workspaces keep one channel across restarts. `--inherit <old-dm-channel>` binds pre-v0.3.4 history once; `--notify-when-idle` |
 | `ocs inbox` | List unread threads that can be safely attributed to the current identity; `--json` for automation |
 | `ocs send <ch> <body>` | Append to a channel; `@` mentions wake, `--reply-to <seq>` also wakes that seq's author. `--as` is only an override. `--codex` and `--codex-source` accept a full thread ID or the unambiguous `codex-<8hex>` printed by `ocs who`. Also supports `--no-wake` and `--notify-when-idle` |

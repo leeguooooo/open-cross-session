@@ -511,3 +511,72 @@ describe("notify-when-idle（#5）端到端：真脱离终端的 watcher", () =>
     }
   }, T);
 });
+
+describe("ocs rename：名字和 id 都能找到会话", () => {
+  test("rename → whoami --json → 按名字 dm / @ → Reply 行带自己的名字 → 撞车与接管", async () => {
+    const f = fixture();
+    try {
+      const { setOcsName } = await import("../src/names.ts");
+      const renamed = await run(f, ["rename", "boss"]);
+      expect({ code: renamed.code, stderr: renamed.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(renamed.stdout).toContain("renamed: boss");
+
+      const me = await run(f, ["whoami", "--json"]);
+      expect(JSON.parse(me.stdout)).toEqual({
+        host: "claude",
+        id: null,
+        name: "boss",
+        session: "tester",
+        addresses: ["boss", "tester"],
+      });
+      const peerInfo = await run(f, ["whoami", "--json", "--session", "peer-sess"]);
+      expect(JSON.parse(peerInfo.stdout)).toMatchObject({ host: "claude", name: null, session: "worker-a" });
+      expect((await run(f, ["whoami", "--json", "--session", "nope"])).code).toBe(1);
+
+      // 对端也有名字（对端进程不跑 CLI，直接落名字文件）。
+      const peerSession = {
+        pid: 1,
+        sessionId: "peer-sess",
+        name: "worker-a",
+        status: "busy",
+        statusUpdatedAt: null,
+        kind: null,
+        messagingSocketPath: "/unused",
+        procStart: null,
+      };
+      expect(setOcsName("helper", { kind: "claude", session: peerSession }, { env: f.env }).ok).toBe(true);
+
+      const dm = await run(f, ["dm", "helper", "hello by name"]);
+      expect(dm.code).toBe(0);
+      expect(dm.stdout).toContain("resolved helper → worker-a");
+      const dmNote = content(await f.nextFrame());
+      expect(dmNote).toContain("hello by name");
+      expect(dmNote).toContain('Reply: ocs dm boss "<your reply>"');
+
+      const mention = await run(f, ["send", "chat", "@helper ping by mention"]);
+      expect(mention.code).toBe(0);
+      expect(content(await f.nextFrame())).toContain("ping by mention");
+
+      const who = await run(f, ["who"]);
+      expect(who.stdout).toContain("  helper  busy");
+      expect(who.stdout).toContain("  boss  busy");
+      expect(who.stdout).not.toContain("ocs rename <name>");
+
+      const collision = await run(f, ["rename", "worker-a"]);
+      expect(collision.code).toBe(1);
+      expect(collision.stderr).toContain("live Claude session name");
+      const taken = await run(f, ["rename", "helper"]);
+      expect(taken.code).toBe(1);
+      expect(taken.stderr).toContain("already used by claude");
+      const forced = await run(f, ["rename", "helper", "--force"]);
+      expect(forced.code).toBe(0);
+      expect(forced.stdout).toContain("previous name released: boss");
+
+      const cleared = await run(f, ["rename", "--clear"]);
+      expect(cleared.stdout).toContain("name cleared: helper");
+      expect((await run(f, ["rename"])).code).toBe(1);
+    } finally {
+      f.close();
+    }
+  }, T);
+});

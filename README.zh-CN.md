@@ -87,18 +87,26 @@ ocs send ──▶ 追加频道日志 ──▶ 按目标选唤醒载体
 线程：ocs read dm-<派生频道>
 ```
 
-Claude→Claude DM 的「回复」行优先使用发送方的唯一工作区别名，派生出的长频道只留在「线程」行。
-别名不唯一时退回 `ocs send <频道> ... --reply-to ...`。活 Claude、Codex、Pi 会自动识别自身，
+Claude→Claude DM 的「回复」行优先使用发送方用 `ocs rename` 起的名字，其次是唯一工作区别名，
+派生出的长频道只留在「线程」行。两者都没有时退回 `ocs send <频道> ... --reply-to ...`。活 Claude、Codex、Pi 会自动识别自身，
 只有无法验证身份的 headless/cmux 目标才保留 `--as`。整条 note 不超过 5120 字节。
 协议与 Agent Party 共用：[docs/wake-protocol.md](./docs/wake-protocol.md)。
+
+## 名字和 id
+
+每个会话都有不变的短 id：`claude-<8hex>`、`codex-<8hex>` 或 `pi-<8hex>`。`ocs rename <名字>`
+再给当前会话起一个好记的名字。两者在 `ocs dm`、`ocs send` 的 `@提及`、`notify-when-idle` 里通用，
+`ocs who` 会并排显示。名字被别的会话占着时拒绝（`--force` 接管）；和另一个活 Claude 会话的
+精确名撞车也会拒绝。状态栏等工具读 `ocs whoami --json [--session <claude-session-id>]`，
+输出 `{host, id, name, session, addresses}`。
 
 ## 能唤醒谁
 
 | 目标 | 用法 | 前提 |
 |---|---|---|
-| 交互式 Claude Code 会话 | `@<会话名>` | 接收端在 `~/.claude/settings.json` 设 `"crossSessionInbound": "accept"`。默认值 `hold`：消息进待审队列，**5 分钟没人处理就被静默丢弃**。`ocs doctor` 会查这一项。 |
+| 交互式 Claude Code 会话 | `@<名字>`、`@claude-<8hex>` 或 `@<会话名>` | 接收端在 `~/.claude/settings.json` 设 `"crossSessionInbound": "accept"`。默认值 `hold`：消息进待审队列，**5 分钟没人处理就被静默丢弃**。`ocs doctor` 会查这一项。 |
 | ChatGPT Desktop 任务 / cmux Codex TUI | `ocs dm codex-<8hex> …`、`@<thread-id>` 或 `--codex <thread-id\|codex-8hex>` | Desktop 直投要求任务已打开，且同一 renderer 下还有第二个打开的任务作 source。该路径明确不可用时，ocs 会安全降级到唯一匹配、仍有活 Codex 进程且空闲的 cmux surface。 |
-| Pi TUI | `ocs dm pi-<8hex> …` 或 `@pi-<完整session-id>` | 先跑 `ocs skill install`，再重启 Pi。扩展会登记活着的 TUI；消息在 Pi 忙碌时排到当前任务结束后，不会打断这一轮。 |
+| Pi TUI | `ocs dm pi-<8hex> …` 或 `@pi-<8hex>` | 先跑 `ocs skill install`，再重启 Pi。扩展会登记活着的 TUI；消息在 Pi 忙碌时排到当前任务结束后，不会打断这一轮。 |
 | cmux 里的 Claude/Codex TUI | `ocs dm surface:<n> …` | 可选能力。检测到 cmux 后，`ocs who` 会列出终端 surface，并可把唤醒 note 提交给空闲 surface；surface 忙碌时不会打扰。 |
 | 其他终端或 headless agent | `ocs read` / `ocs send` | 可以读写频道、保留历史和回复；如果所在 harness 没有受支持的载体，就不能被主动直投唤醒。 |
 | shell 前的人 | `ocs send` / `ocs read` / `ocs watch` | 不运行 agent 也能发消息、读取一次或持续旁观同一频道。 |
@@ -116,7 +124,8 @@ fail closed，IPC 结果未知时绝不降级。没有安全载体时，消息�
 | 命令 | 作用 |
 |---|---|
 | `ocs who` | 全机花名册，当前项目优先并标出你自己；`--verbose` 显示底层 ID/路径，`--json` 供程序读取 |
-| `ocs whoami` | 看自动识别出的发送者身份 |
+| `ocs whoami` | 看自动识别出的发送者身份；`--json [--session <id>]` 描述宿主会话（`{host, id, name, session, addresses}`） |
+| `ocs rename <名字>` | 给当前会话起个好记的地址，短 id 照样能用。`--force` 接管别的会话占着的名字；`--clear` 删掉 |
 | `ocs dm <名字或id> <内容>` | 直发并唤醒一个 agent；唯一 Claude 工作区重启后继续使用同一频道。`--inherit <旧dm频道>` 一次性绑定 v0.3.4 前的历史；`--notify-when-idle` |
 | `ocs inbox` | 只列能安全归属给当前身份的未读线程；`--json` 供自动化使用 |
 | `ocs send <ch> <body>` | 追加消息，`@` 触发唤醒，`--reply-to <seq>` 同时唤醒那条的作者；`--as` 只用于覆盖自动身份。`--codex` 与 `--codex-source` 接受完整 thread ID，也接受 `ocs who` 给出的唯一 `codex-<8hex>` 短地址。另支持 `--no-wake`、`--notify-when-idle` |
