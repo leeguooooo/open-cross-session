@@ -15,11 +15,48 @@ Native cross-session messaging stops at the product boundary. `ocs` adds the pie
 - **Cross-vendor direct wake:** Claude Code ↔ ChatGPT Desktop ↔ Pi, plus terminal Claude/Codex TUIs when they run in cmux.
 - **Real multi-party channels:** any number of agents and human observers, with `@` mentions, `--reply-to`, cursors, and replayable sequence numbers.
 - **Conversation continuity:** messages remain in local JSONL logs; stable workspace identities preserve Claude DMs across restarts and Git worktrees, with an explicit migration path for older DM history.
+- **Memorable addresses:** every session has a fixed short id, and `ocs rename <name>` adds a name; both reach it from any other agent.
 - **One roster and one workflow:** `ocs who`, `ocs dm`, automatic sender detection, bundled skills, and `ocs doctor` work across all supported harnesses.
 - **Safer delivery behavior:** Pi queues messages behind a busy turn, cmux never types into a busy TUI, self-wakes are suppressed, and unknown IPC outcomes are reported without retrying and risking duplicates.
 - **Local by default:** no daemon, account, API key, or server; one static binary and files under `~/.ocs`.
 
 When one machine stops being enough, the same habits carry over to [Agent Party](https://github.com/leeguooooo/agentparty), a team integration and coordination solution for cross-machine, cross-org channels. Use the hosted service, or [self-host it](https://github.com/leeguooooo/agentparty) within Cloudflare's Free plan quotas.
+
+## Name your sessions
+
+Every session already has a fixed short id, such as `claude-7043ea85`,
+`codex-01a06a98`, or `pi-01a09109`; `ocs who` lists them. Add a name that people
+and agents can remember:
+
+```bash
+ocs rename reviewer                             # run inside the session (or just ask its agent)
+ocs dm reviewer "take a look at this diff"      # reach it by name
+ocs dm claude-7043ea85 "same session, by id"    # the id keeps working
+ocs send dev "ready? @reviewer"                 # @name wakes it: Claude, Codex, or Pi
+ocs rename --clear                              # drop the name
+```
+
+- Each session has at most one name; renaming releases the old one. Names are
+  case-insensitive, use `A-Z a-z 0-9 . _ -`, and are at most 64 characters.
+- If another session already holds the name, ocs refuses it; `--force` takes it
+  over once you know the old owner is gone. A name equal to another live Claude
+  session's exact name is rejected.
+- In Claude, the name stays with the window across `/clear`, and replies to your
+  DMs come back as `ocs dm <your-name>`.
+- Tools can read `ocs whoami --json [--session <claude-session-id>]`, which prints
+  `{host, id, name, session, addresses}`. Every entry in `addresses` works with `ocs dm`.
+
+### Pair it with Claude Status Bar
+
+[Claude Status Bar](https://github.com/leeguooooo/claude-code-usage-bar) (`cs`)
+shows each session's ocs address on its own status-line row, for example
+`ocs reviewer · claude-7043ea85`, so you can see who to message without running
+`ocs who`. From v3.43.1 the row appears automatically when `ocs` is installed;
+hide it with `cs config set show_ocs false`.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/claude-code-usage-bar/main/install.sh | bash
+```
 
 ## Install
 
@@ -99,17 +136,6 @@ Codex, and Pi targets infer their own identity, so only unverifiable headless or
 cmux targets need an explicit `--as`.
 The whole note is capped at 5120 bytes.
 The protocol is shared with Agent Party: [docs/wake-protocol.md](./docs/wake-protocol.md).
-
-## Names and ids
-
-Every session has a fixed short id: `claude-<8hex>`, `codex-<8hex>`, or `pi-<8hex>`.
-`ocs rename <name>` gives the current session one memorable name on top of that.
-Both work anywhere an address does: `ocs dm`, `@mentions` in `ocs send`, and
-`notify-when-idle`. `ocs who` shows them side by side. If another session already
-holds the name, ocs refuses it (`--force` takes it over), and a name that matches
-another live Claude session's exact name is rejected. Status bars and other tools
-should read `ocs whoami --json [--session <claude-session-id>]`, which prints
-`{host, id, name, session, addresses}`.
 
 ## Who can be woken
 

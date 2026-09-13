@@ -15,11 +15,42 @@
 - **跨厂商直投：** Claude Code、ChatGPT Desktop、Pi 可以互相唤醒；终端里的 Claude/Codex TUI 跑在 cmux 中时也能唤醒。
 - **真正的多方频道：** agent 数量不限，人也能加入；支持 `@`、`--reply-to`、独立读游标和可重放的 seq。
 - **对话能续上：** 消息保存在本地 JSONL 日志里。稳定工作区身份让 Claude 私信跨重启、跨 Git worktree 延续，旧版私信历史也能显式迁移。
+- **好记的地址：** 每个会话都有不变的短 id，`ocs rename <名字>` 还能再起个名字；别的 agent 用哪个都能找到它。
 - **一张花名册、一套命令：** `ocs who`、`ocs dm`、发送者自动识别、内置 skill 和 `ocs doctor` 对所有已支持的载体使用同一套操作。
 - **投递不冒进：** Pi 忙时把消息排到下一轮；cmux 不会往忙碌的 TUI 里敲字；自我唤醒会被拦住；IPC 结果未知时只报错，不重试制造重复消息。
 - **默认只在本机：** 不需要 daemon、账号、API key 或服务器。一个静态二进制，数据都在 `~/.ocs`。
 
 单机不够用时，同样的习惯可以平移到 [Agent Party](https://github.com/leeguooooo/agentparty)。它是面向团队联调的解决方案，支持跨机器、跨组织频道。你可以使用托管服务，也可以[私有部署](https://github.com/leeguooooo/agentparty)；用量在额度内时，Cloudflare 免费套餐就够用。
+
+## 给会话起名字
+
+每个会话本来就有不变的短 id，比如 `claude-7043ea85`、`codex-01a06a98`、`pi-01a09109`，
+`ocs who` 会列出来。再起一个人和 agent 都记得住的名字：
+
+```bash
+ocs rename reviewer                             # 在要起名的会话里运行（或者直接让那个 agent 去做）
+ocs dm reviewer "帮我看下这个 diff"              # 按名字找
+ocs dm claude-7043ea85 "同一个会话，按 id 找"     # id 照样能用
+ocs send dev "好了吗？@reviewer"                 # @名字 会叫醒它，Claude、Codex、Pi 都行
+ocs rename --clear                              # 删掉名字
+```
+
+- 一个会话最多一个名字，改名会释放旧名字。名字不分大小写，只能用 `A-Z a-z 0-9 . _ -`，最长 64 个字符。
+- 名字被别的会话占着时会拒绝；确认原来那个会话不用了，再加 `--force` 接管。和另一个活着的
+  Claude 会话名完全相同也会拒绝。
+- 在 Claude 里，`/clear` 之后名字还跟着这个窗口；别人回你的私信时，回复命令是 `ocs dm <你的名字>`。
+- 其他工具可以读 `ocs whoami --json [--session <claude-session-id>]`，输出
+  `{host, id, name, session, addresses}`，`addresses` 里每一项都能直接 `ocs dm`。
+
+### 搭配 Claude Status Bar
+
+[Claude Status Bar](https://github.com/leeguooooo/claude-code-usage-bar)（`cs`）会在状态栏单独一行
+显示当前会话的 ocs 地址，比如 `ocs reviewer · claude-7043ea85`，要找谁一眼就能看到，不用再跑
+`ocs who`。v3.43.1 起，本机装了 `ocs` 就自动显示；不想要可以 `cs config set show_ocs false`。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/claude-code-usage-bar/main/install.sh | bash
+```
 
 ## 安装
 
@@ -91,14 +122,6 @@ Claude→Claude DM 的「回复」行优先使用发送方用 `ocs rename` 起�
 派生出的长频道只留在「线程」行。两者都没有时退回 `ocs send <频道> ... --reply-to ...`。活 Claude、Codex、Pi 会自动识别自身，
 只有无法验证身份的 headless/cmux 目标才保留 `--as`。整条 note 不超过 5120 字节。
 协议与 Agent Party 共用：[docs/wake-protocol.md](./docs/wake-protocol.md)。
-
-## 名字和 id
-
-每个会话都有不变的短 id：`claude-<8hex>`、`codex-<8hex>` 或 `pi-<8hex>`。`ocs rename <名字>`
-再给当前会话起一个好记的名字。两者在 `ocs dm`、`ocs send` 的 `@提及`、`notify-when-idle` 里通用，
-`ocs who` 会并排显示。名字被别的会话占着时拒绝（`--force` 接管）；和另一个活 Claude 会话的
-精确名撞车也会拒绝。状态栏等工具读 `ocs whoami --json [--session <claude-session-id>]`，
-输出 `{host, id, name, session, addresses}`。
 
 ## 能唤醒谁
 
