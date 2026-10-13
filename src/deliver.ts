@@ -28,6 +28,11 @@ export interface DeliverySink {
   log(line: string): void;
   /** 已落盘但唤醒失败 / 结果未知。调用方据此设退出码或回传 outcome。 */
   fail(outcome: StoredDeliveryFailure): void;
+  /**
+   * 已落盘、没失败、但也没唤醒：目标不在线只停靠（parked），或 Codex 回合中并入积压（deferred）。
+   * 退出码不变（0）；只给 `send/dm --json` 区分用，别的 sink 可以不实现。
+   */
+  pending?(state: "parked" | "deferred"): void;
 }
 
 /** 守护进程用：把阶梯输出收集起来，最后给出一个总体结果（unknown > failed > ok）。 */
@@ -148,6 +153,7 @@ export async function deliverToCodexTask(
     });
     if (deferred.deferred) {
       sink.log(M.codexWakeDeferred(targetThreadId, deferred.pending));
+      sink.pending?.("deferred");
       return true;
     }
   }
@@ -378,6 +384,7 @@ export async function deliverDm(
           ? (input.firstMessage ? M.dmParkedNew(target, channel) : M.dmParked(target, channel))
           : M.dmParkedStable(target, channel),
       );
+      sink.pending?.("parked");
       return null;
     }
     const claudeInput: WakeInput = {
@@ -407,6 +414,7 @@ export async function deliverDm(
   if (resolved.kind === "pi" && resolved.piSessionId !== undefined) {
     if (resolved.piSession === undefined) {
       sink.log(M.dmPiParked(target, channel));
+      sink.pending?.("parked");
       return null;
     }
     const result = await wakePiSession(

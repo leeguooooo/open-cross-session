@@ -219,15 +219,16 @@ Usage:
   ocs who [--verbose | --json]
       Roster of every reachable agent: Claude sessions, Codex tasks, Pi sessions, terminals,
       plus pending idle notifications. Same-project peers come first; --verbose shows raw IDs/paths.
-  ocs dm <name-or-id> <text> [--as <name>] [--inherit <old-dm-channel>] [--notify-when-idle]
+  ocs dm <name-or-id> <text> [--as <name>] [--inherit <old-dm-channel>] [--notify-when-idle] [--json]
       Message + wake one agent. Channel is auto-derived; nothing to set up.
       --inherit binds one pre-v0.3.4 DM history channel; both Claude workspaces must be live and unique.
   ocs inbox [--as <name> | --session <claude-session-id>] [--json]
       List unread threads attributable to this identity; reading still uses the existing ocs read command.
       --session resolves one Claude session by id (for status bars outside Claude's process tree).
-  ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake]
+  ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake] [--json]
            [--notify-when-idle] [--codex <thread-id|codex-8hex>]
            [--codex-source <thread-id|codex-8hex>]
+      --json (send/dm): one JSON line {v, stored, channel, seq, wake, exit, lines}; same exit codes.
       Append to a channel. @<session-name> wakes a live Claude session;
       @pi-<session-id> wakes Pi; @<thread-id> or --codex targets ChatGPT Desktop.
       --reply-to <seq> also wakes the author of that seq.
@@ -547,15 +548,16 @@ const zh: Catalog = {
   ocs who [--verbose | --json]
       全机 agent 花名册：Claude 会话、Codex 任务、Pi 会话、终端，都在一张表里，
       外加待触发的空闲通知；当前项目优先，--verbose 显示底层 ID/路径
-  ocs dm <名字或id> <内容> [--as <name>] [--inherit <旧dm频道>] [--notify-when-idle]
+  ocs dm <名字或id> <内容> [--as <name>] [--inherit <旧dm频道>] [--notify-when-idle] [--json]
       给一个 agent 发消息并唤醒；频道自动派生，什么都不用建
       --inherit 一次性绑定 v0.3.4 之前的 DM 历史；双方 Claude 工作区必须在线且唯一
   ocs inbox [--as <name> | --session <claude-session-id>] [--json]
       列出能可靠归属给当前身份的未读线程；读取仍复用现有 ocs read 命令
       --session 按 id 解析指定 Claude 会话（给不在 Claude 进程树里的状态栏用）
-  ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake]
+  ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake] [--json]
            [--notify-when-idle] [--codex <thread-id|codex-8hex>]
            [--codex-source <thread-id|codex-8hex>]
+      --json（send/dm）：只输出一行 JSON {v, stored, channel, seq, wake, exit, lines}，退出码不变
       往频道追加消息；@<会话名> 唤醒活 Claude 会话，@pi-<session-id>
       唤醒 Pi；@<thread-id> 或 --codex 投给 ChatGPT Desktop 任务
       --reply-to <seq> 同时唤醒那条消息的作者

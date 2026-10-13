@@ -4,9 +4,10 @@
 // 命令面沿用 party CLI 的使用习惯（ocs 从 AgentParty 孵化；AgentParty 已停止维护）。
 // 输出全部走 i18n 目录（英文 canonical，OCS_LANG/locale 选 zh）。
 
-import { chmodSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, statSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { formatWithOptions } from "node:util";
 import { listNativeSessions, type NativeClaudeSession } from "./claude-inject.ts";
 import { enableCrossSessionInbound, readCrossSessionInbound } from "./claude-settings.ts";
 import {
@@ -151,11 +152,11 @@ const NO_ARGS: CommandSpec = { value: [], bool: [], minPos: 0, maxPos: 0 };
 const COMMAND_SPECS: Record<string, CommandSpec> = {
   send: {
     value: ["as", "reply-to", "codex", "codex-source"],
-    bool: ["no-wake", "notify-when-idle"],
+    bool: ["no-wake", "notify-when-idle", "json"],
     minPos: 2,
     maxPos: null,
   },
-  dm: { value: ["as", "inherit"], bool: ["notify-when-idle"], minPos: 2, maxPos: null },
+  dm: { value: ["as", "inherit"], bool: ["notify-when-idle", "json"], minPos: 2, maxPos: null },
   inbox: { value: ["as", "session"], bool: ["json"], minPos: 0, maxPos: 0 },
   read: { value: ["as", "since"], bool: ["json", "peek", "include-self"], minPos: 1, maxPos: 1 },
   "notify-when-idle": { value: [], bool: [], minPos: 1, maxPos: 1 },
@@ -273,8 +274,71 @@ function parseArgs(argv: string[], spec: CommandSpec): Parsed {
 }
 
 function fail(message: string): never {
+  if (jsonRun !== null) {
+    // 落盘后不会走到 fail；万一走到，也只能报 unknown，不能让调用方以为没落盘而重发。
+    const exit = jsonRun.stored === undefined ? 1 : 3;
+    emitJsonResult(exit, message);
+    process.exit(exit);
+  }
   console.error(`ocs: ${message}`);
   process.exit(1);
+}
+
+/**
+ * `send/dm --json`：stdout 只有最后一行 JSON（v1），人读行收进 `lines`。退出码与文本模式一致：
+ * 1 = 没落盘，2 = 已落盘但唤醒失败，3 = 已落盘、唤醒结果未知。2/3 都不许重发。
+ * `wake: "accepted"` 只表示没报告失败（含积压 / steer），不证明已读（铁律 4）。
+ */
+type JsonWake = "accepted" | "deferred" | "parked" | "failed" | "unknown" | "skipped" | "none";
+interface JsonRun {
+  command: "send" | "dm";
+  lines: string[];
+  stored?: { channel: string; seq: number };
+  wake?: "skipped" | "none";
+  pending: Set<"parked" | "deferred">;
+}
+let jsonRun: JsonRun | null = null;
+
+function startJsonRun(command: "send" | "dm"): void {
+  const run: JsonRun = { command, lines: [], pending: new Set() };
+  jsonRun = run;
+  console.log = (...args: unknown[]) => {
+    run.lines.push(formatWithOptions({ colors: false }, ...args));
+  };
+}
+
+function markStored(channel: string, seq: number): void {
+  if (jsonRun !== null) jsonRun.stored = { channel, seq };
+}
+
+/** 本次没有任何可唤醒目标、也不算失败（普通频道不点名、只 @ 到自己）。 */
+function markNoWakeTarget(): void {
+  if (jsonRun !== null && jsonRun.wake === undefined) jsonRun.wake = "none";
+}
+
+function emitJsonResult(exit: number, error?: string): void {
+  const run = jsonRun!;
+  let wake: JsonWake | undefined;
+  if (run.stored !== undefined) {
+    // 多目标时取最差：unknown > failed > parked > deferred > accepted。
+    wake = exit === 3 ? "unknown"
+      : exit === 2 ? "failed"
+      : run.pending.has("parked") ? "parked"
+      : run.pending.has("deferred") ? "deferred"
+      : run.wake ?? "accepted";
+  }
+  const out = {
+    v: 1,
+    command: run.command,
+    stored: run.stored !== undefined,
+    ...(run.stored ?? {}),
+    ...(wake === undefined ? {} : { wake }),
+    ...(error === undefined ? {} : { error }),
+    exit,
+    lines: run.lines,
+  };
+  // 同步写：fail() 紧接着 process.exit，异步管道写可能被截断。
+  writeSync(1, `${JSON.stringify(out)}\n`);
 }
 
 /**
@@ -287,7 +351,11 @@ function markStoredDeliveryFailure(outcome: StoredDeliveryFailure): void {
   process.exitCode = Math.max(Number(process.exitCode ?? 0), code);
 }
 
-const CLI_SINK: DeliverySink = { log: (line) => console.log(line), fail: markStoredDeliveryFailure };
+const CLI_SINK: DeliverySink = {
+  log: (line) => console.log(line),
+  fail: markStoredDeliveryFailure,
+  pending: (state) => jsonRun?.pending.add(state),
+};
 
 /** Resolve the full UUID or the exact short address printed by `ocs who`. */
 function resolveCodexFlagAddress(flag: "codex" | "codex-source", value: string): string {
@@ -403,8 +471,12 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     ...(replyToSeq !== undefined ? { reply_to: replyToSeq } : {}),
   });
   console.log(M.stored(channel, message.seq));
+  markStored(channel, message.seq);
 
-  if (parsed.flags.has("no-wake")) return;
+  if (parsed.flags.has("no-wake")) {
+    if (jsonRun !== null) jsonRun.wake = "skipped";
+    return;
+  }
 
   // --reply-to <seq> 隐含唤醒那条消息的作者：唤醒 note 里的 Reply: 行就是这么写的，
   // 复制执行必须真的把回复送回发送方，而不是要求再手加一个 @。
@@ -489,6 +561,7 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     const dm = channel.startsWith("dm-");
     console.log(M.sendNoWakeTarget(dm));
     if (dm) markStoredDeliveryFailure("failed");
+    else markNoWakeTarget();
   }
   if (wakeNames.length === 0) {
     if (idleSubscriber !== null) subscribeIdle(idleSubscriber, []);
@@ -509,6 +582,7 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     const hint = selection.excludedSelf.length > 0 ? M.wakeSelfSkipped : "";
     console.log(`${M.wakeNoMatch(wakeNames.join(" @"))}${hint}`);
     if (selection.unmatchedNames.length > 0) markStoredDeliveryFailure("failed");
+    else if (codexTargets.length === 0 && piTargets.length === 0 && hermesTargets.length === 0) markNoWakeTarget();
     if (idleSubscriber !== null) subscribeIdle(idleSubscriber, []);
     return;
   }
@@ -568,7 +642,7 @@ async function cmdDm(parsed: Parsed): Promise<void> {
   const from = senderName(parsed);
   // `<地址>@<对端>`：NAME_RE 里没有 '@'，本机地址不可能长这样，分流无歧义。
   if (target.includes("@")) {
-    for (const flag of ["notify-when-idle", "inherit"]) {
+    for (const flag of ["notify-when-idle", "inherit", "json"]) {
       if (parsed.flags.has(flag)) fail(L.dmFlagUnsupported(flag));
     }
     await lanDm(lanContext(parsed), target, bodyParts.join(" "), lanDmSender(parsed, from));
@@ -681,6 +755,7 @@ async function cmdDm(parsed: Parsed): Promise<void> {
     fail(M.dmConversationFailed(error instanceof Error ? error.message : String(error)));
   }
   const { channel, message } = appended;
+  markStored(channel, message.seq);
   try {
     saveInboxCursor(
       channel,
@@ -1522,11 +1597,26 @@ async function main(): Promise<void> {
   if (command !== undefined && spec === undefined) {
     fail(`${M.unknownCommand(command)}\n\n${M.help}`);
   }
+  // 参数错误也要走 JSON：看到 --json 就先接管 stdout，再解析。
+  if ((command === "send" || command === "dm") && rest.includes("--json")) startJsonRun(command);
   const parsed = parseArgs(rest, spec ?? NO_ARGS);
   // 回执 helper 是本 CLI 的内部子命令：只有从这里进来的进程才知道怎么把自己再跑一遍。
   setWakeHelperCommand(selfCommand());
   setCodexWakeWatcherCommand(selfCommand());
   maybeUpdateNotice(OCS_VERSION, command, selfCommand());
+  if (jsonRun !== null) {
+    try {
+      await (command === "send" ? cmdSend(parsed) : cmdDm(parsed));
+    } catch (error) {
+      // 落盘后的意外异常 = 唤醒结果未知（3），绝不能报成 1 引人重发。
+      const exit = jsonRun.stored === undefined ? 1 : 3;
+      process.exitCode = exit;
+      emitJsonResult(exit, error instanceof Error ? error.message : String(error));
+      return;
+    }
+    emitJsonResult(Number(process.exitCode ?? 0));
+    return;
+  }
   switch (command) {
     case "send":
       await cmdSend(parsed);

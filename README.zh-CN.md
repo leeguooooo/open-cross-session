@@ -177,7 +177,28 @@ Claude→Claude DM 的「回复」行优先使用发送方用 `ocs rename` 起�
 | `wake: 未送达 → X: refused`（或 `dropped`、`denied`、`expired`） | 2 | 接收端拒收。 |
 | `wake: 已投递收件箱 → X` | 0 | 拿不到回执（Windows，或设了 `OCS_NO_RECEIPTS=1`）：只知道帧到了收件箱 socket，和 0.6 一样。 |
 
-不管哪一种，消息都已经在频道日志里，对方跑 `ocs inbox` 能看到，不要重发。`ocs read` 会在自己发的消息下面显示 `[唤醒 → X: <状态>]`（`--json` 里是 `delivery`）。消息被扣留要在接收端解决：`ocs doctor --fix`；仓库级的 Claude 设置仍然可以强制 `hold`。
+不管哪一种，消息都已经在频道日志里，对方跑 `ocs inbox` 能看到，不要重发。
+
+### 脚本调用 send/dm
+
+`ocs send … --json`、`ocs dm … --json` 在 stdout 只输出一行 JSON（人读行收进 `lines`），退出码不变：
+
+```json
+{"v":1,"command":"send","stored":true,"channel":"chat","seq":7,"wake":"accepted","exit":0,"lines":["stored #chat seq 7","…"]}
+{"v":1,"command":"dm","stored":false,"error":"…","exit":1,"lines":[]}
+```
+
+| `wake` | 退出码 | 含义 |
+|---|---|---|
+| `accepted` | 0 | 每个唤醒都交给了载体，没报告失败。**不证明对方已读。** |
+| `deferred` | 0 | Codex 目标正在跑回合，唤醒并入积压，回合结束后发出。 |
+| `parked` | 0 | DM 目标没有活会话，消息留在频道里等对方读。 |
+| `none` | 0 | 没有要唤醒的人（非 DM 频道、没 `@`）。 |
+| `skipped` | 0 | `--no-wake`。 |
+| `failed` | 2 | 已落盘，但唤醒失败或被扣留 / 拒绝。 |
+| `unknown` | 3 | 已落盘，唤醒结果未知。 |
+
+多个目标时取最差的（`unknown` > `failed` > `parked` > `deferred` > `accepted`）。`stored:false`（退出码 1）表示什么都没写，改好参数重跑即可。只要 `stored:true` 就不能重发，要确认就用 `ocs read --json` 按 `channel`/`seq` 去查。`ocs dm <地址>@<对端> --json` 暂不支持，退出码 1，不发送。`ocs read` 会在自己发的消息下面显示 `[唤醒 → X: <状态>]`（`--json` 里是 `delivery`）。消息被扣留要在接收端解决：`ocs doctor --fix`；仓库级的 Claude 设置仍然可以强制 `hold`。
 
 Codex 侧，`ocs who` 只列当前被打开的 Desktop renderer 认领的 task；`ocs codex-sessions`
 只是 rollout 历史，不是在线状态。当 Desktop 明确返回 `unavailable`、`not-open` 或 `no-source`
@@ -194,7 +215,7 @@ fail closed，IPC 结果未知时绝不降级。没有安全载体时，消息�
 | `ocs rename <名字>` | 给当前会话起个好记的地址，短 id 照样能用。`--force` 接管别的会话占着的名字；`--clear` 删掉 |
 | `ocs dm <名字或id> <内容>` | 直发并唤醒一个 agent；唯一 Claude 工作区重启后继续使用同一频道。`--inherit <旧dm频道>` 一次性绑定 v0.3.4 前的历史；`--notify-when-idle` |
 | `ocs inbox` | 只列能安全归属给当前身份的未读线程；`--json` 供自动化使用，`--session <claude-session-id>` 按 id 解析指定 Claude 会话（给不在 Claude 进程树里的状态栏用） |
-| `ocs send <ch> <body>` | 追加消息，`@` 触发唤醒，`--reply-to <seq>` 同时唤醒那条的作者；`--as` 只用于覆盖自动身份。`--codex` 与 `--codex-source` 接受完整 thread ID，也接受 `ocs who` 给出的唯一 `codex-<8hex>` 短地址。另支持 `--no-wake`、`--notify-when-idle` |
+| `ocs send <ch> <body>` | 追加消息，`@` 触发唤醒，`--reply-to <seq>` 同时唤醒那条的作者；`--as` 只用于覆盖自动身份。`--codex` 与 `--codex-source` 接受完整 thread ID，也接受 `ocs who` 给出的唯一 `codex-<8hex>` 短地址。另支持 `--no-wake`、`--notify-when-idle`。`send`/`dm` 支持 `--json`，见[脚本调用 send/dm](#脚本调用-senddm) |
 | `ocs read <ch>` | 从游标读新消息并推进。自己发的折叠成一行（`--include-self` 完整显示；`--json` 带 `self`）；`--as` 覆盖身份。另支持 `--since`、`--peek` |
 | `ocs notify-when-idle <名字>` | 一次性：那个 Claude 会话下次空闲或退出时，你的会话收到一条 `[跨会话空闲通知]`（已空闲则立即；6 小时后过期） |
 | `ocs sessions` | 列活着的 Claude Code 会话 |

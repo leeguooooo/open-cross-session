@@ -646,3 +646,82 @@ describe("ocs rename：名字和 id 都能找到会话", () => {
     }
   }, T);
 });
+
+describe("send/dm --json：stdout 只有一行 v1 JSON，退出码与文本模式一致", () => {
+  const parse = (stdout: string) => {
+    const rows = stdout.split("\n").filter((line) => line !== "");
+    expect(rows.length).toBe(1);
+    return JSON.parse(rows[0]!) as Record<string, unknown>;
+  };
+
+  test("stored/channel/seq/wake 可分辨：none / skipped / failed / accepted", async () => {
+    const f = fixture();
+    try {
+      const none = await run(f, ["send", "chat", "plain", "--as", "tester", "--json"]);
+      expect(none.code).toBe(0);
+      expect(parse(none.stdout)).toMatchObject({ v: 1, command: "send", stored: true, channel: "chat", seq: 1, wake: "none", exit: 0 });
+
+      const skipped = await run(f, ["send", "chat", "quiet @worker-a", "--as", "tester", "--no-wake", "--json"]);
+      expect(parse(skipped.stdout)).toMatchObject({ stored: true, seq: 2, wake: "skipped", exit: 0 });
+
+      const dm = await run(f, ["send", "dm-abc", "plain reply", "--as", "tester", "--json"]);
+      expect(dm.code).toBe(2);
+      const failed = parse(dm.stdout);
+      expect(failed).toMatchObject({ stored: true, channel: "dm-abc", seq: 1, wake: "failed", exit: 2 });
+      expect((failed.lines as string[]).join("\n")).toContain("nobody was woken");
+
+      const woke = await run(f, ["send", "chat", "look @worker-a", "--as", "tester", "--json"]);
+      expect(woke.code).toBe(0);
+      expect(parse(woke.stdout)).toMatchObject({ stored: true, seq: 3, wake: "accepted", exit: 0 });
+      expect(content(await f.nextFrame())).toContain("look @worker-a");
+      expect(woke.stderr).toBe("");
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("没落盘：参数错误 / 跨机 dm 都是 stored:false、退出 1，零写入", async () => {
+    const f = fixture();
+    try {
+      const bad = await run(f, ["send", "chat", "hello", "--as", "tester", "--codex", "--json"]);
+      expect(bad.code).toBe(1);
+      expect(parse(bad.stdout)).toMatchObject({ v: 1, stored: false, exit: 1, error: "--codex requires a value" });
+      const missing = await run(f, ["send", "chat", "hello", "--as", "tester", "--json", "--codex"]);
+      expect(parse(missing.stdout)).toMatchObject({ stored: false, exit: 1, error: "--codex requires a value" });
+      const lan = await run(f, ["dm", "bob@peer", "hi", "--as", "tester", "--json"]);
+      expect(lan.code).toBe(1);
+      expect(parse(lan.stdout)).toMatchObject({ command: "dm", stored: false, exit: 1 });
+      expect(lan.stderr).toBe("");
+      expect(readMessages("chat", { env: f.env })).toEqual([]);
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("dm 目标不在线：parked（退出码仍 0），不报成 accepted", async () => {
+    const f = fixture();
+    try {
+      const r = await run(f, ["dm", "offline-bob", "stored once", "--as", "alice", "--json"]);
+      expect(r.code).toBe(0);
+      const out = parse(r.stdout);
+      expect(out).toMatchObject({ v: 1, command: "dm", stored: true, seq: 1, wake: "parked", exit: 0 });
+      expect(readMessages(out.channel as string, { env: f.env }).map((m) => m.body)).toEqual(["stored once"]);
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("dm 活会话：accepted，channel/seq 与日志一致", async () => {
+    const f = fixture();
+    try {
+      const r = await run(f, ["dm", "worker-a", "hello there", "--json"]);
+      expect(r.code).toBe(0);
+      const out = parse(r.stdout);
+      expect(out).toMatchObject({ command: "dm", stored: true, seq: 1, wake: "accepted", exit: 0 });
+      expect(readMessages(out.channel as string, { env: f.env }).map((m) => m.body)).toEqual(["hello there"]);
+      expect(content(await f.nextFrame())).toContain("hello there");
+    } finally {
+      f.close();
+    }
+  }, T);
+});

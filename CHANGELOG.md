@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `ocs send --json` / `ocs dm --json`: stdout is exactly one JSON line `{v:1, command, stored, channel, seq, wake, exit, lines}`; human lines move into `lines`. Exit codes are unchanged (1 not stored, 2 stored + wake failed, 3 stored + wake unknown). `wake` is `accepted | deferred | parked | none | skipped | failed | unknown`; `accepted` is not a read receipt. Argument errors are JSON too. LAN `dm x@peer --json` is refused (exit 1, nothing sent) until remote-store semantics are designed
+
 ## 0.8.0
 
 **Pairing two people is copy, paste, compare six digits — and trust now runs out.**
