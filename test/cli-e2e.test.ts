@@ -726,6 +726,47 @@ describe("send/dm --json：stdout 只有一行 v1 JSON，退出码与文本模�
   }, T);
 });
 
+describe("静默记录：保留任务历史，不触发模型回合", () => {
+  test("live DM --no-wake 零帧，下一条正常任务仍精确唤醒", async () => {
+    const f = fixture();
+    try {
+      const quiet = await run(f, ["dm", "worker-a", "closing record", "--no-wake", "--json"]);
+      expect(quiet.code).toBe(0);
+      const result = JSON.parse(quiet.stdout);
+      expect(result).toMatchObject({ stored: true, wake: "skipped", exit: 0 });
+      expect(readRoutedMessages(result.channel, { env: f.env }).map(m => m.body)).toEqual(["closing record"]);
+      expect(f.frames).toEqual([]);
+      const task = await run(f, ["dm", "worker-a", "please review the diff", "--json"]);
+      expect(task.code).toBe(0);
+      expect(content(await f.nextFrame())).toContain("please review the diff");
+      expect(f.frames.length).toBe(1);
+    } finally { f.close(); }
+  }, T);
+
+  test("十条静默记录和线程回复不唤醒；矛盾订阅和LAN在写入前拒绝", async () => {
+    const f = fixture();
+    try {
+      let channel = "";
+      for (let i = 0; i < 10; i++) {
+        const r = await run(f, ["dm", "worker-a", `record-${i}`, "--no-wake", "--json"]);
+        expect(r.code).toBe(0); channel = JSON.parse(r.stdout).channel;
+      }
+      expect(readMessages(channel, { env: f.env }).length).toBe(10);
+      const reply = await run(f, ["send", channel, "closing thread", "--reply-to", "1", "--no-wake", "--json"]);
+      expect(JSON.parse(reply.stdout)).toMatchObject({ wake: "skipped", seq: 11 });
+      expect(f.frames).toEqual([]);
+      for (const args of [
+        ["dm", "worker-a", "bad", "--no-wake", "--notify-when-idle", "--json"],
+        ["send", channel, "bad", "--no-wake", "--notify-when-idle", "--json"],
+        ["dm", "bob@peer", "bad", "--no-wake", "--json"],
+      ]) {
+        const r = await run(f, args); expect(r.code).toBe(1); expect(JSON.parse(r.stdout).stored).toBe(false);
+      }
+      expect(readMessages(channel, { env: f.env }).length).toBe(11);
+    } finally { f.close(); }
+  }, T);
+});
+
 describe("whoami --json：Codex 追加完整 threadId", () => {
   test("同一分钟建的两个 thread 短 id 相同，threadId 仍能区分；Claude 输出不变", async () => {
     const f = fixture({ withSelf: false });

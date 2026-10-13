@@ -148,7 +148,7 @@ export function wakeNote(input: WakeNoteInput): string {
   const bodyPart = Buffer.byteLength(safe, "utf8") <= WAKE_BODY_INLINE_MAX_BYTES
     ? safe
     : `${truncateUtf8(safe, WAKE_BODY_PREVIEW_BYTES)}\n… (${total} bytes total; full text: ${read})`;
-  const tail = `\n\n${M.wakeNoteReply(reply)}\n${M.wakeNoteThread(read)}`;
+  const tail = `\n\n${M.wakeReplyPolicy}\n${M.wakeNoteReply(reply)}\n${M.wakeNoteThread(read)}`;
   const ladder: Array<{ sender: string | null; ago?: string }> = [
     { sender: input.from, ...(input.ago !== undefined ? { ago: input.ago } : {}) },
     { sender: input.from },

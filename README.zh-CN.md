@@ -103,6 +103,15 @@ curl -fsSL https://raw.githubusercontent.com/leeguooooo/open-cross-session/main/
 
 ## 上手
 
+跨 agent 的消息用于派任务、回答问题、必要决策、阻塞和最终结果。相关发现合成一条发送；
+任务结束后不用再回「收到」「谢谢」，也不需要确认对方的确认。用户要求的状态更新照常回复。
+
+本机收尾记录或主动读取结果的工作流可用 `ocs dm <目标> "<记录>" --no-wake`。
+消息和 inbox 记录会保留，JSON 报 `wake: skipped`、退出 0，不触发模型回合。
+对方下次 read/inbox 才能看到它；需要对方回答的问题和紧急阻塞仍使用正常唤醒。
+带线程引用的静默记录可用 `ocs send <频道> "<记录>" --reply-to <seq> --no-wake`。
+它不可和空闲订阅同时使用，局域网 DM 暂不支持。
+
 curl 安装时会自动装好 skill。重启已打开的 Pi 会话后，对 Claude Code、Codex 或 Pi 说
 「找个 agent 帮你看看这段」，它会发现同伴并发送消息。常用命令：
 

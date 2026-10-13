@@ -171,6 +171,9 @@ interface Catalog {
   whoEmpty: string;
   whoCmuxHint: string;
   dmSent: (target: string, channel: string, seq: number) => string;
+  wakeReplyPolicy: string;
+  wakeSkipped: string;
+  failNoWakeNotify: string;
   dmWorkspaceResolved: (requested: string, current: string, alias: string) => string;
   dmWorkspaceAmbiguous: (target: string, names: string[]) => string;
   dmWorkspaceWarning: (detail: string) => string;
@@ -219,7 +222,7 @@ Usage:
   ocs who [--verbose | --json]
       Roster of every reachable agent: Claude sessions, Codex tasks, Pi sessions, terminals,
       plus pending idle notifications. Same-project peers come first; --verbose shows raw IDs/paths.
-  ocs dm <name-or-id> <text> [--as <name>] [--inherit <old-dm-channel>] [--notify-when-idle] [--json]
+  ocs dm <name-or-id> <text> [--as <name>] [--inherit <old-dm-channel>] [--notify-when-idle] [--no-wake] [--json]
       Message + wake one agent. Channel is auto-derived; nothing to set up.
       --inherit binds one pre-v0.3.4 DM history channel; both Claude workspaces must be live and unique.
   ocs inbox [--as <name> | --session <claude-session-id>] [--json]
@@ -483,6 +486,9 @@ Details: https://github.com/leeguooooo/open-cross-session/blob/main/docs/lan.md`
   whoEmpty: "no reachable agents found — open a Claude Code, Codex, or Pi session",
   whoCmuxHint: "cmux not detected: terminal TUIs are not listed (they can still join channels themselves)",
   dmSent: (target, channel, seq) => `dm stored → ${target} (channel ${channel}, seq ${seq})`,
+  wakeReplyPolicy: "Reply when asked, or with a needed decision/result. No unsolicited acknowledgements.",
+  wakeSkipped: "wake: skipped by --no-wake (stored only; no model turn requested)",
+  failNoWakeNotify: "--no-wake cannot be combined with --notify-when-idle",
   dmWorkspaceResolved: (requested, current, alias) =>
     `resolved ${requested} → ${current} via unique workspace alias ${alias}`,
   dmWorkspaceAmbiguous: (target, names) =>
@@ -548,7 +554,7 @@ const zh: Catalog = {
   ocs who [--verbose | --json]
       全机 agent 花名册：Claude 会话、Codex 任务、Pi 会话、终端，都在一张表里，
       外加待触发的空闲通知；当前项目优先，--verbose 显示底层 ID/路径
-  ocs dm <名字或id> <内容> [--as <name>] [--inherit <旧dm频道>] [--notify-when-idle] [--json]
+  ocs dm <名字或id> <内容> [--as <name>] [--inherit <旧dm频道>] [--notify-when-idle] [--no-wake] [--json]
       给一个 agent 发消息并唤醒；频道自动派生，什么都不用建
       --inherit 一次性绑定 v0.3.4 之前的 DM 历史；双方 Claude 工作区必须在线且唯一
   ocs inbox [--as <name> | --session <claude-session-id>] [--json]
@@ -795,6 +801,9 @@ ${lanMessages("zh").help}
   whoEmpty: "没发现可达的 agent——开一个 Claude Code、Codex 或 Pi 会话",
   whoCmuxHint: "cmux 未检测到：终端 TUI 不在列表里（它们仍可自己进频道）",
   dmSent: (target, channel, seq) => `dm 已落盘 → ${target}（频道 ${channel}，seq ${seq}）`,
+  wakeReplyPolicy: "只在被要求或有必要决策/结果时回复；不发无请求的确认回信。",
+  wakeSkipped: "唤醒：--no-wake 已跳过（仅落盘，不请求模型回合）",
+  failNoWakeNotify: "--no-wake 不可与 --notify-when-idle 同时使用",
   dmWorkspaceResolved: (requested, current, alias) =>
     `通过唯一工作区别名 ${alias} 解析 ${requested} → ${current}`,
   dmWorkspaceAmbiguous: (target, names) =>

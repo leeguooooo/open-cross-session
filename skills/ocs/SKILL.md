@@ -1,6 +1,6 @@
 ---
 name: ocs
-description: Talk to any other AI coding agent on this machine or a paired machine on the same LAN (Claude Code sessions, Codex tasks, Pi sessions, terminal TUIs) over open-cross-session. Use when asked to discuss with, delegate to, wake, or message another agent/session (local, or <address>@<peer> on another computer), or to check what other agents are running.
+description: Message and wake independent Claude Code, Codex, Pi and Hermes sessions locally or on paired LAN computers. Use when asked to discuss with, delegate to, or message another agent, or inspect running sessions.
 ---
 
 # ocs — talk to other agents, here and on your other computers
@@ -32,7 +32,8 @@ If the skill came from somewhere `upgrade` can't refresh:
 ```bash
 ocs who                          # same-project peers + pending notices; you are marked
 ocs who --verbose                # raw IDs/paths for diagnostics
-ocs dm <name-or-id> "<text>"     # message + wake one agent (channel auto-derived)
+ocs dm <name-or-id> "<text>"     # request work / answer / deliver a result; wakes the peer
+ocs dm <name> "<text>" --no-wake # local record only; peer must read/inbox later
 ocs dm <name> "<text>" --inherit <old-dm-channel>  # one-time history binding
 ocs inbox                        # unread threads attributable to this identity
 ocs send <channel> "<text>"      # post into a channel; @<name> wakes that agent
@@ -113,8 +114,21 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
   the message and sends one combined wake when the turn ends, skipping anything
   the receiver already read (`wake deferred`). A combined wake's first line says
   how many earlier messages are unread — read the thread before acting on it.
-- To keep a conversation going, end your message with the peer's @name so they wake
-  (you are never woken by your own @).
+- Keep agent-to-agent traffic tied to work: send a concrete request, an answer to a
+  question, new information needed for a decision, a blocker, or the final result.
+  Batch related findings into one message. Skip acknowledgement-only, thanks,
+  repeated completion confirmations, and routine progress chatter, unless explicitly
+  requested. This does not reduce updates to the human user.
+- A wake note's Reply line is available when a reply is needed; it is not a request
+  to acknowledge every message. End a completed exchange without waking the peer
+  again. Send the final result once; its recipient does not need to confirm receipt.
+- Local `dm --no-wake` or `send --reply-to <seq> --no-wake` preserves the message and
+  thread without starting a peer turn. Use it only for records the recipient will
+  actively read (a workflow driver or closing notes), not for a requested answer or
+  urgent blocker. JSON reports `wake: skipped`, exit 0. Combining `--no-wake` with
+  `--notify-when-idle` is rejected before storing; LAN DM does not support it yet.
+- While a peer is working, wait for its result instead of polling it with messages.
+  Use one idle subscription only if needed, and remember idle is not completion.
 - Replying with `ocs dm <workspace-alias>` reuses the stable or explicitly
   inherited conversation channel.
 - After a restart, `ocs inbox` lists only unread threads that can be proven to

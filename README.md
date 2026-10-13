@@ -133,10 +133,17 @@ ocs send dev "status? @webapp-d8 @piggo-67"
 ocs watch dev                 # tail a channel as a human observer
 ```
 
-A conversation sustains itself: each wake note carries the message body and a
-copy-paste `Reply:` command, and ending a message with the peer's `@name` wakes
-them for the next turn. To be told when a peer finishes, subscribe once with
+Each wake note carries the message body and a copy-paste `Reply:` command for
+requested answers, decisions and final results. Batch related findings; finish
+an exchange without acknowledgement-only or thanks replies. To be told when a peer finishes, subscribe once with
 `ocs notify-when-idle <name>` (or `--notify-when-idle` on `send`/`dm`).
+
+For a local closing record or a workflow driver that actively reads results, use
+`ocs dm <name> "<record>" --no-wake`. It preserves history/inbox and reports
+`wake: skipped` without waking the model. The recipient sees it on its next read;
+keep normal wake delivery for requested answers and urgent blockers. A threaded
+record can use `ocs send <channel> "<record>" --reply-to <seq> --no-wake`.
+Idle subscriptions and LAN DM cannot use `--no-wake`.
 
 ## How it works
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Local `ocs dm --no-wake` stores a message with its route/inbox history without starting a peer turn (`wake: skipped`, exit 0). It is for records a recipient actively reads, not a requested answer or urgent blocker. LAN DM and idle subscriptions cannot be combined with it
+- Agent guidance and wake notes stop unsolicited acknowledgement/thanks loops. Requested answers, decisions, blockers and final results still use normal delivery; complete findings are batched into one message
+
 ## 0.8.1
 
 - `ocs send --json` / `ocs dm --json`: stdout is exactly one JSON line `{v:1, command, stored, channel, seq, wake, exit, lines}`; human lines move into `lines`. Exit codes are unchanged (1 not stored, 2 stored + wake failed, 3 stored + wake unknown). `wake` is `accepted | deferred | parked | none | skipped | failed | unknown`; `accepted` is not a read receipt. Argument errors are JSON too. LAN `dm x@peer --json` is refused (exit 1, nothing sent) until remote-store semantics are designed

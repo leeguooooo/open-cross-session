@@ -127,6 +127,7 @@ describe("wakeNote（协议 §1 骨架）", () => {
         "\n" +
         `${body}\n` +
         "\n" +
+        "Reply when asked, or with a needed decision/result. No unsolicited acknowledgements.\n" +
         'Reply: ocs send dev "<your reply>" --as worker-a --reply-to 7\n' +
         "Thread: ocs read dev --as worker-a",
     );
@@ -190,8 +191,8 @@ describe("wakeNote（协议 §1 骨架）", () => {
 
   test("骨架超预算按阶梯降级：先砍 ago 再砍 sender，两行命令保留", () => {
     // 骨架 = header + 5 个换行 + Reply 行 + Thread 行；header 不带 ago 时 = 41 + sender 长度。
-    // sender 895：不带 ago 恰好 1022 ≤ 1024，带 ago（+8）超 → 只砍 ago。
-    const keepSender = "h".repeat(895);
+    // 留出新回复规则与换行，仍让 ago 跨过预算而 sender 留下。
+    const keepSender = "h".repeat(895 - Buffer.byteLength("Reply when asked, or with a needed decision/result. No unsolicited acknowledgements.\n"));
     const note = wakeNote({ channel: "dev", seq: 1, from: keepSender, body: "hi", receiver: "b", ago: "1m ago" });
     expect(bytes(note) - bytes("hi")).toBeLessThanOrEqual(WAKE_SKELETON_MAX_BYTES);
     expect(note).not.toContain("1m ago");
@@ -217,6 +218,7 @@ describe("wakeNote（协议 §1 骨架）", () => {
         "\n" +
         "你好\n" +
         "\n" +
+        "只在被要求或有必要决策/结果时回复；不发无请求的确认回信。\n" +
         '回复：ocs send dev "<your reply>" --as worker-a --reply-to 7\n' +
         "线程：ocs read dev --as worker-a",
     );
