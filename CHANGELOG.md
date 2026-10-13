@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.1
 
 - `ocs send --json` / `ocs dm --json`: stdout is exactly one JSON line `{v:1, command, stored, channel, seq, wake, exit, lines}`; human lines move into `lines`. Exit codes are unchanged (1 not stored, 2 stored + wake failed, 3 stored + wake unknown). `wake` is `accepted | deferred | parked | none | skipped | failed | unknown`; `accepted` is not a read receipt. Argument errors are JSON too. LAN `dm x@peer --json` is refused (exit 1, nothing sent) until remote-store semantics are designed
 - `ocs whoami --json` in Codex adds `threadId` (full thread UUID). Codex thread ids are UUIDv7, so the short `codex-<8hex>` id is shared by tasks started within about a minute; tools that need an exact identity should use `threadId`. Other hosts' output is unchanged
