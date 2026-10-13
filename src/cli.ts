@@ -1020,7 +1020,10 @@ function cmdWhoami(parsed: Parsed): void {
   const id = owner.kind === "claude" ? claudeShortId(owner.session.sessionId) : ownerShortId(owner);
   const session = owner.kind === "claude" ? owner.session.name : null;
   const addresses = [...new Set([name, id, session].filter((value): value is string => value !== null))];
-  console.log(JSON.stringify({ host: owner.kind, id, name, session, addresses }));
+  // Codex 短 id 取 thread id 前 8 位，而 thread id 是 UUIDv7（时间戳打头），一分钟内建的线程
+  // 短 id 会撞；只在 codex 上追加完整 threadId，Claude/Pi/Hermes 的输出保持逐字不变。
+  const full = owner.kind === "codex" ? { threadId: owner.id } : {};
+  console.log(JSON.stringify({ host: owner.kind, id, name, session, addresses, ...full }));
 }
 
 /** `ocs rename <name>`：给当前宿主会话起 ocs 名字；`--clear` 删掉；`--force` 接管别人占着的名字。 */

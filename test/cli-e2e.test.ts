@@ -725,3 +725,31 @@ describe("send/dm --json：stdout 只有一行 v1 JSON，退出码与文本模�
     }
   }, T);
 });
+
+describe("whoami --json：Codex 追加完整 threadId", () => {
+  test("同一分钟建的两个 thread 短 id 相同，threadId 仍能区分；Claude 输出不变", async () => {
+    const f = fixture({ withSelf: false });
+    try {
+      const a = "019a0000-1111-7000-8000-000000000001";
+      const b = "019a0000-2222-7000-8000-000000000002";
+      const runAs = async (thread: string) => {
+        const proc = Bun.spawn([process.execPath, CLI, "whoami", "--json"], {
+          env: { ...f.env, CODEX_THREAD_ID: thread },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const stdout = await new Response(proc.stdout).text();
+        await proc.exited;
+        expect(proc.exitCode).toBe(0);
+        return JSON.parse(stdout) as Record<string, unknown>;
+      };
+      const meA = await runAs(a);
+      const meB = await runAs(b);
+      expect(meA).toMatchObject({ host: "codex", id: "codex-019a0000", threadId: a });
+      expect(meB).toMatchObject({ host: "codex", id: "codex-019a0000", threadId: b });
+      expect(meA.addresses).toEqual(["codex-019a0000"]);
+    } finally {
+      f.close();
+    }
+  }, T);
+});

@@ -66,6 +66,8 @@ ocs rename --clear                              # 删掉名字
 - 在 Claude 里，`/clear` 之后名字还跟着这个窗口；别人回你的私信时，回复命令是 `ocs dm <你的名字>`。
 - 其他工具可以读 `ocs whoami --json [--session <claude-session-id>]`，输出
   `{host, id, name, session, addresses}`，`addresses` 里每一项都能直接 `ocs dm`。
+  在 Codex 里还会多输出 `threadId`（完整 thread UUID）：一分钟左右内开的几个 Codex 任务，
+  短 id `codex-<8hex>` 可能相同。
 
 ### 搭配 Claude Status Bar
 
