@@ -40,6 +40,7 @@ import { PAIR_TOKEN_BYTES } from "./lan-crypto.ts";
 import { acceptSecure } from "./lan-wire.ts";
 import { claudeShortId, entryShortId, listOcsNames, ocsNameFor, readOcsName } from "./names.ts";
 import { buildRoster, resolveDmTarget, type ResolvedDmTarget } from "./roster.ts";
+import { findAgyWorker } from "./agy.ts";
 import { codexThreadLivePid } from "./codex-queue.ts";
 import { hermesTargetName, listHermesSessions } from "./hermes.ts";
 import { codexDesktopIpcAvailable, discoverCodexDesktopOwners } from "./codex-ipc.ts";
@@ -87,6 +88,7 @@ export function localAddressOf(
   env: NodeJS.ProcessEnv = process.env,
 ): LocalAddress | null {
   const names = listOcsNames(env);
+  if (resolved.kind === "agy") return findAgyWorker(env) === null ? null : { key: "agy", display: "agy" };
   if (resolved.kind === "claude") {
     if (resolved.claude !== undefined) {
       const key = claudeShortId(resolved.claude.sessionId) ?? resolved.claude.name ?? requested;
@@ -116,7 +118,7 @@ export function localAddressOf(
 
 export interface LanWhoEntry {
   address: string;
-  kind: "claude" | "codex" | "pi" | "hermes";
+  kind: "claude" | "codex" | "pi" | "hermes" | "agy";
   status?: string;
   label?: string;
 }
@@ -145,6 +147,10 @@ export async function lanWhoEntries(env: NodeJS.ProcessEnv = process.env): Promi
     env,
   );
   for (const entry of roster.entries) {
+    if (entry.kind === "agy") {
+      out.push({ address: "agy", kind: "agy", status: entry.status, label: "Antigravity CLI worker" });
+      continue;
+    }
     if (entry.kind === "claude") {
       out.push({
         address: entry.ocsName ?? entry.id ?? entry.name,

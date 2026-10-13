@@ -6,6 +6,7 @@
 // cmux surface（可选加速器，探测到才列）。
 
 import { spawnSync } from "node:child_process";
+import { findAgyWorker } from "./agy.ts";
 import { createHash } from "node:crypto";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -318,6 +319,7 @@ export type RosterEntry =
       status: string | null;
       self: boolean;
     }
+  | { kind: "agy"; target: "agy"; pid: number; cwd: string; status: string; self: boolean; ocsName: "agy" }
   | { kind: "cmux"; ref: string; title: string };
 
 export interface Roster {
@@ -335,6 +337,8 @@ export interface Roster {
  */
 export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readonly HermesSession[] = []): Roster {
   const entries: RosterEntry[] = [];
+  const agy = findAgyWorker(env);
+  if (agy !== null) entries.push({ kind: "agy", target: "agy", pid: agy.pid, cwd: agy.cwd, status: agy.status, self: env.OCS_NAME === "agy", ocsName: "agy" });
   const selfPid = findSelfClaudePid(env);
   const nativeSessions = listNativeSessions(env).filter((session) => session.name !== null);
   const names = listOcsNames(env);
@@ -428,7 +432,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
   return { entries, codexIpc, codexQueue: codexQueueAvailable(env), cmux, home: ocsHome(env) };
 }
 
-export type DmTargetKind = "claude" | "codex-task" | "pi" | "hermes" | "cmux";
+export type DmTargetKind = "claude" | "codex-task" | "pi" | "hermes" | "agy" | "cmux";
 
 export interface ResolvedDmTarget {
   kind: DmTargetKind;
@@ -644,6 +648,16 @@ export function resolveDmTarget(
   target: string,
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedDmTarget | null {
+  if (target.toLowerCase() === "agy") {
+    const named = readOcsName("agy", env);
+    const collision = listNativeSessions(env).find((session) => session.name?.toLowerCase() === "agy");
+    return { kind: "agy", name: "agy", identity: "name:agy",
+      ...(named === null && collision === undefined ? {} : { ambiguousNameTargets: [
+        "agy (Antigravity CLI receiver)",
+        named === null ? `agy (Claude session ${collision?.sessionId ?? "unknown"})` : `agy (${named.kind} ${named.id})`,
+      ] }),
+    };
+  }
   if (/^surface:\d+$/.test(target)) {
     return { kind: "cmux", name: target.replace(":", "-"), identity: `cmux:${target}`, cmuxRef: target };
   }

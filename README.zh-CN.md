@@ -154,6 +154,21 @@ Claude→Claude DM 的「回复」行优先使用发送方用 `ocs rename` 起�
 只有无法验证身份的 headless/cmux 目标才保留 `--as`。整条 note 不超过 5120 字节。
 协议与 Agent Party 共用：[docs/wake-protocol.md](./docs/wake-protocol.md)。
 
+## Antigravity CLI（`agy`）
+
+在 macOS/Linux 中先登录 `agy`，再显式启动可选接收端：
+
+```sh
+ocs agy start --cwd /你的项目路径
+ocs dm agy "评审这个项目并报告结果"
+ocs agy status
+ocs agy stop
+```
+
+接收端按队列执行，每个 OCS 频道保留独立对话上下文，最终回复自动回传请求方。
+它使用 agy 现有登录和权限配置；Windows 客户端可通过已配对的局域网向它派任务。
+详见[接收端安装及送达语义](docs/agy.md)。
+
 ## 能唤醒谁
 
 | 目标 | 用法 | 前提 |

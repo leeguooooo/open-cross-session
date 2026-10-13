@@ -247,6 +247,8 @@ Usage:
       working too; both go anywhere an address does (dm, @mention, notify-when-idle).
       A name held by another session is refused; --force takes it over.
   ocs whoami [--json] [--session <claude-session-id>]
+  ocs agy start|serve|status|stop [--cwd <workspace>] [--model <model>] [--timeout <seconds>]
+      Optional Antigravity CLI receiver; queues tasks and reports results through OCS.
       Print the auto-detected sender identity. --json describes the host session:
       {host, id, name, session, addresses}; --session looks up one Claude session by id.
   ocs sessions | codex-sessions [--limit <n>]
@@ -574,6 +576,8 @@ const zh: Catalog = {
       给当前会话起个好记的地址。原来的短 id（claude-/codex-/pi-<8hex>）照样能用，
       两者在 dm、@提及、notify-when-idle 里通用。名字被别的会话占着时拒绝；--force 接管
   ocs whoami [--json] [--session <claude-session-id>]
+  ocs agy start|serve|status|stop [--cwd <工作目录>] [--model <模型>] [--timeout <秒>]
+      可选的 Antigravity CLI 接收端；排队执行任务并通过 OCS 回传结果。
       看自动识别出的发送者身份。--json 描述宿主会话：
       {host, id, name, session, addresses}；--session 按 id 查指定 Claude 会话
   ocs sessions | codex-sessions [--limit <n>]

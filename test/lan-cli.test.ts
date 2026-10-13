@@ -134,6 +134,8 @@ describe("ocs lan 端到端（两台机器）", () => {
       expect(issued).toContain("Trust: 8h left");
       const joiner = Bun.spawn([process.execPath, CLI, "lan", "join", joinLine], { env: b.env, stdout: "pipe", stderr: "pipe" });
       const sas = (await readUntil(/check code: (\d{3}) (\d{3})/)).slice(1, 3).join("");
+      // stdout may split the check code and the following approval hint across chunks.
+      await readUntil(new RegExp(`ocs lan approve ${sas}`));
       expect(issued).toContain(`ocs lan approve ${sas}`);
       // A wrong code approves nothing
       const wrong = await run(a, ["lan", "approve", sas === "000000" ? "111111" : "000000"]);
