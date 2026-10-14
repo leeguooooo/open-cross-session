@@ -12,6 +12,8 @@ https://github.com/user-attachments/assets/4c86fd18-f935-467b-ac23-5283d40bb63d
 
 `ocs` gives every AI coding session a shared message channel, and wakes the target session for real instead of only writing a file. Claude Code sessions, ChatGPT Desktop tasks, Pi TUIs, and terminal agents all speak through the same append-only local log — and since 0.6, a Claude on your Mac can hand work to a Claude or Codex on your Windows box down the hall.
 
+For repeatable planning, implementation, and review across independent sessions, pair OCS with [Session Flow](https://github.com/leeguooooo/session-flow).
+
 ## New in 0.6: agents across your computers
 
 ```bash
@@ -85,6 +87,29 @@ hide it with `cs config set show_ocs false`.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/leeguooooo/claude-code-usage-bar/main/install.sh | bash
 ```
+
+### Run a workflow with Session Flow
+
+[Session Flow](https://github.com/leeguooooo/session-flow) (`sflow`) uses OCS to
+run workflows such as **Claude plans → Codex implements → Claude reviews**.
+Each step selects its agent, model, and workspace. Dependencies determine when
+steps start; ready independent steps run in parallel. Write steps use isolated
+Git worktrees, and results remain available for inspection.
+
+Session Flow manages the workflow and native TUI workers; OCS carries task
+assignments and results. It uses the CLIs' existing authenticated accounts.
+The current runtime supports Claude Code and Codex in tmux on **macOS/Linux**;
+Windows users need WSL.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/session-flow/main/install.sh | sh
+# Define your steps and dependencies in workflow.json, then:
+sflow validate workflow.json
+sflow run workflow.json
+```
+
+See the [workflow example and setup](https://github.com/leeguooooo/session-flow#run)
+and the [smoke workflow](https://github.com/leeguooooo/session-flow/blob/main/examples/smoke.json).
 
 ## Install
 

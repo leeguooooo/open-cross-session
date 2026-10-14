@@ -12,6 +12,8 @@ https://github.com/user-attachments/assets/6fedd0cc-af15-4caf-9027-d0f149676ea6
 
 `ocs` 给每个 AI 编码会话一条共享消息频道，并把目标会话真正叫醒，不只往文件里写一条消息。Claude Code 会话、ChatGPT Desktop 任务、Pi TUI 和终端 agent 共用一份本地 append-only 日志。从 0.6 起，Mac 上的 Claude 可以直接把活交给隔壁 Windows 电脑上的 Claude 或 Codex。
 
+要把规划、实现、评审串成可重复运行的工作流，可以搭配使用 OCS 的 [Session Flow](https://github.com/leeguooooo/session-flow)。
+
 ## 0.6 新增：跨电脑的 agent 互通
 
 ```bash
@@ -78,6 +80,26 @@ ocs rename --clear                              # 删掉名字
 ```bash
 curl -fsSL https://raw.githubusercontent.com/leeguooooo/claude-code-usage-bar/main/install.sh | bash
 ```
+
+### 搭配 Session Flow 跑工作流
+
+[Session Flow](https://github.com/leeguooooo/session-flow)（`sflow`）用 OCS 连接独立会话，
+把 **Claude 规划 → Codex 实现 → Claude 评审** 这样的步骤串起来。
+每一步指定 agent、模型和工作目录，按依赖启动；已就绪且互不依赖的步骤可以并行。
+写代码的步骤使用独立 Git worktree，结果保留下来供检查。
+
+Session Flow 管工作流和原生 TUI 会话，OCS 传递任务与结果，沿用各 CLI 已登录的账号。
+当前运行端支持 **macOS/Linux 上 tmux 中的 Claude Code 和 Codex**；Windows 需用 WSL。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/session-flow/main/install.sh | sh
+# 在 workflow.json 中定义步骤和依赖，再运行：
+sflow validate workflow.json
+sflow run workflow.json
+```
+
+配置方法见 [Session Flow 中文说明](https://github.com/leeguooooo/session-flow/blob/main/README.zh-CN.md)，
+也可以从[冒烟工作流示例](https://github.com/leeguooooo/session-flow/blob/main/examples/smoke.json)开始。
 
 ## 安装
 
