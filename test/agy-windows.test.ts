@@ -5,9 +5,8 @@ import { findAgyWorker } from "../src/agy.ts";
 import { readMessages } from "../src/store.ts";
 import { tempDir, autoCleanupTempDirs } from "./tmp";
 
-autoCleanupTempDirs();
 const windowsTest = process.platform === "win32" ? test : test.skip;
-const receivers: NodeJS.ProcessEnv[] = [];
+const receivers: Array<{ env: NodeJS.ProcessEnv; pid: number }> = [];
 const CLI = process.env.OCS_TEST_BINARY!;
 async function run(env: NodeJS.ProcessEnv, ...args: string[]) {
   const proc = Bun.spawn([CLI, ...args], { env, stdout: "pipe", stderr: "pipe" });
@@ -17,8 +16,12 @@ async function run(env: NodeJS.ProcessEnv, ...args: string[]) {
   return { output, error, code };
 }
 afterEach(async () => {
-  for (const env of receivers.splice(0)) await run(env, "agy", "stop");
+  for (const { env, pid } of receivers.splice(0)) {
+    expect((await run(env, "agy", "stop")).code).toBe(0);
+    await until(() => { try { process.kill(pid, 0); return null; } catch { return true; } });
+  }
 });
+autoCleanupTempDirs();
 async function until<T>(read: () => T | null): Promise<T> {
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
@@ -34,10 +37,10 @@ async function fixture(extra: NodeJS.ProcessEnv = {}) {
   const home = tempDir("ocs-agy-win-");
   const env = { ...process.env, OCS_HOME: home, OCS_NAME: "tester", OCS_LANG: "en", OCS_NO_UPDATE_CHECK: "1",
     OCS_AGY_BIN: process.env.OCS_TEST_AGY_BINARY, OCS_AGY_TEST_LOG: join(home, "events.jsonl"), ...extra };
-  receivers.push(env);
   const started = await run(env, "agy", "start", "--cwd", home);
   expect(started.error).toBe("");
   expect(started.code).toBe(0);
+  receivers.push({ env, pid: findAgyWorker(env)!.pid });
   expect(findAgyWorker(env)?.socketPath).toMatch(/^\\\\\.\\pipe\\ocs-agy-/);
   return { home, env };
 }
