@@ -179,6 +179,22 @@ cmux targets need an explicit `--as`.
 The whole note is capped at 5120 bytes.
 The protocol is shared with Agent Party: [docs/wake-protocol.md](./docs/wake-protocol.md).
 
+## Antigravity CLI (`agy`)
+
+On macOS/Linux, authenticate in `agy`, then explicitly start its optional receiver:
+
+```sh
+ocs agy start --cwd /path/to/workspace
+ocs dm agy "Review this project and report findings"
+ocs agy status
+ocs agy stop
+```
+
+The receiver queues turns, keeps conversation context per OCS channel, and sends
+the final response back to the requester. It uses the agy CLI's existing login
+and permissions. Windows clients can reach it over an already-paired LAN.
+See [receiver setup and delivery semantics](docs/agy.md).
+
 ## Who can be woken
 
 | Target | How | Requirement |

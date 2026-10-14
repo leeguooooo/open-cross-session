@@ -6,6 +6,9 @@
 // 分支和措辞与原来逐字一致——两个入口共用一份，免得一边修了另一边漂。
 
 import { resolveSessionSocketByPid, type NativeClaudeSession } from "./claude-inject.ts";
+import { wakeAgy } from "./agy.ts";
+import { agyMessages } from "./i18n-agy.ts";
+import { detectLang } from "./i18n.ts";
 import { codexActiveTurnId, deferCodexWakeIfBusy, loadDeferredCodexWake } from "./codex-defer.ts";
 import { steerCodexTurn } from "./codex-steer.ts";
 import { codexHosts, codexThreadLivePid, psTable, queueCodexThread } from "./codex-queue.ts";
@@ -376,6 +379,30 @@ export async function deliverDm(
   const { resolved, target, channel } = input;
   const env = input.env ?? process.env;
   const anyReply = input.anyReplyTarget === undefined ? {} : { dmReplyTarget: input.anyReplyTarget };
+  if (resolved.kind === "agy") {
+    const A = agyMessages(input.wakeInput.lang ?? detectLang(env));
+    if (resolved.ambiguousNameTargets !== undefined) {
+      sink.log(A.failed("ambiguous", resolved.ambiguousNameTargets.join(", ")));
+      sink.fail("failed");
+      return null;
+    }
+    if (env.OCS_NAME === "agy" || input.wakeInput.from === "agy") {
+      sink.log(A.self);
+      return null;
+    }
+    const result = await wakeAgy({
+      channel: input.channel,
+      seq: input.wakeInput.seq,
+      note: wakeNote({ ...input.wakeInput, ...anyReply, receiver: "agy", implicitReceiver: true }),
+      ...(input.anyReplyTarget === undefined ? {} : { replyTarget: input.anyReplyTarget }),
+    }, env);
+    if (result.ok) sink.log(A.queued(result.job));
+    else {
+      sink.log(A.failed(result.reason, result.detail ?? ""));
+      sink.fail(result.reason === "unknown-outcome" ? "unknown" : "failed");
+    }
+    return null;
+  }
   if (resolved.kind === "claude") {
     if (resolved.claude === undefined) {
       // 目标此刻不在线：一次性会话名重启后不会主动读这条频道，文案不许暗示会自动送达。

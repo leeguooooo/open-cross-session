@@ -5,6 +5,9 @@
 // 输出全部走 i18n 目录（英文 canonical，OCS_LANG/locale 选 zh）。
 
 import { chmodSync, mkdirSync, statSync, writeSync } from "node:fs";
+import { findAgyWorker } from "./agy.ts";
+import { AGY_WORKER_COMMAND, parseAgyOptions, runAgyWorker, startAgyWorker } from "./agy-worker.ts";
+import { agyMessages } from "./i18n-agy.ts";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { formatWithOptions } from "node:util";
@@ -133,6 +136,7 @@ export const OCS_VERSION = "0.8.2";
 const LANG = detectLang();
 const M = messages(LANG);
 const L = lanMessages(LANG);
+const A = agyMessages(LANG);
 
 interface Parsed {
   positional: string[];
@@ -167,6 +171,8 @@ const COMMAND_SPECS: Record<string, CommandSpec> = {
   /** 内部：Codex 忙时积压唤醒的等待器（#41，不进 help）。 */
   [CODEX_WAKE_WATCH_COMMAND]: { value: [], bool: [], minPos: 2, maxPos: 2 },
   who: { value: [], bool: ["json", "verbose", "lan"], minPos: 0, maxPos: 0 },
+  agy: { value: ["cwd", "model", "timeout"], bool: ["json"], minPos: 1, maxPos: 1 },
+  [AGY_WORKER_COMMAND]: { value: ["cwd", "model", "timeout"], bool: [], minPos: 0, maxPos: 0 },
   lan: {
     value: ["port", "bind", "name", "addr", "label", "for"],
     bool: ["json", "no-discover", "discover", "once", "forever", "code"],
@@ -483,8 +489,9 @@ async function cmdSend(parsed: Parsed): Promise<void> {
   // 复制执行必须真的把回复送回发送方，而不是要求再手加一个 @。
   // ocs 名字与各家短 id 先归一成分流认得的地址：@<名字> 可能指向 Codex / Pi，不只是 Claude。
   const wakeAddresses = [...new Set(message.mentions.map((mention) => canonicalWakeAddress(mention)))];
-  if (parent !== undefined && parent.from !== from && !wakeAddresses.includes(parent.from)) {
-    wakeAddresses.push(parent.from);
+  if (parent !== undefined && parent.from !== from) {
+    const parentAddress = canonicalWakeAddress(parent.from);
+    if (!wakeAddresses.includes(parentAddress)) wakeAddresses.push(parentAddress);
   }
 
   // @ 分流：裸 uuid → Codex，pi-<uuid> → Pi，其余 → Claude 会话名。
@@ -556,8 +563,13 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     }
   }
 
-  const wakeNames = [...claudeNames];
-  if (wakeNames.length === 0 && codexTargets.length === 0 && piTargets.length === 0 && hermesTargets.length === 0) {
+  const agyMention = claudeNames.some((name) => name.toLowerCase() === "agy");
+  if (agyMention) {
+    await deliverDm({ resolved: resolveDmTarget("agy")!, target: "agy", channel,
+      firstMessage: message.seq === 1, stableChannel: false, wakeInput, dmReplyTarget: null }, M, CLI_SINK);
+  }
+  const wakeNames = claudeNames.filter((name) => name.toLowerCase() !== "agy");
+  if (wakeNames.length === 0 && codexTargets.length === 0 && piTargets.length === 0 && hermesTargets.length === 0 && !agyMention) {
     // #36：一个人都没叫醒时必须明说，不能只留一行 stored 让发送方以为送到了。
     const dm = channel.startsWith("dm-");
     console.log(M.sendNoWakeTarget(dm));
@@ -897,11 +909,12 @@ async function cmdWhoLocal(parsed: Parsed): Promise<void> {
     entry.kind === "codex-task" && (codexOwners[entry.threadId] !== undefined || entry.livePid !== null));
   const pi = relevantFirst(roster.entries.filter((e) => e.kind === "pi"));
   const hermesEntries = roster.entries.filter((e) => e.kind === "hermes");
+  const agyEntries = roster.entries.filter((e) => e.kind === "agy");
   const cmux = roster.entries.filter((e) => e.kind === "cmux");
   if (json) {
     console.log(JSON.stringify({
       ...roster,
-      entries: [...claude, ...codex, ...pi, ...hermesEntries, ...cmux],
+      entries: [...claude, ...codex, ...pi, ...hermesEntries, ...agyEntries, ...cmux],
       hermes: hermes.available,
     }, null, 2));
     return;
@@ -965,6 +978,10 @@ async function cmdWhoLocal(parsed: Parsed): Promise<void> {
       console.log(`  ${named}${e.target}${label}  ${e.status ?? "unknown"}${e.self ? M.whoSelfTag : ""}`);
     }
   }
+  if (agyEntries.length > 0) {
+    console.log(A.header);
+    for (const e of agyEntries) console.log(`  agy  ${e.status}${verbose ? `  pid=${e.pid}  cwd=${e.cwd}` : ""}`);
+  }
   if (roster.cmux) {
     if (cmux.length > 0) {
       console.log(M.whoCmuxHeader);
@@ -1003,6 +1020,10 @@ async function cmdWhoLocal(parsed: Parsed): Promise<void> {
  * 祖先链识别不可靠；statusLine 的 stdin 恰好带 session_id）。
  */
 function cmdWhoami(parsed: Parsed): void {
+  if (process.env.OCS_NAME === "agy" && findAgyWorker() !== null && !parsed.flags.has("session")) {
+    console.log(parsed.flags.has("json") ? JSON.stringify({ host: "agy", id: "agy", name: "agy", session: null, addresses: ["agy"] }) : "agy");
+    return;
+  }
   const sessionFlag = parsed.flags.get("session");
   let owner: NameOwner | null;
   if (typeof sessionFlag === "string") {
@@ -1308,6 +1329,10 @@ async function cmdDoctor(parsed: Parsed): Promise<void> {
   if (pi.length > 0) ok(M.doctorPiSessions(pi.length));
   else warn(M.doctorNoPiSessions);
 
+  console.log(A.doctor);
+  const agyWorker = findAgyWorker();
+  if (agyWorker !== null) ok(A.active(agyWorker.status));
+  else console.log(`  ｰ  ${A.offline}`);
   console.log(M.doctorHermes);
   const hermes = await listHermesSessions();
   if (hermes.available) ok(M.doctorHermesHost(hermes.host.role, hermes.host.pid, hermes.sessions.length));
@@ -1615,6 +1640,39 @@ async function cmdWatch(parsed: Parsed): Promise<void> {
   }
 }
 
+async function cmdAgy(parsed: Parsed): Promise<void> {
+  const command = parsed.positional[0];
+  if (!["start", "serve", "status", "stop"].includes(command ?? "")) fail(A.usage);
+  if (command === "status") {
+    if (["cwd", "model", "timeout"].some((flag) => parsed.flags.has(flag))) fail(A.usage);
+    const worker = findAgyWorker();
+    if (parsed.flags.has("json")) console.log(JSON.stringify(worker === null ? null : {
+      target: worker.target, pid: worker.pid, cwd: worker.cwd, status: worker.status,
+    }));
+    else console.log(worker === null ? A.offline : A.started(worker.pid, worker.cwd));
+    return;
+  }
+  if (parsed.flags.has("json")) fail(A.usage);
+  if (command === "stop") {
+    if (parsed.flags.size > 0) fail(A.usage);
+    const worker = findAgyWorker();
+    if (worker === null) { console.log(A.offline); return; }
+    process.kill(worker.pid, "SIGTERM");
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline && findAgyWorker() !== null) await new Promise((wait) => setTimeout(wait, 100));
+    if (findAgyWorker() !== null) fail(A.timeout);
+    console.log(A.stopped);
+    return;
+  }
+  try {
+    const options = parseAgyOptions(parsed.flags);
+    if (command === "serve") { await runAgyWorker(options); return; }
+    const worker = await startAgyWorker(options, process.env);
+    if (worker === null) fail(A.timeout);
+    console.log(A.started(worker.pid, worker.cwd));
+  } catch (error) { fail(error instanceof Error ? error.message : String(error)); }
+}
+
 async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
   const spec = command !== undefined ? COMMAND_SPECS[command] : undefined;
@@ -1656,6 +1714,12 @@ async function main(): Promise<void> {
       break;
     case "lan":
       await cmdLan(lanContext(parsed));
+      break;
+    case "agy":
+      await cmdAgy(parsed);
+      break;
+    case AGY_WORKER_COMMAND:
+      await runAgyWorker(parseAgyOptions(parsed.flags));
       break;
     case UPDATE_CHECK_COMMAND:
       await runUpdateCheck();

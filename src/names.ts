@@ -30,7 +30,7 @@ export type OcsNameEntry =
 const RESERVED_RE = /^(?:claude|codex|pi)-[0-9a-f]{8}$/i;
 
 export function isReservedOcsName(name: string): boolean {
-  return RESERVED_RE.test(name) ||
+  return name.toLowerCase() === "agy" || RESERVED_RE.test(name) ||
     isCodexThreadId(name) ||
     (name.toLowerCase().startsWith("pi-") && isPiSessionId(name.slice(3))) ||
     hermesSessionKeyFromTarget(name.toLowerCase()) !== null;

@@ -253,6 +253,8 @@ Usage:
   ocs whoami [--json] [--session <claude-session-id>]
       Print the auto-detected sender identity. --json describes the host session:
       {host, id, name, session, addresses}; --session looks up one Claude session by id.
+  ocs agy start|serve|status|stop [--cwd <workspace>] [--model <model>] [--timeout <seconds>]
+      Optional Antigravity CLI receiver; queues tasks and reports results through OCS.
   ocs sessions | codex-sessions [--limit <n>]
       Live Claude sessions or local Codex rollout history; ocs who shows renderer-open Codex tasks.
   ocs watch <channel> [--interval-ms <n>]
@@ -584,6 +586,8 @@ const zh: Catalog = {
   ocs whoami [--json] [--session <claude-session-id>]
       看自动识别出的发送者身份。--json 描述宿主会话：
       {host, id, name, session, addresses}；--session 按 id 查指定 Claude 会话
+  ocs agy start|serve|status|stop [--cwd <工作目录>] [--model <模型>] [--timeout <秒>]
+      可选的 Antigravity CLI 接收端；排队执行任务并通过 OCS 回传结果。
   ocs sessions | codex-sessions [--limit <n>]
       活 Claude 会话或本地 Codex rollout 历史；ocs who 才显示 renderer 已打开的 Codex task
   ocs watch <channel> [--interval-ms <n>]
