@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.2
 
 - Local `ocs dm --no-wake` stores a message with its route/inbox history without starting a peer turn (`wake: skipped`, exit 0). It is for records a recipient actively reads, not a requested answer or urgent blocker. LAN DM and idle subscriptions cannot be combined with it
 - Agent guidance and wake notes stop unsolicited acknowledgement/thanks loops. Requested answers, decisions, blockers and final results still use normal delivery; complete findings are batched into one message
