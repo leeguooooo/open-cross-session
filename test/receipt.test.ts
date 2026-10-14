@@ -327,6 +327,23 @@ describe("Claude 唤醒的投递回执：真 CLI + 真 helper", () => {
     }
   }, T);
 
+  test("--json：helper 不给结果 → wake unknown、退出码 3，stdout 只有一行 JSON", async () => {
+    const f = fixture({ env: { [RECEIPT_CLI_WAIT_MS_ENV]: "1" } });
+    try {
+      const r = await run(f, ["send", "chat", "ping @worker-a", "--as", "tester", "--json"]);
+      expect(r.code).toBe(3);
+      const rows = r.stdout.split("\n").filter((line) => line !== "");
+      expect(rows.length).toBe(1);
+      expect(JSON.parse(rows[0]!)).toMatchObject({ v: 1, stored: true, channel: "chat", seq: 1, wake: "unknown", exit: 3 });
+      await f.inbox.nextFrame();
+      await helpersDone(f);
+      await sleep(300);
+      expect(f.inbox.frames.length).toBe(1);
+    } finally {
+      f.close();
+    }
+  }, T);
+
   test("notify-when-idle 不受影响：通知帧不带 from、不产生回执 helper", async () => {
     const f = fixture({ policy: "hold", env: { OCS_IDLE_POLL_MS: "20" } });
     try {

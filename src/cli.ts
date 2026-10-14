@@ -4,12 +4,13 @@
 // 命令面沿用 party CLI 的使用习惯（ocs 从 AgentParty 孵化；AgentParty 已停止维护）。
 // 输出全部走 i18n 目录（英文 canonical，OCS_LANG/locale 选 zh）。
 
-import { chmodSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, statSync, writeSync } from "node:fs";
 import { findAgyWorker } from "./agy.ts";
 import { AGY_WORKER_COMMAND, parseAgyOptions, runAgyWorker, startAgyWorker } from "./agy-worker.ts";
 import { agyMessages } from "./i18n-agy.ts";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { formatWithOptions } from "node:util";
 import { listNativeSessions, type NativeClaudeSession } from "./claude-inject.ts";
 import { enableCrossSessionInbound, readCrossSessionInbound } from "./claude-settings.ts";
 import {
@@ -130,7 +131,7 @@ import {
   upgradeCheckEnabled,
 } from "./upgrade.ts";
 
-export const OCS_VERSION = "0.8.0";
+export const OCS_VERSION = "0.8.2";
 
 const LANG = detectLang();
 const M = messages(LANG);
@@ -155,11 +156,11 @@ const NO_ARGS: CommandSpec = { value: [], bool: [], minPos: 0, maxPos: 0 };
 const COMMAND_SPECS: Record<string, CommandSpec> = {
   send: {
     value: ["as", "reply-to", "codex", "codex-source"],
-    bool: ["no-wake", "notify-when-idle"],
+    bool: ["no-wake", "notify-when-idle", "json"],
     minPos: 2,
     maxPos: null,
   },
-  dm: { value: ["as", "inherit"], bool: ["notify-when-idle"], minPos: 2, maxPos: null },
+  dm: { value: ["as", "inherit"], bool: ["notify-when-idle", "no-wake", "json"], minPos: 2, maxPos: null },
   inbox: { value: ["as", "session"], bool: ["json"], minPos: 0, maxPos: 0 },
   read: { value: ["as", "since"], bool: ["json", "peek", "include-self"], minPos: 1, maxPos: 1 },
   "notify-when-idle": { value: [], bool: [], minPos: 1, maxPos: 1 },
@@ -279,8 +280,71 @@ function parseArgs(argv: string[], spec: CommandSpec): Parsed {
 }
 
 function fail(message: string): never {
+  if (jsonRun !== null) {
+    // 落盘后不会走到 fail；万一走到，也只能报 unknown，不能让调用方以为没落盘而重发。
+    const exit = jsonRun.stored === undefined ? 1 : 3;
+    emitJsonResult(exit, message);
+    process.exit(exit);
+  }
   console.error(`ocs: ${message}`);
   process.exit(1);
+}
+
+/**
+ * `send/dm --json`：stdout 只有最后一行 JSON（v1），人读行收进 `lines`。退出码与文本模式一致：
+ * 1 = 没落盘，2 = 已落盘但唤醒失败，3 = 已落盘、唤醒结果未知。2/3 都不许重发。
+ * `wake: "accepted"` 只表示没报告失败（含积压 / steer），不证明已读（铁律 4）。
+ */
+type JsonWake = "accepted" | "deferred" | "parked" | "failed" | "unknown" | "skipped" | "none";
+interface JsonRun {
+  command: "send" | "dm";
+  lines: string[];
+  stored?: { channel: string; seq: number };
+  wake?: "skipped" | "none";
+  pending: Set<"parked" | "deferred">;
+}
+let jsonRun: JsonRun | null = null;
+
+function startJsonRun(command: "send" | "dm"): void {
+  const run: JsonRun = { command, lines: [], pending: new Set() };
+  jsonRun = run;
+  console.log = (...args: unknown[]) => {
+    run.lines.push(formatWithOptions({ colors: false }, ...args));
+  };
+}
+
+function markStored(channel: string, seq: number): void {
+  if (jsonRun !== null) jsonRun.stored = { channel, seq };
+}
+
+/** 本次没有任何可唤醒目标、也不算失败（普通频道不点名、只 @ 到自己）。 */
+function markNoWakeTarget(): void {
+  if (jsonRun !== null && jsonRun.wake === undefined) jsonRun.wake = "none";
+}
+
+function emitJsonResult(exit: number, error?: string): void {
+  const run = jsonRun!;
+  let wake: JsonWake | undefined;
+  if (run.stored !== undefined) {
+    // 多目标时取最差：unknown > failed > parked > deferred > accepted。
+    wake = exit === 3 ? "unknown"
+      : exit === 2 ? "failed"
+      : run.pending.has("parked") ? "parked"
+      : run.pending.has("deferred") ? "deferred"
+      : run.wake ?? "accepted";
+  }
+  const out = {
+    v: 1,
+    command: run.command,
+    stored: run.stored !== undefined,
+    ...(run.stored ?? {}),
+    ...(wake === undefined ? {} : { wake }),
+    ...(error === undefined ? {} : { error }),
+    exit,
+    lines: run.lines,
+  };
+  // 同步写：fail() 紧接着 process.exit，异步管道写可能被截断。
+  writeSync(1, `${JSON.stringify(out)}\n`);
 }
 
 /**
@@ -293,7 +357,11 @@ function markStoredDeliveryFailure(outcome: StoredDeliveryFailure): void {
   process.exitCode = Math.max(Number(process.exitCode ?? 0), code);
 }
 
-const CLI_SINK: DeliverySink = { log: (line) => console.log(line), fail: markStoredDeliveryFailure };
+const CLI_SINK: DeliverySink = {
+  log: (line) => console.log(line),
+  fail: markStoredDeliveryFailure,
+  pending: (state) => jsonRun?.pending.add(state),
+};
 
 /** Resolve the full UUID or the exact short address printed by `ocs who`. */
 function resolveCodexFlagAddress(flag: "codex" | "codex-source", value: string): string {
@@ -369,6 +437,7 @@ function subscribeIdle(subscriber: NativeClaudeSession, targets: readonly Native
 async function cmdSend(parsed: Parsed): Promise<void> {
   const [channel, ...bodyParts] = parsed.positional;
   if (channel === undefined || bodyParts.length === 0) fail(M.failSendUsage);
+  if (parsed.flags.has("no-wake") && parsed.flags.has("notify-when-idle")) fail(M.failNoWakeNotify);
   const from = senderName(parsed);
   // Address syntax/ambiguity is validated before append: malformed flags must
   // never create a message that could not possibly be delivered.
@@ -409,8 +478,12 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     ...(replyToSeq !== undefined ? { reply_to: replyToSeq } : {}),
   });
   console.log(M.stored(channel, message.seq));
+  markStored(channel, message.seq);
 
-  if (parsed.flags.has("no-wake")) return;
+  if (parsed.flags.has("no-wake")) {
+    if (jsonRun !== null) jsonRun.wake = "skipped";
+    return;
+  }
 
   // --reply-to <seq> 隐含唤醒那条消息的作者：唤醒 note 里的 Reply: 行就是这么写的，
   // 复制执行必须真的把回复送回发送方，而不是要求再手加一个 @。
@@ -501,6 +574,7 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     const dm = channel.startsWith("dm-");
     console.log(M.sendNoWakeTarget(dm));
     if (dm) markStoredDeliveryFailure("failed");
+    else markNoWakeTarget();
   }
   if (wakeNames.length === 0) {
     if (idleSubscriber !== null) subscribeIdle(idleSubscriber, []);
@@ -521,6 +595,7 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     const hint = selection.excludedSelf.length > 0 ? M.wakeSelfSkipped : "";
     console.log(`${M.wakeNoMatch(wakeNames.join(" @"))}${hint}`);
     if (selection.unmatchedNames.length > 0) markStoredDeliveryFailure("failed");
+    else if (codexTargets.length === 0 && piTargets.length === 0 && hermesTargets.length === 0) markNoWakeTarget();
     if (idleSubscriber !== null) subscribeIdle(idleSubscriber, []);
     return;
   }
@@ -577,10 +652,11 @@ function lanDmSender(parsed: Parsed, from: string): LanDmSender {
 async function cmdDm(parsed: Parsed): Promise<void> {
   const [target, ...bodyParts] = parsed.positional;
   if (target === undefined || bodyParts.length === 0) fail(M.failDmUsage);
+  if (parsed.flags.has("no-wake") && parsed.flags.has("notify-when-idle")) fail(M.failNoWakeNotify);
   const from = senderName(parsed);
   // `<地址>@<对端>`：NAME_RE 里没有 '@'，本机地址不可能长这样，分流无歧义。
   if (target.includes("@")) {
-    for (const flag of ["notify-when-idle", "inherit"]) {
+    for (const flag of ["notify-when-idle", "inherit", "no-wake", "json"]) {
       if (parsed.flags.has(flag)) fail(L.dmFlagUnsupported(flag));
     }
     await lanDm(lanContext(parsed), target, bodyParts.join(" "), lanDmSender(parsed, from));
@@ -693,6 +769,7 @@ async function cmdDm(parsed: Parsed): Promise<void> {
     fail(M.dmConversationFailed(error instanceof Error ? error.message : String(error)));
   }
   const { channel, message } = appended;
+  markStored(channel, message.seq);
   try {
     saveInboxCursor(
       channel,
@@ -708,6 +785,11 @@ async function cmdDm(parsed: Parsed): Promise<void> {
     console.log(M.dmInherited(inheritFlag, channel));
   }
   console.log(M.dmSent(target, channel, message.seq));
+  if (parsed.flags.has("no-wake")) {
+    if (jsonRun !== null) jsonRun.wake = "skipped";
+    console.log(M.wakeSkipped);
+    return;
+  }
   const wakeInput = { channel, seq: message.seq, from, body: message.body, lang: LANG };
 
   const dmNoticeSender = noticeSender();
@@ -966,7 +1048,10 @@ function cmdWhoami(parsed: Parsed): void {
   const id = owner.kind === "claude" ? claudeShortId(owner.session.sessionId) : ownerShortId(owner);
   const session = owner.kind === "claude" ? owner.session.name : null;
   const addresses = [...new Set([name, id, session].filter((value): value is string => value !== null))];
-  console.log(JSON.stringify({ host: owner.kind, id, name, session, addresses }));
+  // Codex 短 id 取 thread id 前 8 位，而 thread id 是 UUIDv7（时间戳打头），一分钟内建的线程
+  // 短 id 会撞；只在 codex 上追加完整 threadId，Claude/Pi/Hermes 的输出保持逐字不变。
+  const full = owner.kind === "codex" ? { threadId: owner.id } : {};
+  console.log(JSON.stringify({ host: owner.kind, id, name, session, addresses, ...full }));
 }
 
 /** `ocs rename <name>`：给当前宿主会话起 ocs 名字；`--clear` 删掉；`--force` 接管别人占着的名字。 */
@@ -1307,7 +1392,7 @@ async function cmdDoctor(parsed: Parsed): Promise<void> {
 
 export const SKILL_MD = `---
 name: ocs
-description: Talk to any other AI coding agent on this machine or a paired machine on the same LAN (Claude Code sessions, Codex tasks, Pi sessions, terminal TUIs) over open-cross-session. Use when asked to discuss with, delegate to, wake, or message another agent/session (local, or <address>@<peer> on another computer), or to check what other agents are running.
+description: Message and wake independent Claude Code, Codex, Pi and Hermes sessions locally or on paired LAN computers. Use when asked to discuss with, delegate to, or message another agent, or inspect running sessions.
 ---
 
 # ocs — talk to other agents, here and on your other computers
@@ -1339,7 +1424,8 @@ If the skill came from somewhere \`upgrade\` can't refresh:
 \`\`\`bash
 ocs who                          # same-project peers + pending notices; you are marked
 ocs who --verbose                # raw IDs/paths for diagnostics
-ocs dm <name-or-id> "<text>"     # message + wake one agent (channel auto-derived)
+ocs dm <name-or-id> "<text>"     # request work / answer / deliver a result; wakes the peer
+ocs dm <name> "<text>" --no-wake # local record only; peer must read/inbox later
 ocs dm <name> "<text>" --inherit <old-dm-channel>  # one-time history binding
 ocs inbox                        # unread threads attributable to this identity
 ocs send <channel> "<text>"      # post into a channel; @<name> wakes that agent
@@ -1420,8 +1506,21 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
   the message and sends one combined wake when the turn ends, skipping anything
   the receiver already read (\`wake deferred\`). A combined wake's first line says
   how many earlier messages are unread — read the thread before acting on it.
-- To keep a conversation going, end your message with the peer's @name so they wake
-  (you are never woken by your own @).
+- Keep agent-to-agent traffic tied to work: send a concrete request, an answer to a
+  question, new information needed for a decision, a blocker, or the final result.
+  Batch related findings into one message. Skip acknowledgement-only, thanks,
+  repeated completion confirmations, and routine progress chatter, unless explicitly
+  requested. This does not reduce updates to the human user.
+- A wake note's Reply line is available when a reply is needed; it is not a request
+  to acknowledge every message. End a completed exchange without waking the peer
+  again. Send the final result once; its recipient does not need to confirm receipt.
+- Local \`dm --no-wake\` or \`send --reply-to <seq> --no-wake\` preserves the message and
+  thread without starting a peer turn. Use it only for records the recipient will
+  actively read (a workflow driver or closing notes), not for a requested answer or
+  urgent blocker. JSON reports \`wake: skipped\`, exit 0. Combining \`--no-wake\` with
+  \`--notify-when-idle\` is rejected before storing; LAN DM does not support it yet.
+- While a peer is working, wait for its result instead of polling it with messages.
+  Use one idle subscription only if needed, and remember idle is not completion.
 - Replying with \`ocs dm <workspace-alias>\` reuses the stable or explicitly
   inherited conversation channel.
 - After a restart, \`ocs inbox\` lists only unread threads that can be proven to
@@ -1580,11 +1679,26 @@ async function main(): Promise<void> {
   if (command !== undefined && spec === undefined) {
     fail(`${M.unknownCommand(command)}\n\n${M.help}`);
   }
+  // 参数错误也要走 JSON：看到 --json 就先接管 stdout，再解析。
+  if ((command === "send" || command === "dm") && rest.includes("--json")) startJsonRun(command);
   const parsed = parseArgs(rest, spec ?? NO_ARGS);
   // 回执 helper 是本 CLI 的内部子命令：只有从这里进来的进程才知道怎么把自己再跑一遍。
   setWakeHelperCommand(selfCommand());
   setCodexWakeWatcherCommand(selfCommand());
   maybeUpdateNotice(OCS_VERSION, command, selfCommand());
+  if (jsonRun !== null) {
+    try {
+      await (command === "send" ? cmdSend(parsed) : cmdDm(parsed));
+    } catch (error) {
+      // 落盘后的意外异常 = 唤醒结果未知（3），绝不能报成 1 引人重发。
+      const exit = jsonRun.stored === undefined ? 1 : 3;
+      process.exitCode = exit;
+      emitJsonResult(exit, error instanceof Error ? error.message : String(error));
+      return;
+    }
+    emitJsonResult(Number(process.exitCode ?? 0));
+    return;
+  }
   switch (command) {
     case "send":
       await cmdSend(parsed);

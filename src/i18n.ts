@@ -171,6 +171,9 @@ interface Catalog {
   whoEmpty: string;
   whoCmuxHint: string;
   dmSent: (target: string, channel: string, seq: number) => string;
+  wakeReplyPolicy: string;
+  wakeSkipped: string;
+  failNoWakeNotify: string;
   dmWorkspaceResolved: (requested: string, current: string, alias: string) => string;
   dmWorkspaceAmbiguous: (target: string, names: string[]) => string;
   dmWorkspaceWarning: (detail: string) => string;
@@ -219,15 +222,16 @@ Usage:
   ocs who [--verbose | --json]
       Roster of every reachable agent: Claude sessions, Codex tasks, Pi sessions, terminals,
       plus pending idle notifications. Same-project peers come first; --verbose shows raw IDs/paths.
-  ocs dm <name-or-id> <text> [--as <name>] [--inherit <old-dm-channel>] [--notify-when-idle]
+  ocs dm <name-or-id> <text> [--as <name>] [--inherit <old-dm-channel>] [--notify-when-idle] [--no-wake] [--json]
       Message + wake one agent. Channel is auto-derived; nothing to set up.
       --inherit binds one pre-v0.3.4 DM history channel; both Claude workspaces must be live and unique.
   ocs inbox [--as <name> | --session <claude-session-id>] [--json]
       List unread threads attributable to this identity; reading still uses the existing ocs read command.
       --session resolves one Claude session by id (for status bars outside Claude's process tree).
-  ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake]
+  ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake] [--json]
            [--notify-when-idle] [--codex <thread-id|codex-8hex>]
            [--codex-source <thread-id|codex-8hex>]
+      --json (send/dm): one JSON line {v, stored, channel, seq, wake, exit, lines}; same exit codes.
       Append to a channel. @<session-name> wakes a live Claude session;
       @pi-<session-id> wakes Pi; @<thread-id> or --codex targets ChatGPT Desktop.
       --reply-to <seq> also wakes the author of that seq.
@@ -247,10 +251,10 @@ Usage:
       working too; both go anywhere an address does (dm, @mention, notify-when-idle).
       A name held by another session is refused; --force takes it over.
   ocs whoami [--json] [--session <claude-session-id>]
-  ocs agy start|serve|status|stop [--cwd <workspace>] [--model <model>] [--timeout <seconds>]
-      Optional Antigravity CLI receiver; queues tasks and reports results through OCS.
       Print the auto-detected sender identity. --json describes the host session:
       {host, id, name, session, addresses}; --session looks up one Claude session by id.
+  ocs agy start|serve|status|stop [--cwd <workspace>] [--model <model>] [--timeout <seconds>]
+      Optional Antigravity CLI receiver; queues tasks and reports results through OCS.
   ocs sessions | codex-sessions [--limit <n>]
       Live Claude sessions or local Codex rollout history; ocs who shows renderer-open Codex tasks.
   ocs watch <channel> [--interval-ms <n>]
@@ -484,6 +488,9 @@ Details: https://github.com/leeguooooo/open-cross-session/blob/main/docs/lan.md`
   whoEmpty: "no reachable agents found — open a Claude Code, Codex, or Pi session",
   whoCmuxHint: "cmux not detected: terminal TUIs are not listed (they can still join channels themselves)",
   dmSent: (target, channel, seq) => `dm stored → ${target} (channel ${channel}, seq ${seq})`,
+  wakeReplyPolicy: "Reply when asked, or with a needed decision/result. No unsolicited acknowledgements.",
+  wakeSkipped: "wake: skipped by --no-wake (stored only; no model turn requested)",
+  failNoWakeNotify: "--no-wake cannot be combined with --notify-when-idle",
   dmWorkspaceResolved: (requested, current, alias) =>
     `resolved ${requested} → ${current} via unique workspace alias ${alias}`,
   dmWorkspaceAmbiguous: (target, names) =>
@@ -549,15 +556,16 @@ const zh: Catalog = {
   ocs who [--verbose | --json]
       全机 agent 花名册：Claude 会话、Codex 任务、Pi 会话、终端，都在一张表里，
       外加待触发的空闲通知；当前项目优先，--verbose 显示底层 ID/路径
-  ocs dm <名字或id> <内容> [--as <name>] [--inherit <旧dm频道>] [--notify-when-idle]
+  ocs dm <名字或id> <内容> [--as <name>] [--inherit <旧dm频道>] [--notify-when-idle] [--no-wake] [--json]
       给一个 agent 发消息并唤醒；频道自动派生，什么都不用建
       --inherit 一次性绑定 v0.3.4 之前的 DM 历史；双方 Claude 工作区必须在线且唯一
   ocs inbox [--as <name> | --session <claude-session-id>] [--json]
       列出能可靠归属给当前身份的未读线程；读取仍复用现有 ocs read 命令
       --session 按 id 解析指定 Claude 会话（给不在 Claude 进程树里的状态栏用）
-  ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake]
+  ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake] [--json]
            [--notify-when-idle] [--codex <thread-id|codex-8hex>]
            [--codex-source <thread-id|codex-8hex>]
+      --json（send/dm）：只输出一行 JSON {v, stored, channel, seq, wake, exit, lines}，退出码不变
       往频道追加消息；@<会话名> 唤醒活 Claude 会话，@pi-<session-id>
       唤醒 Pi；@<thread-id> 或 --codex 投给 ChatGPT Desktop 任务
       --reply-to <seq> 同时唤醒那条消息的作者
@@ -576,10 +584,10 @@ const zh: Catalog = {
       给当前会话起个好记的地址。原来的短 id（claude-/codex-/pi-<8hex>）照样能用，
       两者在 dm、@提及、notify-when-idle 里通用。名字被别的会话占着时拒绝；--force 接管
   ocs whoami [--json] [--session <claude-session-id>]
-  ocs agy start|serve|status|stop [--cwd <工作目录>] [--model <模型>] [--timeout <秒>]
-      可选的 Antigravity CLI 接收端；排队执行任务并通过 OCS 回传结果。
       看自动识别出的发送者身份。--json 描述宿主会话：
       {host, id, name, session, addresses}；--session 按 id 查指定 Claude 会话
+  ocs agy start|serve|status|stop [--cwd <工作目录>] [--model <模型>] [--timeout <秒>]
+      可选的 Antigravity CLI 接收端；排队执行任务并通过 OCS 回传结果。
   ocs sessions | codex-sessions [--limit <n>]
       活 Claude 会话或本地 Codex rollout 历史；ocs who 才显示 renderer 已打开的 Codex task
   ocs watch <channel> [--interval-ms <n>]
@@ -797,6 +805,9 @@ ${lanMessages("zh").help}
   whoEmpty: "没发现可达的 agent——开一个 Claude Code、Codex 或 Pi 会话",
   whoCmuxHint: "cmux 未检测到：终端 TUI 不在列表里（它们仍可自己进频道）",
   dmSent: (target, channel, seq) => `dm 已落盘 → ${target}（频道 ${channel}，seq ${seq}）`,
+  wakeReplyPolicy: "只在被要求或有必要决策/结果时回复；不发无请求的确认回信。",
+  wakeSkipped: "唤醒：--no-wake 已跳过（仅落盘，不请求模型回合）",
+  failNoWakeNotify: "--no-wake 不可与 --notify-when-idle 同时使用",
   dmWorkspaceResolved: (requested, current, alias) =>
     `通过唯一工作区别名 ${alias} 解析 ${requested} → ${current}`,
   dmWorkspaceAmbiguous: (target, names) =>

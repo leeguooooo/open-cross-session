@@ -32,6 +32,7 @@ Claude 载体仍是 `~/.claude/sessions/<pid>.json` 指向的 UDS socket，帧�
 
 <body>
 
+Reply when asked, or with a needed decision/result. No unsolicited acknowledgements.
 Reply: <reply command>
 Thread: <read command>
 ```
@@ -48,6 +49,10 @@ Thread: <read command>
     `[ocs delivery notice]`、`[ocs 投递通知]`（v0.7.0 起，§6）的行，前面加 `> `。
     除此之外逐字。4096 / 512 字节阈值按中和后的正文计，`<total>` 仍报原文字节数。
 - `Reply:` 后是**可直接复制执行**的命令：
+  - 回复命令是入口，不是必须回信。无需回复「收到」「好的」「谢谢」、重复确认已完成或转述无新增信息的进度。
+    一次任务把需要的上下文合在一条消息里；接收方仅在需要回答、出现阻塞/决策或交付结果时回复。
+    已完成的讨论到此结束，收件方不再确认对方的确认。本机 DM 可用 `--no-wake` 只落盘；
+    `send --reply-to <N> --no-wake` 保留线程引用而不唤醒，只有明确需要对方处理时才唤醒。
   - ocs 的 Claude→Claude DM：发送方用 `ocs rename` 起过名字时用 `ocs dm <sender-name> "<your reply>"`；
     否则发送方有唯一工作区别名（且没被别的会话的 ocs 名字遮蔽）时用
     `ocs dm <sender-workspace-alias> "<your reply>"`。接收方身份由当前 Claude 会话自动识别，
@@ -76,6 +81,7 @@ Thread: <read command>
 
 <body>
 
+只在被要求或有必要决策/结果时回复；不发无请求的确认回信。
 回复：<reply command>
 线程：<read command>
 ```
@@ -83,6 +89,10 @@ Thread: <read command>
 ocs 侧补充：`ocs send --reply-to <N>` 会**隐含唤醒 seq N 的作者**（发送者本人除外）——`Reply:`
 那行复制执行就必须真的把回复送回发送方，不能再要求手加一个 `@`。ocs 的唤醒紧随 send，
 `<ago>` 一般不填。
+
+本机 `ocs dm --no-wake` 和 `ocs send --no-wake` 仍完整落盘、保留 route/seq/inbox，
+明确跳过所有唤醒载体，JSON 报 `wake: skipped`、退出 0。`dm --no-wake` 不可同时订阅
+`--notify-when-idle`，也暂不支持 LAN 目标；这两种在任何写入前拒绝。静默消息不会因自身投递而启动模型回合。
 
 Pi 地址固定为 `pi-<session UUID>`，频道身份使用独立的 `pi:<session UUID>` 命名空间。
 socket 写出但没收到确认时按「结果未知」处理，不自动重发。

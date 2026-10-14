@@ -97,9 +97,11 @@ describe("codex-queue：活性判定（rollout fd 持有者）", () => {
     const { env, live } = rolloutFixture();
     const fd = openSync(live, "r");
     try {
-      // 跑测试的 bun/node 持有着 fd，但它不是 codex 会话——判活必须拒绝它。
-      expect(codexThreadLivePid(THREAD_LIVE, env)).toBeNull();
-      expect(codexThreadLivePids([THREAD_LIVE], env).size).toBe(0);
+      // 真 lsof 查本进程的 fd；身份 fixture 明确是无 Codex/Desktop 祖先的索引器。
+      // 测试本身可能由 ChatGPT.app/Codex 启动，不能把真实宿主祖先误当成第三方。
+      const indexer = new Map([[process.pid, { ppid: 0, tty: "??", comm: "/fixture/indexer" }]]);
+      expect(codexThreadLivePid(THREAD_LIVE, env, indexer)).toBeNull();
+      expect(codexThreadLivePids([THREAD_LIVE], env, indexer).size).toBe(0);
     } finally {
       closeSync(fd);
     }

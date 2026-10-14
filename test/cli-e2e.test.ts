@@ -646,3 +646,151 @@ describe("ocs rename：名字和 id 都能找到会话", () => {
     }
   }, T);
 });
+
+describe("send/dm --json：stdout 只有一行 v1 JSON，退出码与文本模式一致", () => {
+  const parse = (stdout: string) => {
+    const rows = stdout.split("\n").filter((line) => line !== "");
+    expect(rows.length).toBe(1);
+    return JSON.parse(rows[0]!) as Record<string, unknown>;
+  };
+
+  test("stored/channel/seq/wake 可分辨：none / skipped / failed / accepted", async () => {
+    const f = fixture();
+    try {
+      const none = await run(f, ["send", "chat", "plain", "--as", "tester", "--json"]);
+      expect(none.code).toBe(0);
+      expect(parse(none.stdout)).toMatchObject({ v: 1, command: "send", stored: true, channel: "chat", seq: 1, wake: "none", exit: 0 });
+
+      const skipped = await run(f, ["send", "chat", "quiet @worker-a", "--as", "tester", "--no-wake", "--json"]);
+      expect(parse(skipped.stdout)).toMatchObject({ stored: true, seq: 2, wake: "skipped", exit: 0 });
+
+      const dm = await run(f, ["send", "dm-abc", "plain reply", "--as", "tester", "--json"]);
+      expect(dm.code).toBe(2);
+      const failed = parse(dm.stdout);
+      expect(failed).toMatchObject({ stored: true, channel: "dm-abc", seq: 1, wake: "failed", exit: 2 });
+      expect((failed.lines as string[]).join("\n")).toContain("nobody was woken");
+
+      const woke = await run(f, ["send", "chat", "look @worker-a", "--as", "tester", "--json"]);
+      expect(woke.code).toBe(0);
+      expect(parse(woke.stdout)).toMatchObject({ stored: true, seq: 3, wake: "accepted", exit: 0 });
+      expect(content(await f.nextFrame())).toContain("look @worker-a");
+      expect(woke.stderr).toBe("");
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("没落盘：参数错误 / 跨机 dm 都是 stored:false、退出 1，零写入", async () => {
+    const f = fixture();
+    try {
+      const bad = await run(f, ["send", "chat", "hello", "--as", "tester", "--codex", "--json"]);
+      expect(bad.code).toBe(1);
+      expect(parse(bad.stdout)).toMatchObject({ v: 1, stored: false, exit: 1, error: "--codex requires a value" });
+      const missing = await run(f, ["send", "chat", "hello", "--as", "tester", "--json", "--codex"]);
+      expect(parse(missing.stdout)).toMatchObject({ stored: false, exit: 1, error: "--codex requires a value" });
+      const lan = await run(f, ["dm", "bob@peer", "hi", "--as", "tester", "--json"]);
+      expect(lan.code).toBe(1);
+      expect(parse(lan.stdout)).toMatchObject({ command: "dm", stored: false, exit: 1 });
+      expect(lan.stderr).toBe("");
+      expect(readMessages("chat", { env: f.env })).toEqual([]);
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("dm 目标不在线：parked（退出码仍 0），不报成 accepted", async () => {
+    const f = fixture();
+    try {
+      const r = await run(f, ["dm", "offline-bob", "stored once", "--as", "alice", "--json"]);
+      expect(r.code).toBe(0);
+      const out = parse(r.stdout);
+      expect(out).toMatchObject({ v: 1, command: "dm", stored: true, seq: 1, wake: "parked", exit: 0 });
+      expect(readMessages(out.channel as string, { env: f.env }).map((m) => m.body)).toEqual(["stored once"]);
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("dm 活会话：accepted，channel/seq 与日志一致", async () => {
+    const f = fixture();
+    try {
+      const r = await run(f, ["dm", "worker-a", "hello there", "--json"]);
+      expect(r.code).toBe(0);
+      const out = parse(r.stdout);
+      expect(out).toMatchObject({ command: "dm", stored: true, seq: 1, wake: "accepted", exit: 0 });
+      expect(readMessages(out.channel as string, { env: f.env }).map((m) => m.body)).toEqual(["hello there"]);
+      expect(content(await f.nextFrame())).toContain("hello there");
+    } finally {
+      f.close();
+    }
+  }, T);
+});
+
+describe("静默记录：保留任务历史，不触发模型回合", () => {
+  test("live DM --no-wake 零帧，下一条正常任务仍精确唤醒", async () => {
+    const f = fixture();
+    try {
+      const quiet = await run(f, ["dm", "worker-a", "closing record", "--no-wake", "--json"]);
+      expect(quiet.code).toBe(0);
+      const result = JSON.parse(quiet.stdout);
+      expect(result).toMatchObject({ stored: true, wake: "skipped", exit: 0 });
+      expect(readRoutedMessages(result.channel, { env: f.env }).map(m => m.body)).toEqual(["closing record"]);
+      expect(f.frames).toEqual([]);
+      const task = await run(f, ["dm", "worker-a", "please review the diff", "--json"]);
+      expect(task.code).toBe(0);
+      expect(content(await f.nextFrame())).toContain("please review the diff");
+      expect(f.frames.length).toBe(1);
+    } finally { f.close(); }
+  }, T);
+
+  test("十条静默记录和线程回复不唤醒；矛盾订阅和LAN在写入前拒绝", async () => {
+    const f = fixture();
+    try {
+      let channel = "";
+      for (let i = 0; i < 10; i++) {
+        const r = await run(f, ["dm", "worker-a", `record-${i}`, "--no-wake", "--json"]);
+        expect(r.code).toBe(0); channel = JSON.parse(r.stdout).channel;
+      }
+      expect(readMessages(channel, { env: f.env }).length).toBe(10);
+      const reply = await run(f, ["send", channel, "closing thread", "--reply-to", "1", "--no-wake", "--json"]);
+      expect(JSON.parse(reply.stdout)).toMatchObject({ wake: "skipped", seq: 11 });
+      expect(f.frames).toEqual([]);
+      for (const args of [
+        ["dm", "worker-a", "bad", "--no-wake", "--notify-when-idle", "--json"],
+        ["send", channel, "bad", "--no-wake", "--notify-when-idle", "--json"],
+        ["dm", "bob@peer", "bad", "--no-wake", "--json"],
+      ]) {
+        const r = await run(f, args); expect(r.code).toBe(1); expect(JSON.parse(r.stdout).stored).toBe(false);
+      }
+      expect(readMessages(channel, { env: f.env }).length).toBe(11);
+    } finally { f.close(); }
+  }, T);
+});
+
+describe("whoami --json：Codex 追加完整 threadId", () => {
+  test("同一分钟建的两个 thread 短 id 相同，threadId 仍能区分；Claude 输出不变", async () => {
+    const f = fixture({ withSelf: false });
+    try {
+      const a = "019a0000-1111-7000-8000-000000000001";
+      const b = "019a0000-2222-7000-8000-000000000002";
+      const runAs = async (thread: string) => {
+        const proc = Bun.spawn([process.execPath, CLI, "whoami", "--json"], {
+          env: { ...f.env, CODEX_THREAD_ID: thread },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const stdout = await new Response(proc.stdout).text();
+        await proc.exited;
+        expect(proc.exitCode).toBe(0);
+        return JSON.parse(stdout) as Record<string, unknown>;
+      };
+      const meA = await runAs(a);
+      const meB = await runAs(b);
+      expect(meA).toMatchObject({ host: "codex", id: "codex-019a0000", threadId: a });
+      expect(meB).toMatchObject({ host: "codex", id: "codex-019a0000", threadId: b });
+      expect(meA.addresses).toEqual(["codex-019a0000"]);
+    } finally {
+      f.close();
+    }
+  }, T);
+});

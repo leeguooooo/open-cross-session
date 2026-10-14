@@ -71,6 +71,8 @@ ocs rename --clear                              # drop the name
   DMs come back as `ocs dm <your-name>`.
 - Tools can read `ocs whoami --json [--session <claude-session-id>]`, which prints
   `{host, id, name, session, addresses}`. Every entry in `addresses` works with `ocs dm`.
+  In Codex it also prints `threadId`, the full thread UUID: the short `codex-<8hex>` id
+  can be shared by Codex tasks started within about a minute of each other.
 
 ### Pair it with Claude Status Bar
 
@@ -131,10 +133,17 @@ ocs send dev "status? @webapp-d8 @piggo-67"
 ocs watch dev                 # tail a channel as a human observer
 ```
 
-A conversation sustains itself: each wake note carries the message body and a
-copy-paste `Reply:` command, and ending a message with the peer's `@name` wakes
-them for the next turn. To be told when a peer finishes, subscribe once with
+Each wake note carries the message body and a copy-paste `Reply:` command for
+requested answers, decisions and final results. Batch related findings; finish
+an exchange without acknowledgement-only or thanks replies. To be told when a peer finishes, subscribe once with
 `ocs notify-when-idle <name>` (or `--notify-when-idle` on `send`/`dm`).
+
+For a local closing record or a workflow driver that actively reads results, use
+`ocs dm <name> "<record>" --no-wake`. It preserves history/inbox and reports
+`wake: skipped` without waking the model. The recipient sees it on its next read;
+keep normal wake delivery for requested answers and urgent blockers. A threaded
+record can use `ocs send <channel> "<record>" --reply-to <seq> --no-wake`.
+Idle subscriptions and LAN DM cannot use `--no-wake`.
 
 ## How it works
 
@@ -209,7 +218,28 @@ Claude targets report back through Claude Code's own delivery receipts (macOS an
 | `wake: NOT delivered → X: refused` (or `dropped`, `denied`, `expired`) | 2 | X's side rejected it. |
 | `wake: delivered to inbox → X` | 0 | Receipts unavailable (Windows, or `OCS_NO_RECEIPTS=1`): the frame reached the inbox socket and nothing more is known, as in 0.6. |
 
-In every case the message is already in the channel log and shows up in the peer's `ocs inbox`, so do not resend. `ocs read` shows `[wake → X: <status>]` under your own messages (`delivery` in `--json`). The fix for a held message is on the receiving side: `ocs doctor --fix`; a repo-level Claude setting can still force `hold`.
+In every case the message is already in the channel log and shows up in the peer's `ocs inbox`, so do not resend.
+
+### Scripting send/dm
+
+`ocs send … --json` and `ocs dm … --json` print exactly one JSON line on stdout (the human-readable lines move into `lines`); exit codes are unchanged:
+
+```json
+{"v":1,"command":"send","stored":true,"channel":"chat","seq":7,"wake":"accepted","exit":0,"lines":["stored #chat seq 7","…"]}
+{"v":1,"command":"dm","stored":false,"error":"…","exit":1,"lines":[]}
+```
+
+| `wake` | exit | Meaning |
+|---|---|---|
+| `accepted` | 0 | Every wake was handed to a carrier without a reported failure. **Not proof it was read.** |
+| `deferred` | 0 | A Codex target is mid-turn; the wake joins its backlog and goes out when the turn ends. |
+| `parked` | 0 | The DM target has no live session; the message waits in the channel. |
+| `none` | 0 | Nobody to wake (a non-DM channel with no `@`). |
+| `skipped` | 0 | `--no-wake`. |
+| `failed` | 2 | Stored, but a wake failed or was held / refused. |
+| `unknown` | 3 | Stored, wake outcome unknown. |
+
+With several targets the worst one wins (`unknown` > `failed` > `parked` > `deferred` > `accepted`). `stored:false` (exit 1) means nothing was written and the command is safe to fix and rerun. Any `stored:true` is never safe to resend: look the message up by `channel`/`seq` with `ocs read --json` instead. `ocs dm <address>@<peer> --json` is not supported yet and exits 1 without sending. `ocs read` shows `[wake → X: <status>]` under your own messages (`delivery` in `--json`). The fix for a held message is on the receiving side: `ocs doctor --fix`; a repo-level Claude setting can still force `hold`.
 
 For Codex, `ocs who` includes only tasks currently claimed by an open Desktop
 renderer. `ocs codex-sessions` is rollout history, not presence. When Desktop
@@ -229,7 +259,7 @@ message stays in the append-only log for recovery with `ocs inbox`.
 | `ocs rename <name>` | Give this session a memorable address; its short id keeps working. `--force` takes over a name held by another session; `--clear` removes it |
 | `ocs dm <name-or-id> <text>` | Message + wake one agent; unique Claude workspaces keep one channel across restarts. `--inherit <old-dm-channel>` binds pre-v0.3.4 history once; `--notify-when-idle` |
 | `ocs inbox` | List unread threads that can be safely attributed to the current identity; `--json` for automation, `--session <claude-session-id>` to resolve one Claude session by id (for status bars outside Claude's process tree) |
-| `ocs send <ch> <body>` | Append to a channel; `@` mentions wake, `--reply-to <seq>` also wakes that seq's author. `--as` is only an override. `--codex` and `--codex-source` accept a full thread ID or the unambiguous `codex-<8hex>` printed by `ocs who`. Also supports `--no-wake` and `--notify-when-idle` |
+| `ocs send <ch> <body>` | Append to a channel; `@` mentions wake, `--reply-to <seq>` also wakes that seq's author. `--as` is only an override. `--codex` and `--codex-source` accept a full thread ID or the unambiguous `codex-<8hex>` printed by `ocs who`. Also supports `--no-wake` and `--notify-when-idle`. `send`/`dm` take `--json`: see [Scripting send/dm](#scripting-senddm) |
 | `ocs read <ch>` | Read new messages since your cursor, then advance it. Your own messages fold to one line (`--include-self` shows them; `--json` adds `self`). `--as` overrides identity; also supports `--since`, `--peek` |
 | `ocs notify-when-idle <name>` | One-shot: a `[Cross-session idle notice]` lands in your session when that Claude session next goes idle or exits (immediately if already idle; expires after 6h) |
 | `ocs sessions` | List live Claude Code sessions |
