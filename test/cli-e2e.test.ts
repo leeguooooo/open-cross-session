@@ -794,3 +794,37 @@ describe("whoami --json：Codex 追加完整 threadId", () => {
     }
   }, T);
 });
+
+
+describe("explicit batch and private traffic observations", () => {
+  test("three tasks commit once, wake once, preserve all content and count message outcomes", async () => {
+    const f = fixture();
+    try {
+      mkdirSync(f.home, { recursive: true, mode: 0o700 });
+      const path = join(f.home, "tasks.json");
+      writeFileSync(path, JSON.stringify(["检查类型", "检查测试", "报告差异"]));
+      const sent = await run(f, ["dm", "worker-a", "--batch", path, "--json"]);
+      expect(sent.code).toBe(0);
+      const receipt = JSON.parse(sent.stdout);
+      expect(receipt).toMatchObject({ stored: true, wake: "accepted", seq: 1 });
+      await f.nextFrame();
+      expect(f.frames.length).toBe(1);
+      const messages = readMessages(receipt.channel, { env: f.env });
+      expect(messages.length).toBe(1);
+      for (const task of ["检查类型", "检查测试", "报告差异"]) expect(messages[0]!.body).toContain(task);
+      await run(f, ["dm", "worker-a", "record", "--no-wake", "--json"]);
+      const stats = JSON.parse((await run(f, ["stats", receipt.channel, "--json"])).stdout);
+      expect(stats).toMatchObject({ messages: 2, wakeRequestedMessages: 1, outcomes: { accepted: 1, skipped: 1 },
+        batchedMessages: 1, batchItems: 3, explicitBatchSavedRequests: 2, deliveryAttempts: 1,
+        deliveryOutcomes: { accepted: 1 } });
+      expect(f.frames.length).toBe(1);
+      expect((await run(f, ["dm", "worker-a", "extra", "--batch", path, "--json"])).code).toBe(1);
+      writeFileSync(path, '["valid", ""]');
+      expect((await run(f, ["dm", "worker-a", "--batch", path, "--json"])).code).toBe(1);
+      expect(readMessages(receipt.channel, { env: f.env }).length).toBe(2);
+      const who = JSON.parse((await run(f, ["who", "--json"])).stdout);
+      expect(who.entries.find((e: { name: string }) => e.name === "worker-a").capabilities)
+        .toMatchObject({ v: 1, wake: "available", noWake: true, batch: true, completionReceipt: false });
+    } finally { f.close(); }
+  }, T);
+});

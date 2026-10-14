@@ -90,7 +90,7 @@ ocs 侧补充：`ocs send --reply-to <N>` 会**隐含唤醒 seq N 的作者**（
 那行复制执行就必须真的把回复送回发送方，不能再要求手加一个 `@`。ocs 的唤醒紧随 send，
 `<ago>` 一般不填。
 
-本机 `ocs dm --no-wake` 和 `ocs send --no-wake` 仍完整落盘、保留 route/seq/inbox，
+`ocs dm --no-wake` 和 `ocs send --no-wake` 仍完整落盘、保留 route/seq/inbox，
 明确跳过所有唤醒载体，JSON 报 `wake: skipped`、退出 0。`dm --no-wake` 不可同时订阅
 `--notify-when-idle`，也暂不支持 LAN 目标；这两种在任何写入前拒绝。静默消息不会因自身投递而启动模型回合。
 
@@ -320,3 +320,16 @@ Fix on the receiving side: `ocs doctor --fix` (sets "crossSessionInbound": "acce
 不跨机回传、不通知。详见 [docs/lan.md](./lan.md)。
 
 AgentParty 侧：serve 无回执 socket 时保持省略 `from`（现状）；要接回执需满足上面的进程模型。
+
+
+## Explicit batches and diagnostics
+
+`send/dm --batch <tasks.json>` stores all related task strings as a single ordinary
+v1 message and invokes normal delivery once per recipient. It never drops, heuristically
+merges or reruns tasks. Long bodies still follow this document's preview limits; receivers
+must read the original full message. Batch counts and capabilities are not message v1
+fields. Diagnostics never authorize replay. See [traffic.md](traffic.md).
+
+LAN quiet delivery is a distinct authenticated dm-quiet operation. Old receivers reject
+it before storing. LAN JSON describes the remote commit; an unanswered request is
+stored:null, wake:unknown, exit 3, never a known unstored failure.

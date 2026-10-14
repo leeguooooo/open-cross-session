@@ -421,3 +421,6 @@ MIT。三个源文件从 [AgentParty](https://github.com/leeguooooo/agentparty) 
 ## 作者
 
 **郭立（Guo Li / leeguoo）** 开发 —— [leeguoo.com](https://leeguoo.com/about) · [GitHub](https://github.com/leeguooooo) · [X](https://x.com/leeguooooo) · 更多工具见 [*-use 家族](https://github.com/leeguooooo/plugins)。
+
+
+消息统计、显式相关任务批量投递与接入能力查询见 [使用说明](docs/traffic.md)。

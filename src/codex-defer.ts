@@ -1,3 +1,4 @@
+import { writeTraffic } from "./traffic.ts";
 // Codex 忙时合并唤醒（issue #41，docs/wake-protocol.md §1.1）。
 //
 // 毛病：`codex queue` 和 Desktop IPC 在目标正跑回合时都不会丢弃输入，而是排进宿主自己的
@@ -428,7 +429,11 @@ export async function runCodexWakeWatch(
       logHistory(env, { threadId: tid, channel, seqs: [], alreadyRead: batch.map((p) => p.seq), outcome: "skipped-read" });
       continue;
     }
+    const event = { v: 1 as const, kind: "coalesced" as const, channel, seq: built.wakeInput.seq,
+      at: new Date(now()).toISOString(), outcome: "unknown" as const, items: built.seqs.length };
+    const eventId = writeTraffic(event, env);
     const result = await options.deliver(tid, built.wakeInput, taken.sourceThreadId);
+    writeTraffic({ ...event, outcome: result.outcome === "ok" ? "accepted" : result.outcome }, env, eventId);
     logHistory(env, {
       threadId: tid,
       channel,

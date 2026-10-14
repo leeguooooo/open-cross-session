@@ -262,3 +262,22 @@ $OCS_HOME/lan/            0700
 - 远端 DM 不支持 `--notify-when-idle` / `--inherit`；`ocs send` 的 `@x@peer` 点名不跨机。
 - 只有 IPv4 发现；TCP 可以 `--bind` 到 IPv6 地址但未专门测试。
 - 授权是整机粒度，没有「只许对端找某几个会话」的细粒度 ACL。
+
+## Machine-readable and quiet DM
+
+`ocs dm <address>@<peer> <body> --json` emits one v1 JSON line. Confirmed commits
+have `remote:true`, `stored:true`, and the **remote** channel/seq; wake is accepted,
+deferred, parked, skipped, failed or unknown. The optional local history copy has its
+own sequence and is not a delivery receipt. Refusal before storage is exit 1 with
+stored:false. An unanswered or malformed response is exit 3 with remote:true,
+stored:null and wake:unknown; remote commit is unknown and must never be retried.
+Confirmed stored messages with failed wakes remain exit 2. Never resend exit 2/3.
+
+`--no-wake` uses the authenticated `dm-quiet` operation, with the same target checks,
+rate/quota limits and one-use trust consumption as dm. It appends the message but
+skips delivery helpers, watchers and agy execution. Older receivers reject unknown-op
+before storing; clients never fall back to ordinary dm. `--notify-when-idle` remains
+incompatible with quiet delivery. `--inherit` and idle subscriptions remain local-only.
+
+`who --lan --json` adds peers with optional versioned capabilities. Old remote receivers
+may omit capabilities. See [traffic and batching](traffic.md) for fields and counting limits.

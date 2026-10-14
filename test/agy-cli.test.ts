@@ -126,3 +126,19 @@ test("real CLI: an automatic reply wakes a Claude author using its short address
   expect(frame).toContain("FAKE_AGY_OK");
   expect(frame).toContain("agy");
 }, 30000);
+
+
+test("explicit batch makes one agy invocation and one automatic result", async () => {
+  const f = await fixture();
+  const path = join(f.home, "tasks.json");
+  writeFileSync(path, JSON.stringify(["Inspect config", "Inspect tests", "Report combined findings"]));
+  const sent = await f.run(["dm", "agy", "--batch", path, "--as", "tester", "--json"]);
+  expect(sent.code).toBe(0);
+  const { channel } = JSON.parse(sent.output);
+  await until(() => f.messages(channel).find((message) => message.from === "agy") ?? null);
+  const events = readFileSync(f.events, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  expect(events.length).toBe(1);
+  const prompt = events[0].args[events[0].args.indexOf("-p") + 1];
+  for (const item of ["Inspect config", "Inspect tests", "Report combined findings"]) expect(prompt).toContain(item);
+  expect(f.messages(channel).length).toBe(2);
+}, 30000);

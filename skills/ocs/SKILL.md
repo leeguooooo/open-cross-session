@@ -33,7 +33,9 @@ If the skill came from somewhere `upgrade` can't refresh:
 ocs who                          # same-project peers + pending notices; you are marked
 ocs who --verbose                # raw IDs/paths for diagnostics
 ocs dm <name-or-id> "<text>"     # request work / answer / deliver a result; wakes the peer
-ocs dm <name> "<text>" --no-wake # local record only; peer must read/inbox later
+ocs dm <name> "<text>" --no-wake # stored only; peer must read/inbox later
+ocs dm <name> --batch tasks.json # JSON array of related tasks, one message/delivery
+ocs stats [channel] --json        # observed message outcomes and batch counts
 ocs dm <name> "<text>" --inherit <old-dm-channel>  # one-time history binding
 ocs inbox                        # unread threads attributable to this identity
 ocs send <channel> "<text>"      # post into a channel; @<name> wakes that agent
@@ -126,7 +128,7 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
   thread without starting a peer turn. Use it only for records the recipient will
   actively read (a workflow driver or closing notes), not for a requested answer or
   urgent blocker. JSON reports `wake: skipped`, exit 0. Combining `--no-wake` with
-  `--notify-when-idle` is rejected before storing; LAN DM does not support it yet.
+  `--notify-when-idle` is rejected before storing; LAN DM uses a distinct dm-quiet operation; older receivers reject it without storing or waking.
 - While a peer is working, wait for its result instead of polling it with messages.
   Use one idle subscription only if needed, and remember idle is not completion.
 - Replying with `ocs dm <workspace-alias>` reuses the stable or explicitly
@@ -144,3 +146,20 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
 - `ocs doctor --fix` is the one-step setup repair: it refreshes the Claude,
   Codex, and Pi skills, repairs the Pi extension and local data permissions,
   and backs up Claude settings before enabling direct delivery.
+
+- Explicit batching: `dm <target> --batch <file>` or `send <channel> --batch <file>`
+  accepts a JSON array of 1..100 non-empty task strings, retains every item in one
+  message, and uses the ordinary delivery path once per recipient. Do not batch
+  unrelated tasks or urgent blockers. No positional message may accompany --batch.
+- LAN `dm --json` uses the confirmed remote channel/seq and sets `remote:true`.
+  An unanswered request reports `stored:null`, `wake:unknown`, exit 3: the remote
+  commit is unknown, so never resend. An optional local history copy is not remote
+  delivery proof. `--no-wake` still requires an authenticated paired receiver.
+- `who --json` and `who --lan --json` include per-entry `capabilities`: observed
+  wake availability, busy-delivery policy, noWake, batch and conditional receipts.
+  Availability is a point-in-time observation, not a promise or completion proof.
+  Old LAN receivers may omit capabilities; do not guess their optional features.
+- `stats [channel] --json` counts local observed message outcomes and explicit
+  batch/coalescing activity since instrumentation was installed. It excludes old
+  history and does not measure model turns, read receipts, tokens or cost. Telemetry
+  is private, contains no message bodies, and never controls retries or delivery.

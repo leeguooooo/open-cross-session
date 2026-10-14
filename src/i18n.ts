@@ -209,6 +209,9 @@ interface Catalog {
   failName: (name: string) => string;
   failFlagRequired: (flag: string) => string;
   failCodexAddress: (flag: string, value: string) => string;
+  failBatch: (detail: string) => string;
+  failMessageRequired: string;
+  failBatchBody: string;
   failMissingValue: (flag: string) => string;
   failUnknownFlag: (flag: string) => string;
   failExtraArgs: (args: string) => string;
@@ -222,13 +225,13 @@ Usage:
   ocs who [--verbose | --json]
       Roster of every reachable agent: Claude sessions, Codex tasks, Pi sessions, terminals,
       plus pending idle notifications. Same-project peers come first; --verbose shows raw IDs/paths.
-  ocs dm <name-or-id> <text> [--as <name>] [--inherit <old-dm-channel>] [--notify-when-idle] [--no-wake] [--json]
+  ocs dm <name-or-id> <text> [--as <name>] [--inherit <old-dm-channel>] [--notify-when-idle] [--no-wake] [--batch <tasks.json>] [--json]
       Message + wake one agent. Channel is auto-derived; nothing to set up.
       --inherit binds one pre-v0.3.4 DM history channel; both Claude workspaces must be live and unique.
   ocs inbox [--as <name> | --session <claude-session-id>] [--json]
       List unread threads attributable to this identity; reading still uses the existing ocs read command.
       --session resolves one Claude session by id (for status bars outside Claude's process tree).
-  ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake] [--json]
+  ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake] [--batch <tasks.json>] [--json]
            [--notify-when-idle] [--codex <thread-id|codex-8hex>]
            [--codex-source <thread-id|codex-8hex>]
       --json (send/dm): one JSON line {v, stored, channel, seq, wake, exit, lines}; same exit codes.
@@ -239,6 +242,9 @@ Usage:
       Codex wake needs the target open plus a second open task owned by the same Desktop renderer.
       Exit 2 = stored but wake failed, held or refused by the receiver; exit 3 = stored and
       outcome unknown. Do not resend either: the stored #channel/seq is the correlation key.
+  ocs stats [channel] [--json]
+      Local message outcomes and batching counters; not model turns or tokens.
+
   ocs read <channel> [--as <name>] [--since <seq>] [--json] [--peek] [--include-self]
       Read new messages since your cursor, then advance it (--peek: don't).
       Your own messages fold to one line unless --include-self.
@@ -543,6 +549,9 @@ Details: https://github.com/leeguooooo/open-cross-session/blob/main/docs/lan.md`
   failFlagRequired: (flag) => `--${flag} <value> is required`,
   failCodexAddress: (flag, value) =>
     `--${flag} must be a full thread id or an unambiguous codex-<8hex> address from \`ocs who\`: ${value}`,
+  failBatch: (detail) => `invalid batch: ${detail}`,
+  failMessageRequired: "message required (or use --batch <tasks.json>)",
+  failBatchBody: "--batch cannot be combined with a positional message",
   failMissingValue: (flag) => `--${flag} requires a value`,
   failUnknownFlag: (flag) => `unknown flag: --${flag}`,
   failExtraArgs: (args) => `unexpected extra arguments: ${args}`,
@@ -556,13 +565,13 @@ const zh: Catalog = {
   ocs who [--verbose | --json]
       全机 agent 花名册：Claude 会话、Codex 任务、Pi 会话、终端，都在一张表里，
       外加待触发的空闲通知；当前项目优先，--verbose 显示底层 ID/路径
-  ocs dm <名字或id> <内容> [--as <name>] [--inherit <旧dm频道>] [--notify-when-idle] [--no-wake] [--json]
+  ocs dm <名字或id> <内容> [--as <name>] [--inherit <旧dm频道>] [--notify-when-idle] [--no-wake] [--batch <tasks.json>] [--json]
       给一个 agent 发消息并唤醒；频道自动派生，什么都不用建
       --inherit 一次性绑定 v0.3.4 之前的 DM 历史；双方 Claude 工作区必须在线且唯一
   ocs inbox [--as <name> | --session <claude-session-id>] [--json]
       列出能可靠归属给当前身份的未读线程；读取仍复用现有 ocs read 命令
       --session 按 id 解析指定 Claude 会话（给不在 Claude 进程树里的状态栏用）
-  ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake] [--json]
+  ocs send <channel> <body> [--as <name>] [--reply-to <seq>] [--no-wake] [--batch <tasks.json>] [--json]
            [--notify-when-idle] [--codex <thread-id|codex-8hex>]
            [--codex-source <thread-id|codex-8hex>]
       --json（send/dm）：只输出一行 JSON {v, stored, channel, seq, wake, exit, lines}，退出码不变
@@ -851,6 +860,9 @@ ${lanMessages("zh").help}
   failFlagRequired: (flag) => `--${flag} <value> 是必填项`,
   failCodexAddress: (flag, value) =>
     `--${flag} 必须是完整 thread id，或 \`ocs who\` 给出的唯一 codex-<8hex> 短地址：${value}`,
+  failBatch: (detail) => `批量任务无效：${detail}`,
+  failMessageRequired: "需要消息正文，或使用 --batch <tasks.json>",
+  failBatchBody: "--batch 不可与位置参数消息正文同时使用",
   failMissingValue: (flag) => `--${flag} 后面必须带值`,
   failUnknownFlag: (flag) => `未知参数: --${flag}`,
   failExtraArgs: (args) => `多余的参数: ${args}`,

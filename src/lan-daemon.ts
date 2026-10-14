@@ -1,3 +1,5 @@
+import { entryCapabilities, type Capabilities } from "./capabilities.ts";
+import { writeTraffic, type TrafficEvent } from "./traffic.ts";
 // 局域网 ocs 守护进程：`ocs lan up` 以脱离终端的 `ocs _lan-daemon` 启动。
 //
 // 只做三件事：接受已配对对端的加密连接、兑现配对邀请、应答局域网发现。收到远端 DM 后
@@ -121,6 +123,7 @@ export interface LanWhoEntry {
   kind: "claude" | "codex" | "pi" | "hermes" | "agy";
   status?: string;
   label?: string;
+  capabilities?: Capabilities;
 }
 
 /**
@@ -147,12 +150,15 @@ export async function lanWhoEntries(env: NodeJS.ProcessEnv = process.env): Promi
     env,
   );
   for (const entry of roster.entries) {
+    const capabilities = { ...entryCapabilities(entry, roster,
+      entry.kind === "codex-task" && claimed.has(entry.threadId.toLowerCase()), process.platform, env), deliveryReceipt: "none" as const };
     if (entry.kind === "agy") {
-      out.push({ address: "agy", kind: "agy", status: entry.status, label: "Antigravity CLI worker" });
+      out.push({ capabilities, address: "agy", kind: "agy", status: entry.status, label: "Antigravity CLI worker" });
       continue;
     }
     if (entry.kind === "claude") {
       out.push({
+        capabilities,
         address: entry.ocsName ?? entry.id ?? entry.name,
         kind: "claude",
         ...(entry.status === null ? {} : { status: entry.status }),
@@ -160,12 +166,14 @@ export async function lanWhoEntries(env: NodeJS.ProcessEnv = process.env): Promi
       });
     } else if (entry.kind === "codex-task" && (entry.livePid !== null || claimed.has(entry.threadId.toLowerCase()))) {
       out.push({
+        capabilities,
         address: entry.ocsName ?? entry.target,
         kind: "codex",
         ...(entry.summary === null ? {} : { label: entry.summary.slice(0, 60) }),
       });
     } else if (entry.kind === "hermes") {
       out.push({
+        capabilities,
         address: entry.ocsName ?? entry.target,
         kind: "hermes",
         ...(entry.status === null ? {} : { status: entry.status }),
@@ -173,6 +181,7 @@ export async function lanWhoEntries(env: NodeJS.ProcessEnv = process.env): Promi
       });
     } else if (entry.kind === "pi") {
       out.push({
+        capabilities,
         address: entry.ocsName ?? entry.target,
         kind: "pi",
         ...(entry.name === null ? {} : { label: entry.name.slice(0, 60) }),
@@ -264,7 +273,13 @@ export async function handleLanDm(
     env,
   });
   const sink = collectingSink();
-  await deliverDm({
+  const quiet = req.op === "dm-quiet";
+  const traffic: TrafficEvent = { v: 1, kind: "message", channel, seq: message.seq,
+    at: new Date().toISOString(), outcome: quiet ? "skipped" : "unknown", items: 1 };
+  const trafficId = writeTraffic(traffic, env);
+  let pending: "parked" | "deferred" | undefined;
+  sink.pending = (state) => { pending = state; };
+  if (!quiet) try { await deliverDm({
     resolved,
     target: local.display,
     channel,
@@ -277,14 +292,18 @@ export async function handleLanDm(
     // 频道日志里（不做跨机回传：那要本机主动连回对端并再发一条请求，见 docs/lan.md）。
     receipts: { sender: null, followUp: false },
     env,
-  }, messages(replyLang), sink);
+  }, messages(replyLang), sink); } catch { sink.fail("unknown"); }
+  const outcome = sink.outcome();
+  const wake = quiet ? "skipped" : outcome !== "ok" ? outcome : pending ?? "accepted";
+  writeTraffic({ ...traffic, outcome: wake }, env, trafficId);
   return {
     ok: true,
     channel,
     seq: message.seq,
     to_key: local.key,
     to_display: local.display,
-    outcome: sink.outcome(),
+    outcome,
+    wake,
     // 投递行里有 pid（`name(pid N)`、codex queued pid N）：远端 who 刻意不给 pid，这里也不给。
     lines: sink.lines.map(scrubPids),
   };
@@ -514,10 +533,10 @@ export async function startLanServer(
         if (conn.clientPort !== null) notePeerAddress(peer.fingerprint, `${ip}:${conn.clientPort}`, env);
         if (op === "ping") reply = { ok: true, name: config.name };
         else if (op === "who") reply = { ok: true, name: config.name, entries: await lanWhoEntries(env) };
-        else if (op === "dm" && !quota.take(peer.fingerprint, typeof req.body === "string" ? Buffer.byteLength(req.body, "utf8") : 0)) {
+        else if ((op === "dm" || op === "dm-quiet") && !quota.take(peer.fingerprint, typeof req.body === "string" ? Buffer.byteLength(req.body, "utf8") : 0)) {
           reply = { ok: false, error: "quota-exceeded" };
           log(`quota exceeded for ${peer.label}`);
-        } else if (op === "dm") {
+        } else if (op === "dm" || op === "dm-quiet") {
           reply = await handleLanDm(req, peer, input.lang, env, () => consumePeerUse(peer.fingerprint, env));
           log(`dm from ${peer.label} to ${String(req.to)}: ${reply.ok ? `seq ${String(reply.seq)} ${String(reply.outcome)}` : String(reply.error)}`);
         } else reply = { ok: false, error: "unknown-op" };

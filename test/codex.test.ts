@@ -272,6 +272,8 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
         livePid: null,
         tty: null,
         hostApp: null,
+        capabilities: { v: 1, wake: "available", noWake: true, batch: true,
+          busyDelivery: "steer-or-coalesce", deliveryReceipt: "none", completionReceipt: false },
       }]);
     } finally {
       router.close();

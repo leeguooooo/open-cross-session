@@ -1,3 +1,4 @@
+import { parseCapabilities } from "./capabilities.ts";
 // 局域网 ocs 的发起方：配对、给远端会话发 DM、看远端花名册。
 //
 // 寻址顺序：信任库里记的最近地址 → 局域网发现（按指纹筛）→ 放弃。地址只是提示，身份以
@@ -237,6 +238,7 @@ export type RemoteDmReply =
       to_display: string;
       outcome: "ok" | "failed" | "unknown";
       lines: string[];
+      wake?: "accepted" | "deferred" | "parked" | "skipped" | "failed" | "unknown";
     }
   | { ok: false; error: string; detail?: string };
 
@@ -248,7 +250,7 @@ export type RemoteDmResult =
 export async function sendRemoteDm(
   peer: LanPeer,
   identity: LanIdentity,
-  payload: { from: string; from_key: string; to: string; body: string; lang: "en" | "zh" },
+  payload: { from: string; from_key: string; to: string; body: string; lang: "en" | "zh"; noWake?: boolean },
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<RemoteDmResult> {
   const conn = await connectPeer(peer, identity, env);
@@ -256,9 +258,11 @@ export async function sendRemoteDm(
     conn.channel.destroy();
     throw new LanClientError("unpaired", `peer ${peer.label} no longer trusts this machine; pair again`);
   }
-  conn.channel.send({ op: "dm", ...payload });
+  const { noWake, ...fields } = payload;
+  // New op: old receivers reject it before storing instead of ignoring a flag and waking.
   let raw: unknown;
   try {
+    conn.channel.send({ op: noWake === true ? "dm-quiet" : "dm", ...fields });
     raw = await conn.channel.receive(LAN_REQUEST_TIMEOUT_MS);
   } catch (error) {
     conn.channel.destroy();
@@ -278,7 +282,8 @@ export async function sendRemoteDm(
       typeof reply.to_display === "string" && NAME_RE.test(reply.to_display) &&
       (reply.outcome === "ok" || reply.outcome === "failed" || reply.outcome === "unknown") &&
       Array.isArray(reply.lines) && reply.lines.every((line) => typeof line === "string");
-    if (!valid) return { delivered: "unknown", detail: "malformed reply" };
+    if (!valid || (reply.wake !== undefined && !["accepted", "deferred", "parked", "skipped", "failed", "unknown"].includes(reply.wake)) ||
+        (noWake === true && reply.wake !== "skipped")) return { delivered: "unknown", detail: "malformed reply" };
     reply.lines = reply.lines.map((line) => cleanText(line, 500)).slice(0, 20);
     return { delivered: true, reply };
   }
@@ -310,9 +315,11 @@ export async function remoteWho(
     if (e.kind !== "claude" && e.kind !== "codex" && e.kind !== "pi" && e.kind !== "hermes" && e.kind !== "agy") continue;
     const status = clean(e.status, 16);
     const label = clean(e.label, 60);
+    const capabilities = parseCapabilities(e.capabilities);
     entries.push({
       address,
       kind: e.kind,
+      ...(capabilities === undefined ? {} : { capabilities }),
       ...(status === undefined ? {} : { status }),
       ...(label === undefined ? {} : { label }),
     });

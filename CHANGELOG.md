@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add private, best-effort traffic observations via `ocs stats [channel] --json`: distinguish message and target delivery outcomes, explicit batches and busy Codex coalescing; counts do not imply model turns, reads, tokens or cost
+- Add explicit `send/dm --batch <tasks.json>`: retain all related tasks in one message and deliver once per recipient; agy returns one combined result
+- Support LAN DM JSON with confirmed remote channel/seq and unknown remote commits (`stored:null`, exit 3), plus authenticated quiet DM using an operation older receivers safely reject without storing
+- Add versioned per-entry capabilities to local and remote JSON discovery, and JSON LAN roster support
+- Replace obsolete AgentParty hosted/sync architecture plans with the current OCS and Session Flow boundary
+
 ## 0.8.3
 
 - Add an opt-in Antigravity CLI receiver on macOS, Linux, and Windows: authenticate in `agy`, then run `ocs agy start --cwd <workspace>`. Delegate with `ocs dm agy` or `@agy`; the final response returns to the original conversation. Paired LAN computers can delegate too

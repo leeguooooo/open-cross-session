@@ -257,7 +257,7 @@ describe("trust that runs out", () => {
     }
   }, T);
 
-  test("--once: a typo does not use it up; the first stored DM does; the second is refused", async () => {
+  for (const noWake of [false, true]) test(`--once (quiet=${noWake}): a typo does not use it up; the first stored DM does; the second is refused`, async () => {
     const a = machine("alpha");
     const b = machine("bravo");
     const server = await serve(a);
@@ -265,13 +265,14 @@ describe("trust that runs out", () => {
     try {
       trustPeer({ key: b.identity.publicKey, name: "bravo", label: "bee", terms: { uses_left: 1 } }, a.env);
       const peerOnB = trustPeer({ key: a.identity.publicKey, name: "alpha", label: "alpha", addr: `127.0.0.1:${server.port}` }, b.env);
-      const payload = { from: "claude-bbbbbbbb", from_key: "claude-bbbbbbbb", body: "hello", lang: "en" as const };
+      const payload = { from: "claude-bbbbbbbb", from_key: "claude-bbbbbbbb", body: "hello", lang: "en" as const, noWake };
       const typo = await sendRemoteDm(peerOnB, b.identity, { ...payload, to: "nobody-here" }, b.env);
       expect(typo).toMatchObject({ delivered: true, reply: { ok: false, error: "not-found" } });
       expect(findPeer("bee", a.env)?.uses_left).toBe(1);
       const first = await sendRemoteDm(peerOnB, b.identity, { ...payload, to: "worker" }, b.env);
       expect(first).toMatchObject({ delivered: true, reply: { ok: true } });
-      await waitFor(() => session.frames[0]);
+      if (!noWake) await waitFor(() => session.frames[0]);
+      else expect(session.frames.length).toBe(0);
       expect(peerActive(findPeer("bee", a.env)!)).toBe(false);
       const second = await sendRemoteDm(peerOnB, b.identity, { ...payload, to: "worker" }, b.env).catch((e) => e);
       expect((second as LanClientError).code).toBe("unpaired");

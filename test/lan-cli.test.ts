@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import { CLAUDE_NATIVE_SESSIONS_DIR_ENV } from "../src/claude-inject.ts";
-import { OCS_HOME_ENV, readReceipts } from "../src/store.ts";
+import { OCS_HOME_ENV, readReceipts, readMessages } from "../src/store.ts";
 import { fakeClaudeInbox, type FakeInbox } from "./fake-claude";
 import { autoCleanupTempDirs, tempDir } from "./tmp";
 
@@ -189,12 +189,33 @@ describe("ocs lan 端到端（两台机器）", () => {
       expect(who.stdout).toContain("LAN alpha (alpha):");
       expect(who.stdout).toContain("claude-aaaaaaaa@alpha  claude  idle  worker-a");
 
+      // Silent remote commit: JSON remote seq must describe A, never the optional local copy.
+      const before = a.frames.length;
+      const quiet = await run(b, ["dm", "worker-a@alpha", "quiet remote record", "--no-wake", "--json"]);
+      expect(quiet.code).toBe(0);
+      expect(quiet.stdout.trim().split("\n").length).toBe(1);
+      const qr = JSON.parse(quiet.stdout);
+      expect(qr).toMatchObject({ v: 1, command: "dm", remote: true, stored: true, wake: "skipped", exit: 0 });
+      expect(readMessages(qr.channel, { env: a.env }).find((m) => m.seq === qr.seq)?.body).toBe("quiet remote record");
+      expect(a.frames.length).toBe(before);
+      const normal = await run(b, ["dm", "worker-a@alpha", "normal JSON task", "--json"]);
+      expect(JSON.parse(normal.stdout)).toMatchObject({ remote: true, stored: true, wake: "accepted", exit: 0 });
+      await waitFor(() => a.frames.length === before + 1 ? true : undefined);
+      const remoteRoster = JSON.parse((await run(b, ["who", "--lan", "--json"])).stdout);
+      const remoteEntry = remoteRoster.peers[0].entries.find((entry: { kind: string }) => entry.kind === "claude");
+      expect(remoteEntry.capabilities).toMatchObject({ noWake: true, batch: true, deliveryReceipt: "none" });
+      const receivedStats = JSON.parse((await run(a, ["stats", qr.channel, "--json"])).stdout);
+      expect(receivedStats.outcomes.skipped).toBe(1);
+
       // A 的收件箱扣留（crossSessionInbound=hold）：第一阶段结果随应答回到 B，退出码 2；
       // 终态只记在 A 的频道日志里，不跨机回传，也不通知任何人。
       a.inbox.policy = "hold";
       const framesA = a.frames.length;
       const framesB = b.frames.length;
-      const heldDm = await run(b, ["dm", "worker-a@alpha", "held over the lan"]);
+      const heldDm = await run(b, ["dm", "worker-a@alpha", "held over the lan", "--json"]);
+      const heldJson = JSON.parse(heldDm.stdout);
+      expect(heldJson).toMatchObject({ remote: true, stored: true, wake: "failed", exit: 2 });
+      heldDm.stdout = heldJson.lines.join("\n");
       expect(heldDm.code).toBe(2);
       expect(heldDm.stdout).toContain("[alpha] wake: HELD, not delivered yet → worker-a");
       expect(heldDm.stdout).toContain("You will not be notified of the outcome");

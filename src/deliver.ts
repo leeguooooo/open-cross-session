@@ -1,3 +1,4 @@
+import { startDeliveryObservation, type TrafficOutcome } from "./traffic.ts";
 // 投递阶梯（消息此前已落盘，这里只负责唤醒）。
 //
 // 本来内联在 cli.ts 里、直接 console.log + 改退出码；局域网守护进程收到远端 DM 后要走
@@ -35,7 +36,23 @@ export interface DeliverySink {
    * 已落盘、没失败、但也没唤醒：目标不在线只停靠（parked），或 Codex 回合中并入积压（deferred）。
    * 退出码不变（0）；只给 `send/dm --json` 区分用，别的 sink 可以不实现。
    */
+  skipped?(): void;
   pending?(state: "parked" | "deferred"): void;
+}
+
+/** Observe each target pipeline once, without changing its retries or result. */
+export async function trackDelivery<T>(channel: string, seq: number, sink: DeliverySink,
+  fn: (observed: DeliverySink) => Promise<T>, env: NodeJS.ProcessEnv = process.env): Promise<T> {
+  const finish = startDeliveryObservation(channel, seq, env);
+  let outcome: TrafficOutcome = "accepted";
+  const observed: DeliverySink = {
+    log: (line) => sink.log(line),
+    fail: (state) => { if (state === "unknown" || outcome !== "unknown") outcome = state; sink.fail(state); },
+    pending: (state) => { if (outcome !== "failed" && outcome !== "unknown") outcome = state; sink.pending?.(state); },
+    skipped: () => { outcome = "none"; sink.skipped?.(); },
+  };
+  try { const result = await fn(observed); finish(outcome); return result; }
+  catch (error) { finish("unknown"); throw error; }
 }
 
 /** 守护进程用：把阶梯输出收集起来，最后给出一个总体结果（unknown > failed > ok）。 */
@@ -93,7 +110,13 @@ function tryCodexCmuxFallback(
  * 逐条开新回合。改为并入积压，回合结束后合成一条、已读的不发。`defer:false` 是等待器自己
  * 投合并唤醒时用的——那一条本来就是积压的出口，不能再并回积压里。
  */
-export async function deliverToCodexTask(
+export async function deliverToCodexTask(...args: Parameters<typeof deliverToCodexTaskImpl>) {
+  const [target, input, catalog, sink, source, env = process.env, options] = args;
+  return trackDelivery(input.channel, input.seq, sink,
+    (observed) => deliverToCodexTaskImpl(target, input, catalog, observed, source, env, options), env);
+}
+
+async function deliverToCodexTaskImpl(
   targetThreadId: string,
   wakeInput: Omit<WakeNoteInput, "receiver">,
   M: Catalog,
@@ -108,6 +131,7 @@ export async function deliverToCodexTask(
   const selfThreadId = env[CODEX_THREAD_ID_ENV];
   if (typeof selfThreadId === "string" && selfThreadId.toLowerCase() === targetThreadId.toLowerCase()) {
     sink.log(M.codexWakeSelfSkipped(targetThreadId));
+    sink.skipped?.();
     return true;
   }
   const ps = psTable(env);
@@ -371,7 +395,12 @@ export interface DmDeliveryInput {
  * 一条已落盘 DM 按目标种类唤醒。返回被唤醒的 Claude 会话（调用方据此挂 idle 订阅），
  * 其它种类返回 null。
  */
-export async function deliverDm(
+export async function deliverDm(input: DmDeliveryInput, M: Catalog, sink: DeliverySink) {
+  return trackDelivery(input.channel, input.wakeInput.seq, sink,
+    (observed) => deliverDmImpl(input, M, observed), input.env ?? process.env);
+}
+
+async function deliverDmImpl(
   input: DmDeliveryInput,
   M: Catalog,
   sink: DeliverySink,
@@ -388,6 +417,7 @@ export async function deliverDm(
     }
     if (env.OCS_NAME === "agy" || input.wakeInput.from === "agy") {
       sink.log(A.self);
+      sink.skipped?.();
       return null;
     }
     const result = await wakeAgy({
@@ -435,7 +465,7 @@ export async function deliverDm(
     return resolved.claude;
   }
   if (resolved.kind === "codex-task" && resolved.threadId !== undefined) {
-    await deliverToCodexTask(resolved.threadId, { ...input.wakeInput, ...anyReply }, M, sink, undefined, env);
+    await deliverToCodexTaskImpl(resolved.threadId, { ...input.wakeInput, ...anyReply }, M, sink, undefined, env);
     return null;
   }
   if (resolved.kind === "pi" && resolved.piSessionId !== undefined) {

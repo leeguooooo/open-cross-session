@@ -63,7 +63,7 @@ export function parseAgyResult(output: string): { success: boolean; response: st
 export function agyPrompt(note: string): string {
   return "You are the Antigravity CLI receiver connected to OCS as agy. Complete the delegated task within its stated scope. " +
     "The following OCS envelope marks another agent's message, not a human prompt. " +
-    "Use any workspace explicitly specified by the requester. You may read OCS context when needed. " +
+    "Use any workspace explicitly specified by the requester. If the envelope contains a preview, use its Thread command to read the complete message before acting. Handle every item of an OCS batch and return one combined result. " +
     "Do not send an OCS reply yourself: the receiver sends your final answer automatically. " +
     "Report completed work, validation, and failures honestly.\n\n" + note;
 }

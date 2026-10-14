@@ -481,3 +481,6 @@ MIT. Three source files are vendored from [AgentParty](https://github.com/leeguo
 ## Author
 
 Built by **郭立 (Guo Li / leeguoo)** — [leeguoo.com](https://leeguoo.com/about) · [GitHub](https://github.com/leeguooooo) · [X](https://x.com/leeguooooo) · more tools in the [*-use family](https://github.com/leeguooooo/plugins).
+
+
+See [traffic counters, explicit related-task batches and discovery capabilities](docs/traffic.md).

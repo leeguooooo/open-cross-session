@@ -50,6 +50,8 @@ export interface LanCliContext {
   fail(message: string): never;
   /** 已落盘但唤醒失败（2）/ 结果未知（3）。 */
   markStored(outcome: "failed" | "unknown"): void;
+  recordRemote?(result: { stored: boolean | null; channel?: string; seq?: number;
+    wake?: "accepted" | "deferred" | "parked" | "skipped" | "failed" | "unknown" }): void;
   /** 本机发起命令（cli.ts 的 selfCommand 同款）：[bun, cli.ts] 或 [编译后的二进制]。 */
   selfCommand: string[];
 }
@@ -545,8 +547,21 @@ function lanUnpair(ctx: LanCliContext, query: string): void {
   console.log(lanMessages(ctx.lang).unpaired(peer.label));
 }
 
+export async function lanWhoJson() {
+  const peers = activePeers();
+  if (peers.length === 0) return [];
+  const id = loadOrCreateIdentity();
+  return Promise.all(peers.map(async (peer) => {
+    try {
+      const who = await remoteWho(peer, id);
+      return { peer: peer.label, name: who.name, entries: who.entries.map((entry) => ({
+        ...entry, address: `${entry.address}@${peer.label}` })) };
+    } catch { return { peer: peer.label, error: "unavailable" }; }
+  }));
+}
+
 /** `ocs lan who [peer]` 和 `ocs who --lan` 共用：并发查每个对端，离线的单独一行。 */
-export async function printLanWho(ctx: Pick<LanCliContext, "lang" | "fail">, only?: LanPeer): Promise<void> {
+export async function printLanWho(ctx: Pick<LanCliContext, "lang" | "fail"> & { flags?: Map<string, string | true> }, only?: LanPeer): Promise<void> {
   const L = lanMessages(ctx.lang);
   let peers: LanPeer[];
   try {
@@ -555,7 +570,7 @@ export async function printLanWho(ctx: Pick<LanCliContext, "lang" | "fail">, onl
     ctx.fail(L.stateError(error instanceof Error ? error.message : String(error)));
   }
   if (peers.length === 0) {
-    console.log(L.whoNoPeers);
+    console.log(ctx.flags?.has("json") ? JSON.stringify({ v: 1, peers: [] }) : L.whoNoPeers);
     return;
   }
   const id = loadOrCreateIdentity();
@@ -566,6 +581,13 @@ export async function printLanWho(ctx: Pick<LanCliContext, "lang" | "fail">, onl
       return { peer, error };
     }
   }));
+  if (ctx.flags?.has("json")) {
+    console.log(JSON.stringify({ v: 1, peers: results.map((result) => "error" in result
+      ? { peer: result.peer.label, error: "unavailable" }
+      : { peer: result.peer.label, name: result.who.name, entries: result.who.entries.map((entry) => ({
+          ...entry, address: `${entry.address}@${result.peer.label}` })) }) }));
+    return;
+  }
   for (const result of results) {
     if ("error" in result) {
       const e = result.error;
@@ -652,11 +674,13 @@ export async function lanDm(ctx: LanCliContext, target: string, body: string, se
       to: parsed.address,
       body,
       lang: ctx.lang,
+      noWake: ctx.flags.has("no-wake"),
     });
   } catch (error) {
     ctx.fail(describeClientError(ctx, peer.label, error));
   }
   if (result.delivered === "unknown") {
+    ctx.recordRemote?.({ stored: null, wake: "unknown" });
     console.log(L.dmUnknown(peer.label, result.detail));
     ctx.markStored("unknown");
     return;
@@ -665,6 +689,8 @@ export async function lanDm(ctx: LanCliContext, target: string, body: string, se
   if (!reply.ok) {
     ctx.fail(L.dmRefused(target, reply.error, reply.detail ?? ""));
   }
+  ctx.recordRemote?.({ stored: true, channel: reply.channel, seq: reply.seq,
+    wake: reply.wake ?? (reply.outcome === "ok" ? "accepted" : reply.outcome) });
   const remoteTarget = `${reply.to_display}@${peer.label}`;
   console.log(L.dmSent(remoteTarget, reply.channel, reply.seq));
   for (const line of reply.lines) console.log(L.dmRemoteLine(peer.label, line));

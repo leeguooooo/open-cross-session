@@ -29,14 +29,14 @@ import {
   trustPeer,
   LanStateError,
 } from "../src/lan-store.ts";
-import { connectSecure, FrameReader, HANDSHAKE_FRAME_MAX, writeFrame } from "../src/lan-wire.ts";
+import { acceptSecure, connectSecure, FrameReader, HANDSHAKE_FRAME_MAX, writeFrame } from "../src/lan-wire.ts";
 import { cleanText } from "../src/lan-client.ts";
 import { MIN_QUERY_BYTES, startDiscoveryResponder } from "../src/lan-discovery.ts";
 import { closePairOffer, redeemPairOffer } from "../src/lan-store.ts";
 import { createSocket } from "node:dgram";
 import { readdirSync } from "node:fs";
 import { startClientHandshake as clientHs } from "../src/lan-crypto.ts";
-import { OCS_HOME_ENV, readRoutedMessages } from "../src/store.ts";
+import { OCS_HOME_ENV, readRoutedMessages, appendMessage, readMessages } from "../src/store.ts";
 import { autoCleanupTempDirs, tempDir } from "./tmp";
 
 autoCleanupTempDirs();
@@ -393,7 +393,7 @@ describe("已配对对端的请求", () => {
     try {
       await pairMachines(a, b, server);
       const who = await remoteWho(findPeer("srv", b.env)!, b.identity, b.env);
-      expect(who.entries).toContainEqual({ address: "claude-ae38e21b", kind: "claude", status: "idle", label: "worker-a" });
+      expect(who.entries).toContainEqual(expect.objectContaining({ address: "claude-ae38e21b", kind: "claude", status: "idle", label: "worker-a" }));
       expect(JSON.stringify(who)).not.toContain("/work");
     } finally {
       worker.close();
@@ -672,3 +672,49 @@ describe("登录自启（lan autostart）", () => {
     expect(autostartState(plan)).toBe("off");
   });
 });
+
+
+for (const mode of ["old-receiver", "lost-reply"] as const) {
+  test(`LAN JSON ${mode}: one authenticated request, no fallback or retry`, async () => {
+    const a = machine("receiver"), b = machine("sender");
+    const channel = "lan-" + "a".repeat(32);
+    const requests: Record<string, unknown>[] = [];
+    const server = createServer((socket) => {
+      void (async () => {
+        const conn = await acceptSecure(socket, a.identity, () => ({ paired: true, name: "receiver" }));
+        const req = await conn.channel.receive(5000) as Record<string, unknown>;
+        requests.push(req);
+        if (mode === "old-receiver") { conn.channel.send({ ok: false, error: "unknown-op" }); conn.channel.close(); }
+        else {
+          appendMessage({ channel, from: "sender", body: String(req.body), env: a.env });
+          conn.channel.destroy(); // Remote commit exists, sender never gets proof.
+        }
+      })().catch(() => socket.destroy());
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+    trustPeer({ key: a.identity.publicKey, name: "receiver", label: "receiver", addr: `127.0.0.1:${port}` }, b.env);
+    try {
+      const cli = Bun.spawn([process.execPath, join(import.meta.dir, "..", "src", "cli.ts"),
+        "dm", "worker@receiver", "test task", "--as", "sender", "--no-wake", "--json"],
+        { env: { ...b.env, OCS_UPGRADE_CHECK: "0" }, stdout: "pipe", stderr: "pipe" });
+      const output = await new Response(cli.stdout).text();
+      const err = await new Response(cli.stderr).text();
+      const code = await cli.exited;
+      expect(err).toBe("");
+      expect(output.trim().split("\n").length).toBe(1);
+      expect(requests.length).toBe(1);
+      expect(requests[0]!.op).toBe("dm-quiet");
+      if (mode === "old-receiver") {
+        expect(code).toBe(1);
+        expect(JSON.parse(output)).toMatchObject({ stored: false, exit: 1 });
+        expect(readMessages(channel, { env: a.env }).length).toBe(0);
+      } else {
+        expect(code).toBe(3);
+        expect(JSON.parse(output)).toMatchObject({ remote: true, stored: null, wake: "unknown", exit: 3 });
+        expect(readMessages(channel, { env: a.env }).length).toBe(1);
+        expect(readMessages(channel, { env: b.env }).length).toBe(0);
+      }
+    } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+  }, T);
+}

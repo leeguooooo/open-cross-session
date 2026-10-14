@@ -5,6 +5,9 @@
 // 输出全部走 i18n 目录（英文 canonical，OCS_LANG/locale 选 zh）。
 
 import { chmodSync, mkdirSync, statSync, writeSync } from "node:fs";
+import { batchBody } from "./batch.ts";
+import { trafficStats, writeTraffic, startDeliveryObservation, type TrafficEvent, type TrafficOutcome } from "./traffic.ts";
+import { entryCapabilities } from "./capabilities.ts";
 import { findAgyWorker, stopAgyWorker } from "./agy.ts";
 import { AGY_WORKER_COMMAND, parseAgyOptions, runAgyWorker, startAgyWorker } from "./agy-worker.ts";
 import { agyMessages } from "./i18n-agy.ts";
@@ -28,13 +31,14 @@ import {
   deliverDm,
   deliverToCodexTask,
   reportTrackedWake,
+  trackDelivery,
   type DeliverySink,
   type StoredDeliveryFailure,
 } from "./deliver.ts";
 import { detectLang, messages } from "./i18n.ts";
 import { lanMessages } from "./i18n-lan.ts";
 import { LAN_DAEMON_COMMAND, runLanDaemon } from "./lan-daemon.ts";
-import { cmdLan, doctorLanSection, lanDm, lanPeerCount, printLanWho, type LanCliContext, type LanDmSender } from "./lan-cli.ts";
+import { cmdLan, doctorLanSection, lanDm, lanPeerCount, lanWhoJson, printLanWho, type LanCliContext, type LanDmSender } from "./lan-cli.ts";
 import {
   identityCursorConsumer,
   inboxCursorState,
@@ -155,12 +159,13 @@ interface CommandSpec {
 const NO_ARGS: CommandSpec = { value: [], bool: [], minPos: 0, maxPos: 0 };
 const COMMAND_SPECS: Record<string, CommandSpec> = {
   send: {
-    value: ["as", "reply-to", "codex", "codex-source"],
+    value: ["as", "reply-to", "codex", "codex-source", "batch"],
     bool: ["no-wake", "notify-when-idle", "json"],
-    minPos: 2,
+    minPos: 1,
     maxPos: null,
   },
-  dm: { value: ["as", "inherit"], bool: ["notify-when-idle", "no-wake", "json"], minPos: 2, maxPos: null },
+  dm: { value: ["as", "inherit", "batch"], bool: ["notify-when-idle", "no-wake", "json"], minPos: 1, maxPos: null },
+  stats: { value: [], bool: ["json"], minPos: 0, maxPos: 1 },
   inbox: { value: ["as", "session"], bool: ["json"], minPos: 0, maxPos: 0 },
   read: { value: ["as", "since"], bool: ["json", "peek", "include-self"], minPos: 1, maxPos: 1 },
   "notify-when-idle": { value: [], bool: [], minPos: 1, maxPos: 1 },
@@ -282,7 +287,7 @@ function parseArgs(argv: string[], spec: CommandSpec): Parsed {
 function fail(message: string): never {
   if (jsonRun !== null) {
     // 落盘后不会走到 fail；万一走到，也只能报 unknown，不能让调用方以为没落盘而重发。
-    const exit = jsonRun.stored === undefined ? 1 : 3;
+    const exit = jsonRun.stored === undefined && jsonRun.remote?.stored !== true && jsonRun.remote?.stored !== null ? 1 : 3;
     emitJsonResult(exit, message);
     process.exit(exit);
   }
@@ -302,8 +307,36 @@ interface JsonRun {
   stored?: { channel: string; seq: number };
   wake?: "skipped" | "none";
   pending: Set<"parked" | "deferred">;
+  remote?: { stored: boolean | null; channel?: string; seq?: number; wake?: TrafficOutcome };
 }
 let jsonRun: JsonRun | null = null;
+let traffic: { event: TrafficEvent; id: string } | null = null;
+let batchItems = 1;
+function observeStored(channel: string, seq: number, items = batchItems): void {
+  const event: TrafficEvent = { v: 1, kind: "message", channel, seq, at: new Date().toISOString(), outcome: "unknown", items };
+  traffic = { event, id: writeTraffic(event) };
+}
+function observeOutcome(outcome: TrafficOutcome): void {
+  if (traffic !== null) { traffic.event.outcome = outcome; writeTraffic(traffic.event, process.env, traffic.id); }
+}
+function messageBody(parsed: Parsed, parts: string[]): string {
+  const path = parsed.flags.get("batch");
+  if (typeof path === "string") {
+    if (parts.length > 0) fail(M.failBatchBody);
+    try { const result = batchBody(path); batchItems = result.items; return result.body; }
+    catch (error) { fail(M.failBatch(error instanceof Error ? error.message : String(error))); }
+  }
+  if (parts.length === 0) fail(M.failMessageRequired);
+  return parts.join(" ");
+}
+async function runMessage(command: string, parsed: Parsed): Promise<void> {
+  try {
+    await (command === "send" ? cmdSend(parsed) : cmdDm(parsed));
+    const exit = Number(process.exitCode ?? 0);
+    if (exit >= 2) observeOutcome(exit === 3 ? "unknown" : "failed");
+    else if (traffic?.event.outcome === "unknown") observeOutcome("accepted");
+  } catch (error) { observeOutcome("unknown"); throw error; }
+}
 
 function startJsonRun(command: "send" | "dm"): void {
   const run: JsonRun = { command, lines: [], pending: new Set() };
@@ -315,10 +348,12 @@ function startJsonRun(command: "send" | "dm"): void {
 
 function markStored(channel: string, seq: number): void {
   if (jsonRun !== null) jsonRun.stored = { channel, seq };
+  observeStored(channel, seq);
 }
 
 /** 本次没有任何可唤醒目标、也不算失败（普通频道不点名、只 @ 到自己）。 */
 function markNoWakeTarget(): void {
+  observeOutcome("none");
   if (jsonRun !== null && jsonRun.wake === undefined) jsonRun.wake = "none";
 }
 
@@ -336,9 +371,10 @@ function emitJsonResult(exit: number, error?: string): void {
   const out = {
     v: 1,
     command: run.command,
-    stored: run.stored !== undefined,
+    stored: run.remote?.stored ?? (run.remote?.stored === null ? null : run.stored !== undefined),
     ...(run.stored ?? {}),
-    ...(wake === undefined ? {} : { wake }),
+    ...(run.remote === undefined ? {} : { remote: true, ...run.remote }),
+    ...(wake === undefined || run.remote !== undefined ? {} : { wake }),
     ...(error === undefined ? {} : { error }),
     exit,
     lines: run.lines,
@@ -355,12 +391,13 @@ function emitJsonResult(exit: number, error?: string): void {
 function markStoredDeliveryFailure(outcome: StoredDeliveryFailure): void {
   const code = outcome === "unknown" ? 3 : 2;
   process.exitCode = Math.max(Number(process.exitCode ?? 0), code);
+  observeOutcome(outcome);
 }
 
 const CLI_SINK: DeliverySink = {
   log: (line) => console.log(line),
   fail: markStoredDeliveryFailure,
-  pending: (state) => jsonRun?.pending.add(state),
+  pending: (state) => { jsonRun?.pending.add(state); observeOutcome(state); },
 };
 
 /** Resolve the full UUID or the exact short address printed by `ocs who`. */
@@ -436,7 +473,8 @@ function subscribeIdle(subscriber: NativeClaudeSession, targets: readonly Native
 
 async function cmdSend(parsed: Parsed): Promise<void> {
   const [channel, ...bodyParts] = parsed.positional;
-  if (channel === undefined || bodyParts.length === 0) fail(M.failSendUsage);
+  if (channel === undefined) fail(M.failSendUsage);
+  const body = messageBody(parsed, bodyParts);
   if (parsed.flags.has("no-wake") && parsed.flags.has("notify-when-idle")) fail(M.failNoWakeNotify);
   const from = senderName(parsed);
   // Address syntax/ambiguity is validated before append: malformed flags must
@@ -474,13 +512,14 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     channel,
     from,
     ...(replyRoute ?? {}),
-    body: bodyParts.join(" "),
+    body,
     ...(replyToSeq !== undefined ? { reply_to: replyToSeq } : {}),
   });
   console.log(M.stored(channel, message.seq));
   markStored(channel, message.seq);
 
   if (parsed.flags.has("no-wake")) {
+    observeOutcome("skipped");
     if (jsonRun !== null) jsonRun.wake = "skipped";
     return;
   }
@@ -531,10 +570,12 @@ async function cmdSend(parsed: Parsed): Promise<void> {
       markStoredDeliveryFailure("failed");
       continue;
     }
+    const finishDelivery = startDeliveryObservation(channel, message.seq);
     const result = await wakePiSession(
       resolved.piSession,
       wakeNote({ ...wakeInput, receiver: resolved.name, implicitReceiver: true }),
     );
+    finishDelivery(result.ok ? "accepted" : result.reason === "unknown-outcome" ? "unknown" : "failed");
     if (result.ok) console.log(M.piWakeAccepted(target));
     else if (result.reason === "unknown-outcome") {
       console.log(M.piWakeUnknownOutcome(target, result.detail ?? ""));
@@ -552,7 +593,9 @@ async function cmdSend(parsed: Parsed): Promise<void> {
       continue;
     }
     const key = hermesSessionKeyFromTarget(target)!;
+    const finishDelivery = startDeliveryObservation(channel, message.seq);
     const result = await wakeHermesSession(key, wakeNote({ ...wakeInput, receiver: target, implicitReceiver: true }));
+    finishDelivery(result.ok ? "accepted" : result.reason === "unknown-outcome" ? "unknown" : "failed");
     if (result.ok) console.log(result.delivery === "started" ? M.hermesWakeStarted(target) : M.hermesWakeQueued(target));
     else if (result.reason === "unknown-outcome") {
       console.log(M.hermesWakeUnknownOutcome(target, result.detail ?? ""));
@@ -603,12 +646,14 @@ async function cmdSend(parsed: Parsed): Promise<void> {
   // 铁律 4：帧进了收件箱 ≠ 进了对话；回执能把「被扣 / 被拒」说出来，说不出「已读」。
   const sender = noticeSender();
   const wakes = await Promise.all(
-    selection.targets.map((session) => wakeClaudeTracked(session, wakeInput, { sender })),
+    selection.targets.map((session) => trackDelivery(channel, message.seq, collectingSink(), async (sink) => {
+      const wake = await wakeClaudeTracked(session, wakeInput, { sender });
+      reportTrackedWake(`${session.name ?? "?"}(pid ${session.pid})`, wake, M, sink, { followUp: sender !== null });
+      return wake;
+    })),
   );
   selection.targets.forEach((session, index) => {
-    reportTrackedWake(`${session.name ?? "?"}(pid ${session.pid})`, wakes[index]!, M, CLI_SINK, {
-      followUp: sender !== null,
-    });
+    reportTrackedWake(`${session.name ?? "?"}(pid ${session.pid})`, wakes[index]!, M, CLI_SINK, { followUp: sender !== null });
   });
   if (idleSubscriber !== null) subscribeIdle(idleSubscriber, selection.targets);
 }
@@ -621,6 +666,12 @@ function lanContext(parsed: Parsed): LanCliContext {
     flags: parsed.flags,
     fail,
     markStored: markStoredDeliveryFailure,
+    recordRemote: (remote) => {
+      if (jsonRun !== null) jsonRun.remote = remote;
+      if (remote.channel !== undefined && remote.seq !== undefined) {
+        observeStored(remote.channel, remote.seq); observeOutcome(remote.wake ?? "unknown");
+      }
+    },
     selfCommand: selfCommand(),
   };
 }
@@ -651,15 +702,16 @@ function lanDmSender(parsed: Parsed, from: string): LanDmSender {
 
 async function cmdDm(parsed: Parsed): Promise<void> {
   const [target, ...bodyParts] = parsed.positional;
-  if (target === undefined || bodyParts.length === 0) fail(M.failDmUsage);
+  if (target === undefined) fail(M.failDmUsage);
+  const body = messageBody(parsed, bodyParts);
   if (parsed.flags.has("no-wake") && parsed.flags.has("notify-when-idle")) fail(M.failNoWakeNotify);
   const from = senderName(parsed);
   // `<地址>@<对端>`：NAME_RE 里没有 '@'，本机地址不可能长这样，分流无歧义。
   if (target.includes("@")) {
-    for (const flag of ["notify-when-idle", "inherit", "no-wake", "json"]) {
+    for (const flag of ["notify-when-idle", "inherit"]) {
       if (parsed.flags.has(flag)) fail(L.dmFlagUnsupported(flag));
     }
-    await lanDm(lanContext(parsed), target, bodyParts.join(" "), lanDmSender(parsed, from));
+    await lanDm(lanContext(parsed), target, body, lanDmSender(parsed, from));
     return;
   }
   // 订阅方在任何 workspace 索引 / 频道写入前就要确定：失败必须保持零落盘。
@@ -763,7 +815,7 @@ async function cmdDm(parsed: Parsed): Promise<void> {
       from,
       fromIdentity: messageFromIdentity,
       toIdentity: messageToIdentity,
-      body: bodyParts.join(" "),
+      body,
     });
   } catch (error) {
     fail(M.dmConversationFailed(error instanceof Error ? error.message : String(error)));
@@ -786,6 +838,7 @@ async function cmdDm(parsed: Parsed): Promise<void> {
   }
   console.log(M.dmSent(target, channel, message.seq));
   if (parsed.flags.has("no-wake")) {
+    observeOutcome("skipped");
     if (jsonRun !== null) jsonRun.wake = "skipped";
     console.log(M.wakeSkipped);
     return;
@@ -864,17 +917,20 @@ function cmdInbox(parsed: Parsed): void {
 }
 
 async function cmdWho(parsed: Parsed): Promise<void> {
+  if (parsed.flags.has("json") && parsed.flags.has("lan")) {
+    await cmdWhoLocal(parsed, await lanWhoJson()); return;
+  }
   await cmdWhoLocal(parsed);
   if (parsed.flags.has("json")) return;
   if (parsed.flags.has("lan")) {
-    await printLanWho({ lang: LANG, fail });
+    await printLanWho({ lang: LANG, fail, flags: parsed.flags });
     return;
   }
   const peers = lanPeerCount();
   if (peers > 0) console.log(L.whoHint(peers));
 }
 
-async function cmdWhoLocal(parsed: Parsed): Promise<void> {
+async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lanWhoJson>>): Promise<void> {
   const hermes = await listHermesSessions();
   const roster = buildRoster(process.env, hermes.available ? hermes.sessions : []);
   const json = parsed.flags.has("json");
@@ -914,8 +970,11 @@ async function cmdWhoLocal(parsed: Parsed): Promise<void> {
   if (json) {
     console.log(JSON.stringify({
       ...roster,
-      entries: [...claude, ...codex, ...pi, ...hermesEntries, ...agyEntries, ...cmux],
+      entries: [...claude, ...codex, ...pi, ...hermesEntries, ...agyEntries, ...cmux].map((entry) => ({
+        ...entry, capabilities: entryCapabilities(entry, roster, entry.kind === "codex-task" && codexOwners[entry.threadId] !== undefined),
+      })),
       hermes: hermes.available,
+      ...(peers === undefined ? {} : { peers }),
     }, null, 2));
     return;
   }
@@ -1425,7 +1484,9 @@ If the skill came from somewhere \`upgrade\` can't refresh:
 ocs who                          # same-project peers + pending notices; you are marked
 ocs who --verbose                # raw IDs/paths for diagnostics
 ocs dm <name-or-id> "<text>"     # request work / answer / deliver a result; wakes the peer
-ocs dm <name> "<text>" --no-wake # local record only; peer must read/inbox later
+ocs dm <name> "<text>" --no-wake # stored only; peer must read/inbox later
+ocs dm <name> --batch tasks.json # JSON array of related tasks, one message/delivery
+ocs stats [channel] --json        # observed message outcomes and batch counts
 ocs dm <name> "<text>" --inherit <old-dm-channel>  # one-time history binding
 ocs inbox                        # unread threads attributable to this identity
 ocs send <channel> "<text>"      # post into a channel; @<name> wakes that agent
@@ -1518,7 +1579,7 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
   thread without starting a peer turn. Use it only for records the recipient will
   actively read (a workflow driver or closing notes), not for a requested answer or
   urgent blocker. JSON reports \`wake: skipped\`, exit 0. Combining \`--no-wake\` with
-  \`--notify-when-idle\` is rejected before storing; LAN DM does not support it yet.
+  \`--notify-when-idle\` is rejected before storing; LAN DM uses a distinct dm-quiet operation; older receivers reject it without storing or waking.
 - While a peer is working, wait for its result instead of polling it with messages.
   Use one idle subscription only if needed, and remember idle is not completion.
 - Replying with \`ocs dm <workspace-alias>\` reuses the stable or explicitly
@@ -1536,6 +1597,23 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
 - \`ocs doctor --fix\` is the one-step setup repair: it refreshes the Claude,
   Codex, and Pi skills, repairs the Pi extension and local data permissions,
   and backs up Claude settings before enabling direct delivery.
+
+- Explicit batching: \`dm <target> --batch <file>\` or \`send <channel> --batch <file>\`
+  accepts a JSON array of 1..100 non-empty task strings, retains every item in one
+  message, and uses the ordinary delivery path once per recipient. Do not batch
+  unrelated tasks or urgent blockers. No positional message may accompany --batch.
+- LAN \`dm --json\` uses the confirmed remote channel/seq and sets \`remote:true\`.
+  An unanswered request reports \`stored:null\`, \`wake:unknown\`, exit 3: the remote
+  commit is unknown, so never resend. An optional local history copy is not remote
+  delivery proof. \`--no-wake\` still requires an authenticated paired receiver.
+- \`who --json\` and \`who --lan --json\` include per-entry \`capabilities\`: observed
+  wake availability, busy-delivery policy, noWake, batch and conditional receipts.
+  Availability is a point-in-time observation, not a promise or completion proof.
+  Old LAN receivers may omit capabilities; do not guess their optional features.
+- \`stats [channel] --json\` counts local observed message outcomes and explicit
+  batch/coalescing activity since instrumentation was installed. It excludes old
+  history and does not measure model turns, read receipts, tokens or cost. Telemetry
+  is private, contains no message bodies, and never controls retries or delivery.
 `;
 
 interface OcsIntegrationPaths {
@@ -1689,10 +1767,10 @@ async function main(): Promise<void> {
   maybeUpdateNotice(OCS_VERSION, command, selfCommand());
   if (jsonRun !== null) {
     try {
-      await (command === "send" ? cmdSend(parsed) : cmdDm(parsed));
+      await runMessage(command!, parsed);
     } catch (error) {
       // 落盘后的意外异常 = 唤醒结果未知（3），绝不能报成 1 引人重发。
-      const exit = jsonRun.stored === undefined ? 1 : 3;
+      const exit = jsonRun.stored === undefined && jsonRun.remote?.stored !== true && jsonRun.remote?.stored !== null ? 1 : 3;
       process.exitCode = exit;
       emitJsonResult(exit, error instanceof Error ? error.message : String(error));
       return;
@@ -1702,11 +1780,16 @@ async function main(): Promise<void> {
   }
   switch (command) {
     case "send":
-      await cmdSend(parsed);
+      await runMessage("send", parsed);
       break;
     case "dm":
-      await cmdDm(parsed);
+      await runMessage("dm", parsed);
       break;
+    case "stats": {
+      const stats = trafficStats(parsed.positional[0]);
+      console.log(parsed.flags.has("json") ? JSON.stringify(stats) : JSON.stringify(stats, null, 2));
+      break;
+    }
     case "inbox":
       cmdInbox(parsed);
       break;
