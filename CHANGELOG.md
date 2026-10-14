@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.3
+
+- Add an opt-in Antigravity CLI receiver on macOS, Linux, and Windows: authenticate in `agy`, then run `ocs agy start --cwd <workspace>`. Delegate with `ocs dm agy` or `@agy`; the final response returns to the original conversation. Paired LAN computers can delegate too
+- Tasks enter a durable SQLite queue, run serially, and keep a separate agy conversation per OCS channel. Duplicate wakes reuse the same task; interrupted tasks and replies with unknown delivery outcomes are never replayed automatically
+- Windows receivers verify the local named-pipe owner, server user, and registered PID on the connection carrying the task. Authenticated `ocs agy stop` shuts down the receiver; stopping an active task terminates its child process tree. Long Windows replies include a preview and a file containing the full result
+- Automatic channel replies normalize the parent author address, so replies to Claude short IDs wake the intended session. Fix the English and Chinese help ordering for `whoami` and `agy`
+
 ## 0.8.2
 
 - Local `ocs dm --no-wake` stores a message with its route/inbox history without starting a peer turn (`wake: skipped`, exit 0). It is for records a recipient actively reads, not a requested answer or urgent blocker. LAN DM and idle subscriptions cannot be combined with it

@@ -5,7 +5,7 @@
 // 输出全部走 i18n 目录（英文 canonical，OCS_LANG/locale 选 zh）。
 
 import { chmodSync, mkdirSync, statSync, writeSync } from "node:fs";
-import { findAgyWorker } from "./agy.ts";
+import { findAgyWorker, stopAgyWorker } from "./agy.ts";
 import { AGY_WORKER_COMMAND, parseAgyOptions, runAgyWorker, startAgyWorker } from "./agy-worker.ts";
 import { agyMessages } from "./i18n-agy.ts";
 import { homedir } from "node:os";
@@ -131,7 +131,7 @@ import {
   upgradeCheckEnabled,
 } from "./upgrade.ts";
 
-export const OCS_VERSION = "0.8.2";
+export const OCS_VERSION = "0.8.3";
 
 const LANG = detectLang();
 const M = messages(LANG);
@@ -1657,7 +1657,8 @@ async function cmdAgy(parsed: Parsed): Promise<void> {
     if (parsed.flags.size > 0) fail(A.usage);
     const worker = findAgyWorker();
     if (worker === null) { console.log(A.offline); return; }
-    process.kill(worker.pid, "SIGTERM");
+    const stopped = await stopAgyWorker();
+    if (!stopped.ok) fail(A.failed(stopped.reason, stopped.detail ?? ""));
     const deadline = Date.now() + 10000;
     while (Date.now() < deadline && findAgyWorker() !== null) await new Promise((wait) => setTimeout(wait, 100));
     if (findAgyWorker() !== null) fail(A.timeout);

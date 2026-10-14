@@ -5,8 +5,11 @@ An optional receiver lets Claude, Codex, Pi, and paired computers delegate to
 It uses the documented `-p`, `--output-format json`, and `--conversation` interfaces.
 It starts a dedicated headless conversation, rather than injecting into an existing TUI.
 
-The receiver supports **macOS and Linux**. Windows clients can send to it over
-the existing paired LAN transport; a Windows receiver is not implemented here.
+The receiver supports **macOS, Linux, and Windows**. Windows uses a local named
+pipe; before sending a token or task, the client verifies the pipe owner, the
+server user SID, and the registered worker PID on the same connection. State
+files on Windows rely on the local user directory ACL rather than Unix mode bits.
+Use an OCS_HOME directory accessible only to your user and administrators.
 No Python, systemd, additional npm package, or separate API key is required.
 You do need `agy` on PATH and its own cached login.
 
@@ -55,7 +58,11 @@ derive from channel/seq, so repeating a wake does not repeat the task.
 
 On restart, accepted queued jobs resume. In-flight jobs are reported as
 interrupted with unknown partial effects and are **never re-executed**.
-Responses interrupted during delivery are likewise not resent. Offline wakes
+Responses interrupted during delivery are likewise not resent. `ocs agy stop`
+uses an authenticated control request on every platform. On Windows, stopping
+an active task or reaching its time limit terminates the child process tree.
+Long Windows replies include a preview and a path to the complete result file
+to stay within the Windows command-line limit. Offline wakes
 stay in the OCS channel log; starting the receiver does not automatically
 execute messages it never acknowledged. Exit 2/3 still mean stored-only/unknown:
 inspect the original channel and sequence before making another request.

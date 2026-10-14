@@ -104,6 +104,10 @@ jobs:
         run: bun build --compile --target=bun-windows-x64 src/cli.ts --outfile ocs.exe
       - name: smoke test release binary
         run: ./ocs.exe help && ./ocs.exe version
+      - name: Windows receiver end-to-end tests with compiled binaries
+        run: |
+          bun build --compile test/fixtures/agy-cli.ts --outfile fake-agy.exe
+          OCS_TEST_BINARY="$PWD/ocs.exe" OCS_TEST_AGY_BINARY="$PWD/fake-agy.exe" bun test test/agy-windows.test.ts
       - name: package binary
         run: |
           7z a -tzip ocs-windows-x64.zip ocs.exe

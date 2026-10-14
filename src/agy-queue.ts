@@ -18,7 +18,7 @@ export function ensureAgyDirectory(env: NodeJS.ProcessEnv): string {
   const dir = agyDir(env);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stat = lstatSync(dir);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0 ||
+  if (!stat.isDirectory() || stat.isSymbolicLink() || (process.platform !== "win32" && (stat.mode & 0o077) !== 0) ||
       (typeof process.getuid === "function" && stat.uid !== process.getuid())) throw new Error("agy directory must be private and owned by this user");
   return dir;
 }
@@ -29,7 +29,7 @@ export class AgyQueue {
     const path = join(ensureAgyDirectory(env), "jobs.sqlite3");
     try {
       const stat = lstatSync(path);
-      if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0 ||
+      if (!stat.isFile() || stat.isSymbolicLink() || (process.platform !== "win32" && (stat.mode & 0o077) !== 0) ||
           (typeof process.getuid === "function" && stat.uid !== process.getuid())) throw new Error("unsafe agy database");
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     this.database = new Database(path, { create: true, strict: true });
