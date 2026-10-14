@@ -2,7 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
-import { agySocketPath, findAgyWorker, wakeAgy } from "../src/agy.ts";
+import { agySocketPath, findAgyWorker, openAgyPipe, wakeAgy, type AgyWorker } from "../src/agy.ts";
+import type { WindowsPipeApi, WindowsPipeServerFacts } from "../src/codex-ipc-win.ts";
 import { collectingSink, deliverDm } from "../src/deliver.ts";
 import { messages } from "../src/i18n.ts";
 import { localAddressOf } from "../src/lan-daemon.ts";
@@ -13,6 +14,34 @@ import { tempDir, autoCleanupTempDirs } from "./tmp";
 autoCleanupTempDirs();
 const servers: Server[] = [];
 const TOKEN = "a".repeat(64);
+
+test("Windows agy verifies same-handle pid and user before any task or token is written", () => {
+  const record: AgyWorker = { v: 1, target: "agy", pid: 123, cwd: "/tmp", status: "idle", token: TOKEN,
+    socketPath: agySocketPath(TOKEN, {}, "win32"), heartbeat: Date.now() };
+  const facts: WindowsPipeServerFacts = { pipeOwnerSid: "S-1-5-21-1", serverUserSid: "S-1-5-21-1", serverPid: 123,
+    serverImagePath: null, serverPackageFamily: null, serverPackageInstallPath: null };
+  let closed = 0;
+  let opened = 0;
+  let written = 0;
+  const handle = { facts: () => facts, available: () => 0, read: () => Buffer.alloc(0),
+    write: () => { written++; return 0; }, close: () => { closed++; } };
+  const api: WindowsPipeApi = { currentUserSid: () => "S-1-5-21-1", open: () => { opened++; return handle; }, pipeExists: () => true };
+  expect(openAgyPipe(record, api)).toBe(handle);
+  facts.serverPid = 124;
+  expect(() => openAgyPipe(record, api)).toThrow("identity mismatch");
+  facts.serverPid = 123; facts.serverUserSid = "S-1-5-21-2";
+  expect(() => openAgyPipe(record, api)).toThrow("identity mismatch");
+  facts.serverUserSid = "S-1-5-21-1"; facts.pipeOwnerSid = "S-1-5-21-2";
+  expect(() => openAgyPipe(record, api)).toThrow("identity mismatch");
+  facts.pipeOwnerSid = "S-1-5-32-544";
+  expect(openAgyPipe(record, api)).toBe(handle);
+  expect(closed).toBe(3);
+  expect(written).toBe(0);
+  expect(opened).toBe(5);
+  expect(() => openAgyPipe({ ...record, socketPath: "\\\\remote\\pipe\\ocs-agy-test" }, api)).toThrow("not a local");
+  expect(opened).toBe(5);
+  expect(record.socketPath).not.toContain(TOKEN);
+});
 afterEach(() => { for (const server of servers.splice(0)) server.close(); });
 
 async function worker(drop = false) {

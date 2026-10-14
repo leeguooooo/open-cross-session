@@ -18,3 +18,16 @@ jobs:
           codesign --force --sign - /tmp/ocs
           codesign --verify --deep --strict --verbose=4 /tmp/ocs
           /tmp/ocs help
+  windows-agy:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile || bun install
+      - run: bun build --compile src/cli.ts --outfile ocs.exe
+      - run: bun build --compile test/fixtures/agy-cli.ts --outfile fake-agy.exe
+      - name: Windows receiver end-to-end tests with compiled binaries
+        run: OCS_TEST_BINARY="$PWD/ocs.exe" OCS_TEST_AGY_BINARY="$PWD/fake-agy.exe" bun test test/agy-windows.test.ts

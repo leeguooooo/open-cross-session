@@ -1,5 +1,5 @@
 // Optional headless agy carrier; uses Bun's bundled SQLite, no Python/systemd dependency.
-import type { ChildProcess } from "node:child_process";
+import { spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, closeSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
@@ -19,6 +19,11 @@ const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function killChildGroup(child: ChildProcess): void {
+  if (process.platform === "win32" && child.pid !== undefined) {
+    spawnSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+    child.kill("SIGKILL");
+    return;
+  }
   try { if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL"); }
   catch { child.kill("SIGKILL"); }
 }
@@ -91,9 +96,8 @@ function saveRegistration(worker: AgyWorker, env: NodeJS.ProcessEnv): void {
 }
 
 export async function runAgyWorker(options: AgyOptions, env: NodeJS.ProcessEnv = process.env): Promise<void> {
-  if (process.platform === "win32") throw new Error(agyMessages(detectLang(env)).unsupported);
   assertAgyAddressAvailable(env);
-  process.umask(0o077);
+  if (process.platform !== "win32") process.umask(0o077);
   const clean = agyEnvironment(env);
   const M = agyMessages(detectLang(clean));
   const token = randomBytes(32).toString("hex");
@@ -109,10 +113,11 @@ export async function runAgyWorker(options: AgyOptions, env: NodeJS.ProcessEnv =
   const deliver = async (job: AgyJob, response: string) => {
     if (!queue.beginReply(job.id)) return;
     let text = response.trim() || "(agy returned an empty response)";
-    if (Buffer.byteLength(text) > 90000) {
+    const replyLimit = process.platform === "win32" ? 12000 : 90000;
+    if (Buffer.byteLength(text) > replyLimit) {
       const path = join(agyDir(clean), `${job.id}.txt`);
       writeFileSync(path, text, { mode: 0o600 });
-      text = Buffer.from(text).subarray(0, 80000).toString("utf8") + `\n\nFull result: ${path}`;
+      text = Buffer.from(text).subarray(0, process.platform === "win32" ? 10000 : 80000).toString("utf8") + `\n\nFull result: ${path}`;
     }
     const command = job.replyTarget === undefined
       ? [...ocs, "send", job.channel, text, "--reply-to", String(job.seq)]
@@ -180,9 +185,14 @@ export async function runAgyWorker(options: AgyOptions, env: NodeJS.ProcessEnv =
       try {
         const input = JSON.parse(data.subarray(0, newline).toString("utf8")) as Record<string, unknown>;
         if (typeof input.token !== "string" || !AGY_TOKEN_RE.test(input.token) ||
-            !timingSafeEqual(Buffer.from(input.token), Buffer.from(token)) || !validAgyJob(input) || closing) {
+            !timingSafeEqual(Buffer.from(input.token), Buffer.from(token)) || closing) {
           socket.end(JSON.stringify({ ok: false, error: "invalid request" }) + "\n"); return;
         }
+        if (input.op === "stop") {
+          socket.end(JSON.stringify({ ok: true, job: "stop" }) + "\n", shutdown);
+          return;
+        }
+        if (!validAgyJob(input)) throw new Error("invalid wake");
         const job = queue.submit({ channel: input.channel, seq: input.seq, note: input.note,
           ...(input.replyTarget === undefined ? {} : { replyTarget: input.replyTarget }) });
         socket.end(JSON.stringify({ ok: true, job }) + "\n");
@@ -199,7 +209,7 @@ export async function runAgyWorker(options: AgyOptions, env: NodeJS.ProcessEnv =
     queue.claim(process.pid, token); claimed = true;
     queue.recover(M.interrupted);
     await new Promise<void>((ready, reject) => { server.once("error", reject); server.listen(worker.socketPath, () => { server.removeListener("error", reject); ready(); }); });
-    chmodSync(worker.socketPath, 0o600);
+    if (process.platform !== "win32") chmodSync(worker.socketPath, 0o600);
     publish();
     heartbeat = setInterval(() => { try { publish(); } catch { shutdown(); } }, 2000);
     process.once("SIGTERM", shutdown); process.once("SIGINT", shutdown);
@@ -215,14 +225,15 @@ export async function runAgyWorker(options: AgyOptions, env: NodeJS.ProcessEnv =
       const path = join(agyDir(clean), "worker.json");
       if (JSON.parse(readFileSync(path, "utf8")).token === token) unlinkSync(path);
     } catch { /* never remove another runtime's record */ }
-    try { unlinkSync(worker.socketPath); } catch { /* already absent */ }
+    if (process.platform !== "win32") {
+      try { unlinkSync(worker.socketPath); } catch { /* already absent */ }
+    }
     if (claimed) queue.release(token);
     queue.close();
   }
 }
 
 export async function startAgyWorker(options: AgyOptions, env: NodeJS.ProcessEnv): Promise<AgyWorker | null> {
-  if (process.platform === "win32") throw new Error(agyMessages(detectLang(env)).unsupported);
   const running = findAgyWorker(env);
   if (running !== null) return running;
   assertAgyAddressAvailable(env);
