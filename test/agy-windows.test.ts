@@ -17,8 +17,9 @@ async function run(env: NodeJS.ProcessEnv, ...args: string[]) {
 }
 afterEach(async () => {
   for (const { env, pid } of receivers.splice(0)) {
+    const activePid = findAgyWorker(env)?.pid ?? pid;
     expect((await run(env, "agy", "stop")).code).toBe(0);
-    await until(() => { try { process.kill(pid, 0); return null; } catch { return true; } });
+    await until(() => { try { process.kill(activePid, 0); return null; } catch { return true; } });
   }
 });
 autoCleanupTempDirs();
