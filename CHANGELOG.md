@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.8.4
+
+- Accept `--as <name>` before or after identity-aware subcommands, including `dm`; sender-identity errors now state that nothing was sent and explain how to add a sender name from a plain shell
+- Explain the correct two-hyphen `--as` spelling for `-as` and typographic dashes; keep malformed commands from storing or sending a message
+- Correct misleading cmux discovery hints in `who` and `doctor`, and document that Grok has no direct-wake adapter
 - Add private, best-effort traffic observations via `ocs stats [channel] --json`: distinguish message and target delivery outcomes, explicit batches and busy Codex coalescing; counts do not imply model turns, reads, tokens or cost
 - Add explicit `send/dm --batch <tasks.json>`: retain all related tasks in one message and deliver once per recipient; agy returns one combined result
 - Support LAN DM JSON with confirmed remote channel/seq and unknown remote commits (`stored:null`, exit 3), plus authenticated quiet DM using an operation older receivers safely reject without storing
