@@ -108,7 +108,7 @@ const ALLOWED_KEYS: ReadonlySet<string> = new Set([...REQUIRED_KEYS, ...OPTIONAL
 // 命名空间：name / claude（会话级 sessionId，#36）/ codex / pi / hermes / cmux / workspace /
 // lan（局域网对端：`lan:<对端公钥指纹>:<对端地址>`，见 docs/lan.md）。旧二进制不认新命名空间时
 // 只会跳过 route 旁车帧，消息本身照常可读（铁律 9）。
-export const OCS_IDENTITY_RE = /^(?:name:[A-Za-z0-9][A-Za-z0-9._-]{0,63}|claude:[0-9a-f]{8}[0-9a-f-]{0,56}|lan:[a-z2-7]{52}:[A-Za-z0-9][A-Za-z0-9._-]{0,63}|codex:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|pi:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|hermes:[a-z0-9][a-z0-9.]{5,56}|cmux:surface:\d+|workspace:[0-9a-f]{64})$/i;
+export const OCS_IDENTITY_RE = /^(?:name:[A-Za-z0-9][A-Za-z0-9._-]{0,63}|claude:[0-9a-f]{8}[0-9a-f-]{0,56}|lan:[a-z2-7]{52}:[A-Za-z0-9][A-Za-z0-9._-]{0,63}|codex:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|grok:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|pi:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|hermes:[a-z0-9][a-z0-9.]{5,56}|cmux:surface:\d+|workspace:[0-9a-f]{64})$/i;
 
 export function isOcsMessage(value: unknown): value is OcsMessage {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;

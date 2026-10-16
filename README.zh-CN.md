@@ -205,7 +205,7 @@ ocs agy stop
 ## 能唤醒谁
 
 `ocs who` 列出已有发现/唤醒适配的活会话，不扫描所有已安装的 AI 应用。
-Grok 暂无直接唤醒适配，安装或打开它不会自动登记到 OCS。
+[Grok Build](docs/grok.md) 用 `grok --leader` 启动并提交首条提示后可以被发现、唤醒和回复；Grok 网页和手机应用尚未接入。
 已支持的会话没出现时，运行 `ocs doctor` 检查接入条件；原生会话发现不依赖 cmux。
 
 在普通终端发送时，给自己指定一个发送者名字：
@@ -222,6 +222,7 @@ ocs dm <ocs-who给出的目标地址> "你好" --as human
 | Pi TUI | `ocs dm pi-<8hex> …` 或 `@pi-<8hex>` | 先跑 `ocs skill install`，再重启 Pi。扩展会登记活着的 TUI；消息在 Pi 忙碌时排到当前任务结束后，不会打断这一轮。 |
 | Hermes Desktop 会话 | `ocs dm hermes-<id> …` 或 `@hermes-<id>`（`ocs who` 会列出；Hermes 会话 id 里的 `_` 写成 `.`） | 同一用户下开着 Hermes Desktop（或 `hermes serve`），且该会话已打开。ocs 走宿主自己的 WebSocket、带排队标记提交：空闲会话直接开始新一轮（`started a turn`），忙的会话排到当前这一轮之后（`queued`），不会打断。Hermes 里显示为用户气泡，包装文字标明是别的 agent 发来的。在 Hermes 里跑 `ocs whoami` 能认出会话，回复不用 `--as`。 |
 | cmux 里的 Claude/Codex TUI | `ocs dm surface:<n> …` | 可选能力。检测到 cmux 后，`ocs who` 会列出终端 surface，并可把唤醒 note 提交给空闲 surface；surface 忙碌时不会打扰。 |
+| Grok Build CLI | `ocs dm grok-<完整会话UUID> …` 或 `@grok-<完整会话UUID>` | 用 `grok --leader` 启动并提交首条提示，从 `ocs who` 复制地址。忙时排队，保留原有权限。网页、手机应用和独立会话未接入。[配置](docs/grok.md)。 |
 | 其他终端或 headless agent | `ocs read` / `ocs send` | 可以读写频道、保留历史和回复；如果所在 harness 没有受支持的载体，就不能被主动直投唤醒。 |
 | shell 前的人 | `ocs send` / `ocs read` / `ocs watch` | 不运行 agent 也能发消息、读取一次或持续旁观同一频道。 |
 

@@ -147,10 +147,11 @@ describe("命令级参数 schema", () => {
     expect(lstatSync(claudeSkill).isSymbolicLink()).toBe(false);
     expect(readFileSync(sharedSkill, "utf8")).toBe("old shared cache\n");
     expect(existsSync(join(home, ".codex", "skills", "ocs", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(home, ".grok", "skills", "ocs", "SKILL.md"))).toBe(true);
     expect(existsSync(join(piAgentDir, "skills", "ocs", "SKILL.md"))).toBe(true);
     expect(existsSync(join(piAgentDir, "extensions", "ocs.ts"))).toBe(true);
     expect(statSync(dataHome).mode & 0o777).toBe(0o700);
-    expect(stdout).toContain("updated the ocs skill for Claude, Codex, and Pi");
+    expect(stdout).toContain("updated the ocs skill for Claude, Codex, Pi, and Grok");
     expect(stdout).toContain("direct-wake extension installed");
     expect(stdout).toContain("owner-only permissions");
   }, T);

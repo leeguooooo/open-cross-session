@@ -7,6 +7,7 @@
 
 import { spawnSync } from "node:child_process";
 import { findAgyWorker } from "./agy.ts";
+import { grokSessionIdFromTarget, grokTargetName, selfGrokSessionId, type GrokSession } from "./grok.ts";
 import { createHash } from "node:crypto";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -94,6 +95,8 @@ function safeVerifiedWorkspaceIdentity(
 export function resolveSelfName(env: NodeJS.ProcessEnv = process.env): string | null {
   const explicit = env[OCS_NAME_ENV];
   if (typeof explicit === "string" && NAME_RE.test(explicit)) return explicit;
+  const grokId = selfGrokSessionId(env);
+  if (grokId !== null) return grokTargetName(grokId);
   const piSessionId = env[OCS_PI_SESSION_ID_ENV];
   if (typeof piSessionId === "string" && isPiSessionId(piSessionId)) return piTargetName(piSessionId);
   const pid = findSelfClaudePid(env);
@@ -319,6 +322,7 @@ export type RosterEntry =
       status: string | null;
       self: boolean;
     }
+  | { kind: "grok"; target: string; sessionId: string; cwd: string; title: string | null; status: string; self: boolean; ocsName?: string }
   | { kind: "agy"; target: "agy"; pid: number; cwd: string; status: string; self: boolean; ocsName: "agy" }
   | { kind: "cmux"; ref: string; title: string };
 
@@ -335,7 +339,7 @@ export interface Roster {
  * `hermes`：调用方先 await `listHermesSessions()` 拿到的活会话（要连 WebSocket，这里是同步的）。
  * 不传就不列 Hermes。
  */
-export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readonly HermesSession[] = []): Roster {
+export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readonly HermesSession[] = [], grok: readonly GrokSession[] = []): Roster {
   const entries: RosterEntry[] = [];
   const agy = findAgyWorker(env);
   if (agy !== null) entries.push({ kind: "agy", target: "agy", pid: agy.pid, cwd: agy.cwd, status: agy.status, self: env.OCS_NAME === "agy", ocsName: "agy" });
@@ -423,6 +427,11 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
       self: selfHermesKey === s.key,
     });
   }
+  for (const s of grok) {
+    const ocsName = ocsNameFor({ kind: "grok", id: s.id }, names)?.name;
+    entries.push({ kind: "grok", target: grokTargetName(s.id), sessionId: s.id, cwd: s.cwd, title: s.title, status: s.status,
+      self: selfGrokSessionId(env) === s.id, ...(ocsName === undefined ? {} : { ocsName }) });
+  }
   const cmux = cmuxAvailable();
   if (cmux) {
     for (const s of listCmuxSurfaces()) {
@@ -432,7 +441,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
   return { entries, codexIpc, codexQueue: codexQueueAvailable(env), cmux, home: ocsHome(env) };
 }
 
-export type DmTargetKind = "claude" | "codex-task" | "pi" | "hermes" | "agy" | "cmux";
+export type DmTargetKind = "claude" | "codex-task" | "pi" | "hermes" | "grok" | "agy" | "cmux";
 
 export interface ResolvedDmTarget {
   kind: DmTargetKind;
@@ -468,6 +477,7 @@ export interface ResolvedDmTarget {
   piSessionId?: string;
   /** Hermes 会话的持久 id。在不在线只有投递时连宿主才知道（解析是同步的）。 */
   hermesSessionKey?: string;
+  grokSessionId?: string;
   cmuxRef?: string;
 }
 
@@ -483,6 +493,8 @@ export function claudeSessionIdentity(session: Pick<NativeClaudeSession, "name" 
 
 /** 发送方的注入式身份串（与 ResolvedDmTarget.identity 同一命名空间规则）。 */
 export function selfIdentity(from: string): string {
+  const grokId = grokSessionIdFromTarget(from);
+  if (grokId !== null) return `grok:${grokId}`;
   const piSessionId = piSessionIdFromTarget(from);
   if (piSessionId !== null) return `pi:${piSessionId}`;
   const hermesKey = hermesSessionKeyFromTarget(from);
@@ -563,6 +575,7 @@ function resolveNamedTarget(
   if (named.kind === "codex") return { ...resolveDmTarget(named.id, env)!, via: "ocs-name" };
   if (named.kind === "pi") return { ...resolveDmTarget(piTargetName(named.id), env)!, via: "ocs-name" };
   if (named.kind === "hermes") return { ...resolveDmTarget(hermesTargetName(named.id), env)!, via: "ocs-name" };
+  if (named.kind === "grok") return { ...resolveDmTarget(grokTargetName(named.id), env)!, via: "ocs-name" };
   const live = sessions.find((candidate) => claudeEntryMatches(named, candidate));
   if (live !== undefined) return { ...claudeTarget(live, sessions, env), via: "ocs-name" };
   return {
@@ -590,6 +603,8 @@ export function shadowFreeWorkspaceAlias(
 
 /** 当前进程所在的宿主会话（`ocs rename` 的对象）。顺序同 resolveSelfName，但不看 OCS_NAME。 */
 export function selfNameOwner(env: NodeJS.ProcessEnv = process.env): NameOwner | null {
+  const grokId = selfGrokSessionId(env);
+  if (grokId !== null) return { kind: "grok", id: grokId };
   const piSessionId = env[OCS_PI_SESSION_ID_ENV];
   if (typeof piSessionId === "string" && isPiSessionId(piSessionId)) {
     return { kind: "pi", id: piSessionId.toLowerCase() };
@@ -634,6 +649,7 @@ export function canonicalWakeAddress(address: string, env: NodeJS.ProcessEnv = p
   if (resolved.kind === "codex-task" && resolved.threadId !== undefined) return resolved.threadId;
   if (resolved.kind === "pi" && resolved.piSessionId !== undefined) return piTargetName(resolved.piSessionId);
   if (resolved.kind === "hermes" && resolved.hermesSessionKey !== undefined) return hermesTargetName(resolved.hermesSessionKey);
+  if (resolved.kind === "grok" && resolved.grokSessionId !== undefined) return grokTargetName(resolved.grokSessionId);
   if (resolved.kind === "claude" && resolved.claude?.name) return resolved.claude.name;
   return address;
 }
@@ -648,6 +664,8 @@ export function resolveDmTarget(
   target: string,
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedDmTarget | null {
+  const grokId = grokSessionIdFromTarget(target);
+  if (grokId !== null) return { kind: "grok", name: grokTargetName(grokId), identity: `grok:${grokId}`, grokSessionId: grokId };
   if (target.toLowerCase() === "agy") {
     const named = readOcsName("agy", env);
     const collision = listNativeSessions(env).find((session) => session.name?.toLowerCase() === "agy");

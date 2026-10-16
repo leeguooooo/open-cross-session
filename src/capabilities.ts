@@ -7,7 +7,7 @@ export function entryCapabilities(entry: RosterEntry, roster: Pick<Roster, "code
   const canWake = kind === "claude" && resolveSessionSocketByPid(entry.pid, { env }) === null ? "unverified" : kind === "cmux" ? "unverified" : kind === "codex-task"
     ? (desktopClaimed || (entry.livePid !== null && roster.codexQueue) ? "available" : "unverified") : "available";
   return { v: 1, wake: canWake, noWake: kind !== "cmux",
-    busyDelivery: kind === "agy" ? "serial" : kind === "pi" || kind === "hermes" ? "queued"
+    busyDelivery: kind === "agy" ? "serial" : kind === "pi" || kind === "hermes" || kind === "grok" ? "queued"
       : kind === "codex-task" ? "steer-or-coalesce" : "host-controlled",
     deliveryReceipt: kind === "claude" && platform !== "win32" ? "conditional" : "none",
     completionReceipt: false, batch: kind !== "cmux" };

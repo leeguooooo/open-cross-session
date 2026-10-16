@@ -312,7 +312,7 @@ export async function remoteWho(
     const e = raw as Record<string, unknown>;
     const address = clean(e.address, 64);
     if (address === undefined || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(address)) continue;
-    if (e.kind !== "claude" && e.kind !== "codex" && e.kind !== "pi" && e.kind !== "hermes" && e.kind !== "agy") continue;
+    if (e.kind !== "claude" && e.kind !== "codex" && e.kind !== "pi" && e.kind !== "hermes" && e.kind !== "grok" && e.kind !== "agy") continue;
     const status = clean(e.status, 16);
     const label = clean(e.label, 60);
     const capabilities = parseCapabilities(e.capabilities);

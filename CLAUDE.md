@@ -32,6 +32,8 @@ bun src/cli.ts <cmd>   # 本地跑 CLI（who/dm/send/read/notify-when-idle/sessi
 12. **Hermes（`src/hermes.ts`，#40）走宿主私有 WebSocket**：`prompt.submit` 必须带 `queued:true`（不带会按 Hermes 默认 busy 模式打断当前这一轮）；token 每次连接重读并核对 rendezvous 记录里的指纹，只连 loopback（token 在 URL 里）；运行期 id 每次投递前用 `session.active_list` 现查，绝不缓存；submit 帧发出后无应答 = unknown-outcome，绝不重发。对外地址把会话 id 的 `_` 写成 `.`（NAME_RE 不含 `_`）。身份解析里 Hermes 排最后：Hermes 往每条终端命令注入 `HERMES_SESSION_ID`，在它里面开的 Claude/Codex 也会继承。`test/hermes.test.ts` 守着，改之前先跑变异自检。
 13. **Codex 回合进行中不许往宿主队列塞唤醒**（#41，docs/wake-protocol.md §1.1）：排进去的每条都会在回合结束后单独开一轮。先 `turn/steer`（`src/codex-steer.ts`，守护进程控制 socket，必须带 rollout 里读到的 `expectedTurnId`，socket 及其目录必须属于本用户）；插不进才并入积压（`src/codex-defer.ts`），回合结束合成一条、读游标已覆盖的不发。Desktop 托管的不 steer（会丢原生来源信封，铁律 10）。steer 帧发出无应答 = unknown，不降级不重放；等待器取走的批次无论结果如何都不补发。`test/codex-steer.test.ts`、`test/codex-defer.test.ts` 守着。
 
+14. **Grok Build 接入**（`src/grok.ts`）：只投已有 shared leader 的 resident/local 会话，不做 `session/load` 或自动启动 leader。`session/prompt` 必须 `sendNow:false`；只有同 session + promptId 的原生 queue/running 接纳通知或关联终态才算 accepted。帧写出无确认 = unknown，不重发。Windows 必须在实际写帧句柄上核对管道属主、服务端用户/PID/映像，不能先探测再另连。新 adapter 测试在 `test/grok.test.ts`；真实账户验收与 fixture 验收分别报告。
+
 ## 路线（owner 已拍板）
 
 2026-10：AgentParty 停止维护，原定「主仓抽 MIT 的 `packages/cross-session-core`、本仓转为单向 sync 镜像」的路线作废。本仓是唯一正本；跨网络靠虚拟局域网 + `ocs lan`。

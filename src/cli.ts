@@ -9,6 +9,7 @@ import { batchBody } from "./batch.ts";
 import { trafficStats, writeTraffic, startDeliveryObservation, type TrafficEvent, type TrafficOutcome } from "./traffic.ts";
 import { entryCapabilities } from "./capabilities.ts";
 import { findAgyWorker, stopAgyWorker } from "./agy.ts";
+import { grokSessionIdFromTarget, listGrokSessions } from "./grok.ts";
 import { AGY_WORKER_COMMAND, parseAgyOptions, runAgyWorker, startAgyWorker } from "./agy-worker.ts";
 import { agyMessages } from "./i18n-agy.ts";
 import { homedir } from "node:os";
@@ -135,7 +136,7 @@ import {
   upgradeCheckEnabled,
 } from "./upgrade.ts";
 
-export const OCS_VERSION = "0.8.4";
+export const OCS_VERSION = "0.9.0";
 
 const LANG = detectLang();
 const M = messages(LANG);
@@ -442,6 +443,7 @@ function noticeSender(): NoticeSender | null {
   }
   if (owner.kind === "codex") return { kind: "codex", threadId: owner.id };
   if (owner.kind === "hermes") return { kind: "hermes", sessionKey: owner.id };
+  if (owner.kind === "grok") return { kind: "grok", sessionId: owner.id };
   return { kind: "pi", sessionId: owner.id };
 }
 
@@ -607,13 +609,18 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     }
   }
 
+  const grokMentions = claudeNames.filter((name) => grokSessionIdFromTarget(name) !== null);
+  for (const target of grokMentions) {
+    await deliverDm({ resolved: resolveDmTarget(target)!, target, channel,
+      firstMessage: message.seq === 1, stableChannel: false, wakeInput, dmReplyTarget: null }, M, CLI_SINK);
+  }
   const agyMention = claudeNames.some((name) => name.toLowerCase() === "agy");
   if (agyMention) {
     await deliverDm({ resolved: resolveDmTarget("agy")!, target: "agy", channel,
       firstMessage: message.seq === 1, stableChannel: false, wakeInput, dmReplyTarget: null }, M, CLI_SINK);
   }
-  const wakeNames = claudeNames.filter((name) => name.toLowerCase() !== "agy");
-  if (wakeNames.length === 0 && codexTargets.length === 0 && piTargets.length === 0 && hermesTargets.length === 0 && !agyMention) {
+  const wakeNames = claudeNames.filter((name) => name.toLowerCase() !== "agy" && grokSessionIdFromTarget(name) === null);
+  if (wakeNames.length === 0 && codexTargets.length === 0 && piTargets.length === 0 && hermesTargets.length === 0 && !agyMention && grokMentions.length === 0) {
     // #36：一个人都没叫醒时必须明说，不能只留一行 stored 让发送方以为送到了。
     const dm = channel.startsWith("dm-");
     console.log(M.sendNoWakeTarget(dm));
@@ -639,7 +646,7 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     const hint = selection.excludedSelf.length > 0 ? M.wakeSelfSkipped : "";
     console.log(`${M.wakeNoMatch(wakeNames.join(" @"))}${hint}`);
     if (selection.unmatchedNames.length > 0) markStoredDeliveryFailure("failed");
-    else if (codexTargets.length === 0 && piTargets.length === 0 && hermesTargets.length === 0) markNoWakeTarget();
+    else if (codexTargets.length === 0 && piTargets.length === 0 && hermesTargets.length === 0 && grokMentions.length === 0 && !agyMention) markNoWakeTarget();
     if (idleSubscriber !== null) subscribeIdle(idleSubscriber, []);
     return;
   }
@@ -933,10 +940,12 @@ async function cmdWho(parsed: Parsed): Promise<void> {
 
 async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lanWhoJson>>): Promise<void> {
   const hermes = await listHermesSessions();
-  const roster = buildRoster(process.env, hermes.available ? hermes.sessions : []);
+  const grok = await listGrokSessions();
+  const roster = buildRoster(process.env, hermes.available ? hermes.sessions : [], grok.sessions);
   const json = parsed.flags.has("json");
   if (roster.entries.length === 0 && !json) {
     console.log(M.whoEmpty);
+    if (grok.reason !== undefined) console.log(M.doctorGrok(0, grok.reason));
     return;
   }
   const verbose = parsed.flags.has("verbose");
@@ -966,15 +975,18 @@ async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lan
     entry.kind === "codex-task" && (codexOwners[entry.threadId] !== undefined || entry.livePid !== null));
   const pi = relevantFirst(roster.entries.filter((e) => e.kind === "pi"));
   const hermesEntries = roster.entries.filter((e) => e.kind === "hermes");
+  const grokEntries = roster.entries.filter((e) => e.kind === "grok");
   const agyEntries = roster.entries.filter((e) => e.kind === "agy");
   const cmux = roster.entries.filter((e) => e.kind === "cmux");
   if (json) {
     console.log(JSON.stringify({
       ...roster,
-      entries: [...claude, ...codex, ...pi, ...hermesEntries, ...agyEntries, ...cmux].map((entry) => ({
+      entries: [...claude, ...codex, ...pi, ...hermesEntries, ...grokEntries, ...agyEntries, ...cmux].map((entry) => ({
         ...entry, capabilities: entryCapabilities(entry, roster, entry.kind === "codex-task" && codexOwners[entry.threadId] !== undefined),
       })),
       hermes: hermes.available,
+      grok: grok.sessions.length > 0,
+      ...(grok.reason === undefined ? {} : { grokDiagnostic: grok.reason }),
       ...(peers === undefined ? {} : { peers }),
     }, null, 2));
     return;
@@ -1042,6 +1054,11 @@ async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lan
     console.log(A.header);
     for (const e of agyEntries) console.log(`  agy  ${e.status}${verbose ? `  pid=${e.pid}  cwd=${e.cwd}` : ""}`);
   }
+  if (grokEntries.length > 0) {
+    console.log(M.whoGrokHeader);
+    for (const e of grokEntries) console.log(`  ${e.ocsName === undefined ? "" : `${e.ocsName}  `}${e.target}  ${e.title ?? ""}  ${e.status}${verbose ? `  cwd=${e.cwd}` : ""}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`);
+  }
+  if (grok.reason !== undefined) console.log(M.doctorGrok(grok.sessions.length, grok.reason));
   if (roster.cmux) {
     if (cmux.length > 0) {
       console.log(M.whoCmuxHeader);
@@ -1397,6 +1414,8 @@ async function cmdDoctor(parsed: Parsed): Promise<void> {
   const hermes = await listHermesSessions();
   if (hermes.available) ok(M.doctorHermesHost(hermes.host.role, hermes.host.pid, hermes.sessions.length));
   else console.log(`  ｰ  ${M.doctorHermesNoHost(hermes.reason)}`);
+  const grok = await listGrokSessions();
+  console.log(M.doctorGrok(grok.sessions.length, grok.reason ?? ""));
   const selfHermes = selfHermesSessionKey();
   if (selfHermes !== null) {
     const open = hermes.available && hermes.sessions.some((session) => session.key === selfHermes);
@@ -1532,6 +1551,13 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
 - Pi DMs and \`@\` mentions use the short address printed by \`ocs who\`; full
   \`pi-<session UUID>\` addresses still work. The installed extension
   queues inbound messages as follow-ups, so it never interrupts a busy Pi turn.
+- Grok Build sessions started with \`grok --leader\` appear in \`ocs who\` as
+  \`grok-<full-session-uuid>\`. DM, @mentions, rename and paired LAN replies use
+  the same address. Grok's \`GROK_SESSION_ID\` identifies replies automatically.
+  Native queue admission preserves a busy turn and the existing permission policy.
+  Open the session and send its first prompt before discovery. Standalone
+  \`--no-leader\` sessions and Grok web/mobile apps have no direct carrier.
+  An unknown outcome must never be resent; inspect the original channel/seq.
 - Hermes Desktop sessions appear in \`ocs who\` as \`hermes-<id>\` (\`_\` in Hermes' id is
   written \`.\`). \`ocs dm hermes-<id>\` starts a turn when the session is idle and is
   queued behind the running turn when it is busy; it never interrupts. Inside a
@@ -1620,6 +1646,7 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
 interface OcsIntegrationPaths {
   claudePath: string;
   codexPath: string;
+  grokPath: string;
   piSkillPath: string;
   extensionPath: string;
 }
@@ -1629,6 +1656,7 @@ function integrationPaths(): OcsIntegrationPaths {
   return {
     claudePath: join(home, ".claude", "skills", "ocs", "SKILL.md"),
     codexPath: join(home, ".codex", "skills", "ocs", "SKILL.md"),
+    grokPath: join(process.env.GROK_HOME || join(home, ".grok"), "skills", "ocs", "SKILL.md"),
     piSkillPath: piSkillPath(process.env, home),
     extensionPath: piExtensionPath(process.env, home),
   };
@@ -1645,7 +1673,7 @@ function skillFileCurrent(path: string): boolean {
 
 function outdatedSkillPaths(): string[] {
   const paths = integrationPaths();
-  return [paths.claudePath, paths.codexPath, paths.piSkillPath].filter((path) => !skillFileCurrent(path));
+  return [paths.claudePath, paths.codexPath, paths.grokPath, paths.piSkillPath].filter((path) => !skillFileCurrent(path));
 }
 
 function installOcsIntegration(): OcsIntegrationPaths {
@@ -1677,6 +1705,7 @@ function installOcsIntegration(): OcsIntegrationPaths {
   const paths = integrationPaths();
   installSkill(paths.claudePath);
   installSkill(paths.codexPath);
+  installSkill(paths.grokPath);
   const pi = installPiIntegration(SKILL_MD);
   return { ...paths, piSkillPath: pi.skillPath, extensionPath: pi.extensionPath };
 }
@@ -1687,6 +1716,7 @@ function cmdSkill(parsed: Parsed): void {
   const paths = installOcsIntegration();
   console.log(M.skillInstalled(paths.claudePath));
   console.log(M.skillInstalled(paths.codexPath));
+  console.log(M.skillInstalled(paths.grokPath));
   console.log(M.skillInstalled(paths.piSkillPath));
   console.log(M.piExtensionInstalled(paths.extensionPath));
 }

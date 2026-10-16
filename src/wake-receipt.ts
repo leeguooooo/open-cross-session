@@ -34,6 +34,7 @@ export type NoticeSender =
   | { kind: "claude"; pid: number; sessionId: string | null; name: string }
   | { kind: "codex"; threadId: string }
   | { kind: "pi"; sessionId: string }
+  | { kind: "grok"; sessionId: string }
   | { kind: "hermes"; sessionKey: string };
 
 export interface WakeJob {
@@ -87,6 +88,7 @@ function isNoticeSender(value: unknown): value is NoticeSender {
   }
   if (r.kind === "codex") return typeof r.threadId === "string";
   if (r.kind === "pi") return typeof r.sessionId === "string";
+  if (r.kind === "grok") return typeof r.sessionId === "string";
   if (r.kind === "hermes") return typeof r.sessionKey === "string";
   return false;
 }

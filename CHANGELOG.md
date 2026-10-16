@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.9.0
+
+- Discover and message existing Grok Build shared-leader sessions with full UUID addresses, names, DM, mentions, inbox/replies, and paired LAN routing. Start Grok with `grok --leader` and submit its first prompt; standalone and web/mobile clients are not connected
+- Preserve busy turns and existing permissions via native queued prompts. Confirm exact prompt admission before reporting acceptance; missing acknowledgement after a write is unknown and never replayed. Quiet and self messages do not wake Grok
+- Verify owned rendezvous files and live Grok leader processes; Windows verifies the pipe owner, server user/PID and executable on the same handle before sending any bytes. Reject dormant, remote-origin and ambiguous local sessions
+- Install the OCS skill for Grok alongside Claude, Codex and Pi; add Grok diagnostics and setup documentation
+- Verified on macOS with Grok Build 1.0.50: discovery, native queue admission and a reply using Grok's automatic sender identity. Linux/Windows coverage uses protocol/CI fixtures; no real-account acceptance is claimed there
+
 ## 0.8.4
 
 - Accept `--as <name>` before or after identity-aware subcommands, including `dm`; sender-identity errors now state that nothing was sent and explain how to add a sender name from a plain shell

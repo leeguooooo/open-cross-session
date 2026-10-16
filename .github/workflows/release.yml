@@ -108,6 +108,8 @@ jobs:
         run: |
           bun build --compile test/fixtures/agy-cli.ts --outfile fake-agy.exe
           OCS_TEST_BINARY="$PWD/ocs.exe" OCS_TEST_AGY_BINARY="$PWD/fake-agy.exe" bun test test/agy-windows.test.ts
+      - name: Grok Windows pipe identity checks
+        run: bun test test/grok.test.ts
       - name: package binary
         run: |
           7z a -tzip ocs-windows-x64.zip ocs.exe

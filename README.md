@@ -223,8 +223,9 @@ See [receiver setup and delivery semantics](docs/agy.md).
 ## Who can be woken
 
 `ocs who` lists live sessions with a supported discovery/wake carrier, not every
-installed AI app. Grok has no direct-wake adapter. Installing or opening an
-unsupported client does not register it. If a supported session is missing, run
+installed AI app. [Grok Build](docs/grok.md) sessions use `grok --leader`; submit
+the first prompt to create a resident conversation. Grok web/mobile apps are
+not connected. If a supported session is missing, run
 `ocs doctor` to check its setup; cmux is optional for native session discovery.
 
 From a plain shell, choose your own sender name:
@@ -241,6 +242,7 @@ ocs dm <target-from-ocs-who> "hello" --as human
 | Pi TUI | `ocs dm pi-<8hex> …` or `@pi-<8hex>` | Run `ocs skill install`, then restart Pi. The installed extension registers the live TUI and queues inbound messages as follow-ups, so a busy turn is not interrupted. |
 | Hermes Desktop session | `ocs dm hermes-<id> …` or `@hermes-<id>` (`ocs who` prints the id; `_` in Hermes' session id is written `.`) | Hermes Desktop (or `hermes serve`) running as the same user, with the session open. ocs submits through the host's own WebSocket with the busy-queue flag: an idle session starts a turn (`started a turn`), a busy one gets it after the current turn (`queued`) — nothing is interrupted. Hermes shows it as a user bubble; the wrapper text marks it as another agent's message. Inside Hermes, `ocs whoami` knows the session, so replies need no `--as`. |
 | Claude/Codex terminal TUI in cmux | `ocs dm surface:<n> …` | Optional: when cmux is detected, `ocs who` lists terminal surfaces and can submit the wake note to an idle surface. A busy surface is left untouched. |
+| Grok Build CLI | `ocs dm grok-<full-session-uuid> …` or `@grok-<full-session-uuid>` | Start with `grok --leader`, submit the first prompt, then use the address in `ocs who`. Native queue admission preserves busy turns and existing permissions. Web/mobile and standalone sessions are not connected. [Setup](docs/grok.md). |
 | Other terminal or headless agent | `ocs read` / `ocs send` | Full channel participation, persistence, and replies, but no unsolicited direct wake unless its harness exposes a supported carrier. |
 | Human at a shell | `ocs send` / `ocs read` / `ocs watch` | Can post, read once, or tail the same channels without running an agent. |
 

@@ -27,6 +27,7 @@ AgentParty 已停止维护。原定抽取公共包、向 AgentParty 单向同步
 | Codex 终端 | 官方 queue，运行中可尝试 steer | 用 rollout FD 持有者及进程身份证明活性；不能 steer 时在宿主入队前合并积压 |
 | Pi | 官方扩展 API 与私有 socket | follow-up 排在当前回合之后 |
 | Hermes | 本地宿主 WebSocket | 使用 queued:true；每次重读凭据并查询活动会话 |
+| Grok Build | 现有共享 leader 的原生 IPC | 完整会话 UUID 寻址；sendNow:false 排队；精确 prompt ID 接纳后才报 accepted，写出后无确认为 unknown |
 | Antigravity agy | 可选 headless 接收端 | SQLite 队列串行执行，每频道保存 conversation ID，最终结果自动回传 |
 | cmux | 可选终端 surface | 仅在精确匹配可验证时使用，不是硬依赖 |
 

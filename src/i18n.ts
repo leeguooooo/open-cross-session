@@ -164,6 +164,11 @@ interface Catalog {
   whoCodexViaDesktop: string;
   whoCodexQueueMissing: string;
   whoPiHeader: string;
+  whoGrokHeader: string;
+  doctorGrok: (sessions: number, reason: string) => string;
+  grokWakeAccepted: (target: string, delivery: string) => string;
+  grokWakeFailed: (target: string, reason: string, detail: string) => string;
+  grokWakeSelfSkipped: (target: string) => string;
   whoCmuxHeader: string;
   whoSelfTag: string;
   whoDataHome: (path: string) => string;
@@ -277,7 +282,7 @@ Usage:
 ${lanMessages("en").help}
   ocs version | help
 
---as is optional inside Claude, Codex, Pi, and Hermes sessions (auto-detected; OCS_NAME also works).
+--as is optional inside Claude, Codex, Pi, Hermes, and Grok sessions (auto-detected; OCS_NAME also works).
 From a plain shell, use --as human before or after the subcommand.
 Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   stored: (channel, seq) => `stored #${channel} seq ${seq}`,
@@ -401,10 +406,10 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
     `crossSessionInbound = ${value} — injected messages queue for manual approval and are silently dropped after 5 minutes. ` +
     'Run `ocs doctor --fix` to set "accept" (backs up the file), or edit ~/.claude/settings.json yourself',
   doctorSkills: "Agent skills",
-  doctorSkillsOk: "version-matched ocs skill installed for Claude, Codex, and Pi",
+  doctorSkillsOk: "version-matched ocs skill installed for Claude, Codex, Pi, and Grok",
   doctorSkillsMissing: (n) =>
     `${n} agent skill installation(s) missing or outdated — run \`ocs doctor --fix\``,
-  doctorSkillsFixed: "updated the ocs skill for Claude, Codex, and Pi",
+  doctorSkillsFixed: "updated the ocs skill for Claude, Codex, Pi, and Grok",
   doctorSkillsFixFailed: (detail) => `integration repair failed: ${detail}`,
   doctorCodex: "Codex side (`codex queue` preferred; Desktop IPC is the fallback)",
   doctorCodexQueueOk:
@@ -435,7 +440,7 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   doctorNoPiSessions: "no live Pi TUI sessions (restart Pi after installing the extension)",
   doctorAccel: "Optional accelerators",
   doctorCmuxOk: "cmux is running — terminal codex/claude TUIs can be woken too (surface-addressed)",
-  doctorCmuxMissing: "cmux not detected (optional; native Claude/Codex/Pi/Hermes discovery does not require it)",
+  doctorCmuxMissing: "cmux not detected (optional; native Claude/Codex/Pi/Hermes/Grok discovery does not require it)",
   doctorData: "Data directory",
   doctorDataExists: (path) => `${path} exists`,
   doctorDataAuto: (path) => `${path} will be created on first send`,
@@ -490,11 +495,16 @@ Details: https://github.com/leeguooooo/open-cross-session/blob/main/docs/lan.md`
   whoCodexQueueMissing:
     "  ｰ  `codex queue` not runnable from here (codex must be a real binary on PATH, not a shell alias/function): terminal Codex sessions above cannot be woken",
   whoPiHeader: "Pi sessions (wake: ocs dm pi-<short-id> / @pi-<short-id>)",
+  whoGrokHeader: "Grok Build sessions (wake: ocs dm grok-<session-uuid>)",
+  doctorGrok: (n, reason) => `Grok Build: ${n} resident session(s)${reason ? `; ${reason}` : n === 0 ? "; start Grok Build with `grok --leader` and submit the first prompt (no Grok web/app adapter)" : ""}`,
+  grokWakeAccepted: (target, delivery) => `wake(grok): ${delivery === "started" ? "admitted to a running turn" : "queued behind the current turn"} → ${target} (not a read or completion receipt)`,
+  grokWakeFailed: (target, reason, detail) => `wake(grok): ${reason} → ${target}${detail ? `: ${detail}` : ""}${reason === "unknown-outcome" ? "; do not resend; inspect the original channel/seq" : "; message remains in the OCS channel"}`,
+  grokWakeSelfSkipped: (target) => `wake(grok): self-wake skipped → ${target}`,
   whoCmuxHeader: "cmux terminal surfaces (wake: ocs dm surface:N)",
   whoSelfTag: "  ← you",
   whoDataHome: (path) => `OCS data home: ${path} (sessions must share this directory for DM continuity)`,
   whoCurrentProject: "  [this project]",
-  whoEmpty: "no reachable agents found — open a Claude Code, Codex, or Pi session",
+  whoEmpty: "no reachable agents found — open a supported session (Grok Build: grok --leader, then submit a prompt)",
   whoCmuxHint: "cmux not detected (optional): only cmux terminal surfaces are omitted; supported agents are discovered independently. Missing an agent? Run `ocs doctor`.",
   dmSent: (target, channel, seq) => `dm stored → ${target} (channel ${channel}, seq ${seq})`,
   wakeReplyPolicy: "Reply when asked, or with a needed decision/result. No unsolicited acknowledgements.",
@@ -524,7 +534,7 @@ Details: https://github.com/leeguooooo/open-cross-session/blob/main/docs/lan.md`
   dmCmuxWoken: (ref) => `woke terminal ${ref} via cmux`,
   dmCmuxFailed: (ref, detail) => `cmux wake failed for ${ref}: ${detail}`,
   whoamiUnknown:
-    "cannot tell who you are: not inside a registered Claude/Codex/Pi/Hermes session, and OCS_NAME is unset. Pass --as <name> or export OCS_NAME",
+    "cannot tell who you are: not inside a registered Claude/Codex/Pi/Hermes/Grok session, and OCS_NAME is unset. Pass --as <name> or export OCS_NAME",
   whoamiSessionNotFound: (sessionId) => `no live Claude session has sessionId ${sessionId}`,
   failInboxSessionWithAs: "--session and --as pick the identity in different ways; use one",
   whoRenameHint: "tip: `ocs rename <name>` gives this session a memorable address (its id keeps working too)",
@@ -616,7 +626,7 @@ const zh: Catalog = {
 ${lanMessages("zh").help}
   ocs version | help
 
-在 Claude、Codex、Pi、Hermes 会话里 --as 可省略（自动识别；OCS_NAME 也行）。
+在 Claude、Codex、Pi、Hermes、Grok 会话里 --as 可省略（自动识别；OCS_NAME 也行）。
 普通终端使用 --as human，可放在子命令前后。
 数据目录: ~/.ocs（OCS_HOME 可覆盖）。语言: OCS_LANG=en|zh。`,
   stored: (channel, seq) => `已落盘 #${channel} seq ${seq}`,
@@ -729,9 +739,9 @@ ${lanMessages("zh").help}
     `crossSessionInbound = ${value} — 注入会进待审队列，5 分钟无人处理即静默丢弃。` +
     "跑 `ocs doctor --fix` 一键设为 accept（写前自动备份），或手动改 ~/.claude/settings.json",
   doctorSkills: "Agent 技能",
-  doctorSkillsOk: "Claude、Codex、Pi 都已安装版本匹配的 ocs skill",
+  doctorSkillsOk: "Claude、Codex、Pi、Grok 都已安装版本匹配的 ocs skill",
   doctorSkillsMissing: (n) => `${n} 处 agent skill 缺失或版本过旧——运行 \`ocs doctor --fix\``,
-  doctorSkillsFixed: "已更新 Claude、Codex、Pi 的 ocs skill",
+  doctorSkillsFixed: "已更新 Claude、Codex、Pi、Grok 的 ocs skill",
   doctorSkillsFixFailed: (detail) => `集成修复失败：${detail}`,
   doctorCodex: "Codex 侧（首选 `codex queue`，Desktop IPC 为降级）",
   doctorCodexQueueOk:
@@ -761,7 +771,7 @@ ${lanMessages("zh").help}
   doctorNoPiSessions: "没有活着的 Pi TUI 会话（安装扩展后重启 Pi）",
   doctorAccel: "可选加速器",
   doctorCmuxOk: "cmux 在运行——终端里的 codex/claude TUI 也能被唤醒（按 surface 寻址）",
-  doctorCmuxMissing: "cmux 未检测到（可选；Claude/Codex/Pi/Hermes 原生会话发现不依赖它）",
+  doctorCmuxMissing: "cmux 未检测到（可选；Claude/Codex/Pi/Hermes/Grok 原生会话发现不依赖它）",
   doctorData: "数据目录",
   doctorDataExists: (path) => `${path} 存在`,
   doctorDataAuto: (path) => `${path} 首次 send 时自动创建`,
@@ -813,11 +823,16 @@ ${lanMessages("zh").help}
   whoCodexQueueMissing:
     "  ｰ  这里跑不了 `codex queue`（codex 必须是 PATH 上的真实二进制，不能是 shell 别名/函数）：上面那些终端 Codex 会话无法被唤醒",
   whoPiHeader: "Pi 会话（唤醒: ocs dm pi-<短id> / @pi-<短id>）",
+  whoGrokHeader: "Grok Build 会话（唤醒: ocs dm grok-<完整会话UUID>）",
+  doctorGrok: (n, reason) => `Grok Build：${n} 个驻留会话${reason ? `；${reason}` : n === 0 ? "；请用 `grok --leader` 启动 Grok Build 并提交首条提示（未接入 Grok 网页/手机应用）" : ""}`,
+  grokWakeAccepted: (target, delivery) => `唤醒(grok)：${delivery === "started" ? "已接纳到运行回合" : "已排在当前回合之后"} → ${target}（不代表已读或任务完成）`,
+  grokWakeFailed: (target, reason, detail) => `唤醒(grok)：${reason} → ${target}${detail ? `：${detail}` : ""}${reason === "unknown-outcome" ? "；不要重发，请查原频道和 seq" : "；消息仍在 OCS 频道里"}`,
+  grokWakeSelfSkipped: (target) => `唤醒(grok)：已跳过自我唤醒 → ${target}`,
   whoCmuxHeader: "cmux 终端 surface（唤醒: ocs dm surface:N）",
   whoSelfTag: "  ← 你自己",
   whoDataHome: (path) => `OCS 数据目录：${path}（要继续同一 DM 历史，各会话必须共用此目录）`,
   whoCurrentProject: "  [当前项目]",
-  whoEmpty: "没发现可达的 agent——开一个 Claude Code、Codex 或 Pi 会话",
+  whoEmpty: "没发现可达的 agent：请打开已支持的会话（Grok Build 用 grok --leader 启动并提交首条提示）",
   whoCmuxHint: "cmux 未检测到（可选）：仅省略 cmux 终端 surface；已支持的 agent 仍独立发现。少了会话请运行 `ocs doctor`。",
   dmSent: (target, channel, seq) => `dm 已落盘 → ${target}（频道 ${channel}，seq ${seq}）`,
   wakeReplyPolicy: "只在被要求或有必要决策/结果时回复；不发无请求的确认回信。",
@@ -843,7 +858,7 @@ ${lanMessages("zh").help}
   dmCmuxBusy: (ref) => `${ref} 正在跑一轮，不打断。消息已在频道里，它下轮会读到；也可稍后重试`,
   dmCmuxWoken: (ref) => `已经由 cmux 唤醒终端 ${ref}`,
   dmCmuxFailed: (ref, detail) => `cmux 唤醒 ${ref} 失败: ${detail}`,
-  whoamiUnknown: "认不出你是谁：不在已登记的 Claude/Codex/Pi/Hermes 会话里，OCS_NAME 也没设。用 --as <name> 或 export OCS_NAME",
+  whoamiUnknown: "认不出你是谁：不在已登记的 Claude/Codex/Pi/Hermes/Grok 会话里，OCS_NAME 也没设。用 --as <name> 或 export OCS_NAME",
   whoamiSessionNotFound: (sessionId) => `没有 sessionId 为 ${sessionId} 的活 Claude 会话`,
   failInboxSessionWithAs: "--session 和 --as 是两种指定身份的方式，只能用一个",
   whoRenameHint: "提示：`ocs rename <名字>` 给当前会话起个好记的地址（原 id 照样能用）",

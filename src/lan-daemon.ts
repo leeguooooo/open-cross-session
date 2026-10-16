@@ -43,6 +43,7 @@ import { acceptSecure } from "./lan-wire.ts";
 import { claudeShortId, entryShortId, listOcsNames, ocsNameFor, readOcsName } from "./names.ts";
 import { buildRoster, resolveDmTarget, type ResolvedDmTarget } from "./roster.ts";
 import { findAgyWorker } from "./agy.ts";
+import { grokTargetName, listGrokSessions } from "./grok.ts";
 import { codexThreadLivePid } from "./codex-queue.ts";
 import { hermesTargetName, listHermesSessions } from "./hermes.ts";
 import { codexDesktopIpcAvailable, discoverCodexDesktopOwners } from "./codex-ipc.ts";
@@ -65,6 +66,7 @@ export const LAN_DAEMON_ENV_STRIP = [
   "CODEX_THREAD_ID",
   "OCS_NAME",
   "OCS_PI_SESSION_ID",
+  "GROK_SESSION_ID",
   "HERMES_SESSION_ID",
   "HERMES_SESSION_SOURCE",
   "HERMES_UI_SESSION_ID",
@@ -115,12 +117,16 @@ export function localAddressOf(
     const key = hermesTargetName(resolved.hermesSessionKey);
     return { key, display: ocsNameFor({ kind: "hermes", id: resolved.hermesSessionKey }, names)?.name ?? key };
   }
+  if (resolved.kind === "grok" && resolved.grokSessionId !== undefined) {
+    const key = grokTargetName(resolved.grokSessionId);
+    return { key, display: ocsNameFor({ kind: "grok", id: resolved.grokSessionId }, names)?.name ?? key };
+  }
   return null;
 }
 
 export interface LanWhoEntry {
   address: string;
-  kind: "claude" | "codex" | "pi" | "hermes" | "agy";
+  kind: "claude" | "codex" | "pi" | "hermes" | "grok" | "agy";
   status?: string;
   label?: string;
   capabilities?: Capabilities;
@@ -144,7 +150,8 @@ async function desktopClaimed(threadIds: readonly string[], env: NodeJS.ProcessE
 export async function lanWhoEntries(env: NodeJS.ProcessEnv = process.env): Promise<LanWhoEntry[]> {
   const out: LanWhoEntry[] = [];
   const hermes = await listHermesSessions({ env });
-  const roster = buildRoster(env, hermes.available ? hermes.sessions : []);
+  const grok = await listGrokSessions({ env });
+  const roster = buildRoster(env, hermes.available ? hermes.sessions : [], grok.sessions);
   const claimed = await desktopClaimed(
     roster.entries.flatMap((e) => (e.kind === "codex-task" && e.livePid === null ? [e.threadId] : [])),
     env,
@@ -154,6 +161,11 @@ export async function lanWhoEntries(env: NodeJS.ProcessEnv = process.env): Promi
       entry.kind === "codex-task" && claimed.has(entry.threadId.toLowerCase()), process.platform, env), deliveryReceipt: "none" as const };
     if (entry.kind === "agy") {
       out.push({ capabilities, address: "agy", kind: "agy", status: entry.status, label: "Antigravity CLI worker" });
+      continue;
+    }
+    if (entry.kind === "grok") {
+      out.push({ capabilities, address: entry.ocsName ?? entry.target, kind: "grok", status: entry.status,
+        ...(entry.title === null ? {} : { label: entry.title.slice(0, 60) }) });
       continue;
     }
     if (entry.kind === "claude") {
@@ -245,6 +257,10 @@ export async function handleLanDm(
     if (!live) return { ok: false, error: "not-found" };
   }
   if (resolved.kind === "pi" && resolved.piSession === undefined) return { ok: false, error: "not-found" };
+  if (resolved.kind === "grok") {
+    const grok = await listGrokSessions({ env });
+    if (!grok.sessions.some((s) => s.id === resolved.grokSessionId)) return { ok: false, error: "not-found" };
+  }
   if (resolved.kind === "hermes") {
     // 同 Pi：只投此刻打开的会话。宿主连不上 / 会话没开都不落盘，免得对端随手造频道。
     const hermes = await listHermesSessions({ env });

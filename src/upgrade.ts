@@ -137,7 +137,7 @@ function gitRoot(dir: string): string | null {
 }
 
 /** 约定 §3：找出这台机器上每一份 ocs skill 以及它该怎么刷新。 */
-export function detectSkillChannels(home: string = homedir()): SkillChannel[] {
+export function detectSkillChannels(home: string = homedir(), env: NodeJS.ProcessEnv = process.env): SkillChannel[] {
   const found: SkillChannel[] = [];
   const plugins = join(home, ".claude", "plugins", "installed_plugins.json");
   try {
@@ -147,7 +147,7 @@ export function detectSkillChannels(home: string = homedir()): SkillChannel[] {
   } catch {
     // 没装 Claude Code 插件
   }
-  const managed = new Set([join(home, ".claude", "skills", "ocs"), join(home, ".codex", "skills", "ocs")]);
+  const managed = new Set([join(home, ".claude", "skills", "ocs"), join(home, ".codex", "skills", "ocs"), join(env.GROK_HOME || join(home, ".grok"), "skills", "ocs")]);
   for (const dir of [join(home, ".agents", "skills", "ocs"), ...managed]) {
     if (!existsSync(join(dir, "SKILL.md"))) continue;
     let real = dir;

@@ -80,6 +80,13 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
 - Pi DMs and `@` mentions use the short address printed by `ocs who`; full
   `pi-<session UUID>` addresses still work. The installed extension
   queues inbound messages as follow-ups, so it never interrupts a busy Pi turn.
+- Grok Build sessions started with `grok --leader` appear in `ocs who` as
+  `grok-<full-session-uuid>`. DM, @mentions, rename and paired LAN replies use
+  the same address. Grok's `GROK_SESSION_ID` identifies replies automatically.
+  Native queue admission preserves a busy turn and the existing permission policy.
+  Open the session and send its first prompt before discovery. Standalone
+  `--no-leader` sessions and Grok web/mobile apps have no direct carrier.
+  An unknown outcome must never be resent; inspect the original channel/seq.
 - Hermes Desktop sessions appear in `ocs who` as `hermes-<id>` (`_` in Hermes' id is
   written `.`). `ocs dm hermes-<id>` starts a turn when the session is idle and is
   queued behind the running turn when it is busy; it never interrupts. Inside a

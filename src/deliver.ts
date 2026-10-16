@@ -8,6 +8,7 @@ import { startDeliveryObservation, type TrafficOutcome } from "./traffic.ts";
 
 import { resolveSessionSocketByPid, type NativeClaudeSession } from "./claude-inject.ts";
 import { wakeAgy } from "./agy.ts";
+import { grokTargetName, selfGrokSessionId, wakeGrokSession, type GrokWakeResult } from "./grok.ts";
 import { agyMessages } from "./i18n-agy.ts";
 import { detectLang } from "./i18n.ts";
 import { codexActiveTurnId, deferCodexWakeIfBusy, loadDeferredCodexWake } from "./codex-defer.ts";
@@ -293,6 +294,7 @@ export function reportTrackedWake(
 
 /** 会话环境变量：通知发给「派出 helper 的那个会话」自己，不能让自我唤醒防回环把它吞掉。 */
 const SELF_ENV_KEYS = [
+  "GROK_SESSION_ID",
   "CLAUDE_CODE_SESSION_ID",
   "CLAUDE_CODE_MESSAGING_SOCKET",
   "CODEX_THREAD_ID",
@@ -301,6 +303,14 @@ const SELF_ENV_KEYS = [
   "HERMES_SESSION_ID",
   "HERMES_SESSION_SOURCE",
 ];
+
+function reportGrokWake(label: string, result: GrokWakeResult, M: Catalog, sink: DeliverySink): void {
+  if (result.ok) sink.log(M.grokWakeAccepted(label, result.delivery));
+  else {
+    sink.log(M.grokWakeFailed(label, result.reason, result.detail ?? ""));
+    sink.fail(result.reason === "unknown-outcome" ? "unknown" : "failed");
+  }
+}
 
 /** Hermes 投递结果 → 一行输出 + 失败分级（unknown 绝不重发）。 */
 function reportHermesWake(label: string, result: HermesWakeResult, M: Catalog, sink: DeliverySink): void {
@@ -352,6 +362,10 @@ export async function deliverNotice(
   }
   if (target.kind === "hermes") {
     reportHermesWake(hermesTargetName(target.sessionKey), await wakeHermesSession(target.sessionKey, note, { env: clean }), M, sink);
+    return;
+  }
+  if (target.kind === "grok") {
+    reportGrokWake(grokTargetName(target.sessionId), await wakeGrokSession(target.sessionId, note, { env: clean }), M, sink);
     return;
   }
   const session = listPiSessions(clean).find((candidate) => candidate.session_id.toLowerCase() === target.sessionId.toLowerCase());
@@ -496,6 +510,15 @@ async function deliverDmImpl(
       { env },
     );
     reportHermesWake(resolved.name, result, M, sink);
+    return null;
+  }
+  if (resolved.kind === "grok" && resolved.grokSessionId !== undefined) {
+    if (selfGrokSessionId(env) === resolved.grokSessionId || input.wakeInput.from === resolved.name) {
+      sink.log(M.grokWakeSelfSkipped(resolved.name));
+      return null;
+    }
+    reportGrokWake(resolved.name, await wakeGrokSession(resolved.grokSessionId,
+      wakeNote({ ...input.wakeInput, ...anyReply, receiver: resolved.name, implicitReceiver: true }), { env }), M, sink);
     return null;
   }
   if (resolved.kind === "cmux" && resolved.cmuxRef !== undefined) {
