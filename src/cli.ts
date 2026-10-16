@@ -262,6 +262,7 @@ function parseArgs(argv: string[], spec: CommandSpec): Parsed {
   const flags = new Map<string, string | true>();
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
+    if (["-as", "–as", "—as"].includes(arg)) fail(M.failAsSpelling);
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
       if (spec.value.includes(key)) {
@@ -1753,14 +1754,23 @@ async function cmdAgy(parsed: Parsed): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const [command, ...rest] = process.argv.slice(2);
-  const spec = command !== undefined ? COMMAND_SPECS[command] : undefined;
-  if (command !== undefined && spec === undefined) {
-    fail(`${M.unknownCommand(command)}\n\n${M.help}`);
-  }
+  const argv = process.argv.slice(2);
+  // 人在 shell 中常把身份覆盖写在子命令前；仍由目标命令的 schema 校验，
+  // 不把 --as 静默应用到 who/doctor 等不接受它的命令。
+  const leadingAs = argv[0] === "--as" ? argv.splice(0, 2) : [];
+  const [command, ...rest] = argv;
   // 参数错误也要走 JSON：看到 --json 就先接管 stdout，再解析。
   if ((command === "send" || command === "dm") && rest.includes("--json")) startJsonRun(command);
-  const parsed = parseArgs(rest, spec ?? NO_ARGS);
+  if (leadingAs.length > 0 && (leadingAs[1] === undefined || leadingAs[1].startsWith("--"))) {
+    fail(M.failMissingValue("as"));
+  }
+  if (leadingAs.length > 0 && command === undefined) fail(M.failCommandRequired);
+  const spec = command !== undefined ? COMMAND_SPECS[command] : undefined;
+  if (command !== undefined && spec === undefined) {
+    if (["-as", "–as", "—as"].includes(command)) fail(M.failAsSpelling);
+    fail(`${M.unknownCommand(command)}\n\n${M.help}`);
+  }
+  const parsed = parseArgs([...leadingAs, ...rest], spec ?? NO_ARGS);
   // 回执 helper 是本 CLI 的内部子命令：只有从这里进来的进程才知道怎么把自己再跑一遍。
   setWakeHelperCommand(selfCommand());
   setCodexWakeWatcherCommand(selfCommand());

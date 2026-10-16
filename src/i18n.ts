@@ -206,6 +206,8 @@ interface Catalog {
   skillInstalled: (path: string) => string;
   piExtensionInstalled: (path: string) => string;
   failNoSelfName: string;
+  failCommandRequired: string;
+  failAsSpelling: string;
   failName: (name: string) => string;
   failFlagRequired: (flag: string) => string;
   failCodexAddress: (flag: string, value: string) => string;
@@ -276,6 +278,7 @@ ${lanMessages("en").help}
   ocs version | help
 
 --as is optional inside Claude, Codex, Pi, and Hermes sessions (auto-detected; OCS_NAME also works).
+From a plain shell, use --as human before or after the subcommand.
 Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   stored: (channel, seq) => `stored #${channel} seq ${seq}`,
   wakeNoMatch: (names) => `wake: no live Claude session matches @${names}`,
@@ -432,7 +435,7 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   doctorNoPiSessions: "no live Pi TUI sessions (restart Pi after installing the extension)",
   doctorAccel: "Optional accelerators",
   doctorCmuxOk: "cmux is running — terminal codex/claude TUIs can be woken too (surface-addressed)",
-  doctorCmuxMissing: "cmux not detected (optional; terminal TUIs must join channels themselves)",
+  doctorCmuxMissing: "cmux not detected (optional; native Claude/Codex/Pi/Hermes discovery does not require it)",
   doctorData: "Data directory",
   doctorDataExists: (path) => `${path} exists`,
   doctorDataAuto: (path) => `${path} will be created on first send`,
@@ -492,7 +495,7 @@ Details: https://github.com/leeguooooo/open-cross-session/blob/main/docs/lan.md`
   whoDataHome: (path) => `OCS data home: ${path} (sessions must share this directory for DM continuity)`,
   whoCurrentProject: "  [this project]",
   whoEmpty: "no reachable agents found — open a Claude Code, Codex, or Pi session",
-  whoCmuxHint: "cmux not detected: terminal TUIs are not listed (they can still join channels themselves)",
+  whoCmuxHint: "cmux not detected (optional): only cmux terminal surfaces are omitted; supported agents are discovered independently. Missing an agent? Run `ocs doctor`.",
   dmSent: (target, channel, seq) => `dm stored → ${target} (channel ${channel}, seq ${seq})`,
   wakeReplyPolicy: "Reply when asked, or with a needed decision/result. No unsolicited acknowledgements.",
   wakeSkipped: "wake: skipped by --no-wake (stored only; no model turn requested)",
@@ -544,7 +547,9 @@ Details: https://github.com/leeguooooo/open-cross-session/blob/main/docs/lan.md`
   skillInstalled: (path) => `skill installed: ${path}`,
   piExtensionInstalled: (path) => `Pi direct-wake extension installed: ${path} — restart open Pi sessions`,
   failNoSelfName:
-    "cannot infer sender name (not inside a registered Claude/Codex/Pi/Hermes session). Pass --as <name> or export OCS_NAME",
+    "cannot infer sender identity; no message was stored or sent. In a plain shell, append --as human to the same command (human is your sender name), or set OCS_NAME=human. Inside an agent, run `ocs whoami` and `ocs doctor` to check identity detection.",
+  failCommandRequired: "missing command after --as <name>. Use: ocs --as <name> dm <target> <text>",
+  failAsSpelling: "write --as with two ASCII hyphens (-), not -as / –as / —as. Use: ocs dm <target> <text> --as human",
   failName: (name) => `invalid name: ${name}`,
   failFlagRequired: (flag) => `--${flag} <value> is required`,
   failCodexAddress: (flag, value) =>
@@ -612,6 +617,7 @@ ${lanMessages("zh").help}
   ocs version | help
 
 在 Claude、Codex、Pi、Hermes 会话里 --as 可省略（自动识别；OCS_NAME 也行）。
+普通终端使用 --as human，可放在子命令前后。
 数据目录: ~/.ocs（OCS_HOME 可覆盖）。语言: OCS_LANG=en|zh。`,
   stored: (channel, seq) => `已落盘 #${channel} seq ${seq}`,
   wakeNoMatch: (names) => `wake: 没有匹配 @${names} 的活 Claude 会话`,
@@ -755,7 +761,7 @@ ${lanMessages("zh").help}
   doctorNoPiSessions: "没有活着的 Pi TUI 会话（安装扩展后重启 Pi）",
   doctorAccel: "可选加速器",
   doctorCmuxOk: "cmux 在运行——终端里的 codex/claude TUI 也能被唤醒（按 surface 寻址）",
-  doctorCmuxMissing: "cmux 未检测到（可选，不影响核心功能；终端 TUI 需自己先进频道）",
+  doctorCmuxMissing: "cmux 未检测到（可选；Claude/Codex/Pi/Hermes 原生会话发现不依赖它）",
   doctorData: "数据目录",
   doctorDataExists: (path) => `${path} 存在`,
   doctorDataAuto: (path) => `${path} 首次 send 时自动创建`,
@@ -812,7 +818,7 @@ ${lanMessages("zh").help}
   whoDataHome: (path) => `OCS 数据目录：${path}（要继续同一 DM 历史，各会话必须共用此目录）`,
   whoCurrentProject: "  [当前项目]",
   whoEmpty: "没发现可达的 agent——开一个 Claude Code、Codex 或 Pi 会话",
-  whoCmuxHint: "cmux 未检测到：终端 TUI 不在列表里（它们仍可自己进频道）",
+  whoCmuxHint: "cmux 未检测到（可选）：仅省略 cmux 终端 surface；已支持的 agent 仍独立发现。少了会话请运行 `ocs doctor`。",
   dmSent: (target, channel, seq) => `dm 已落盘 → ${target}（频道 ${channel}，seq ${seq}）`,
   wakeReplyPolicy: "只在被要求或有必要决策/结果时回复；不发无请求的确认回信。",
   wakeSkipped: "唤醒：--no-wake 已跳过（仅落盘，不请求模型回合）",
@@ -855,7 +861,9 @@ ${lanMessages("zh").help}
   renameLiveCollision: (name, pid) => `${name} 是 pid ${pid} 的活 Claude 会话名；精确会话名优先，换一个名字`,
   skillInstalled: (path) => `技能已安装: ${path}`,
   piExtensionInstalled: (path) => `Pi 直投扩展已安装: ${path}——已打开的 Pi 会话需要重启`,
-  failNoSelfName: "推断不出发送者名字（不在已登记的 Claude/Codex/Pi/Hermes 会话里）。用 --as <name> 或 export OCS_NAME",
+  failNoSelfName: "无法识别发送者身份；消息未落盘、未发送。普通终端请在原命令末尾加 --as human（human 是你自己的发送者名字），或设置 OCS_NAME=human。如果命令由 agent 执行，请运行 `ocs whoami` 和 `ocs doctor` 检查身份识别。",
+  failCommandRequired: "--as <name> 后缺少子命令。用法：ocs --as <name> dm <target> <text>",
+  failAsSpelling: "请用两个英文短横线写 --as，不是 -as / –as / —as。用法：ocs dm <target> <text> --as human",
   failName: (name) => `名字不合法: ${name}`,
   failFlagRequired: (flag) => `--${flag} <value> 是必填项`,
   failCodexAddress: (flag, value) =>

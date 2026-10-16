@@ -259,6 +259,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
           livePid?: number | null;
           tty?: string | null;
           hostApp?: string | null;
+          capabilities?: import("../src/capabilities.ts").Capabilities;
         }>;
       };
       const codex = roster.entries.filter((entry) => entry.kind === "codex-task");

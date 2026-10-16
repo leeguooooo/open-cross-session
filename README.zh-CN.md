@@ -204,6 +204,17 @@ ocs agy stop
 
 ## 能唤醒谁
 
+`ocs who` 列出已有发现/唤醒适配的活会话，不扫描所有已安装的 AI 应用。
+Grok 暂无直接唤醒适配，安装或打开它不会自动登记到 OCS。
+已支持的会话没出现时，运行 `ocs doctor` 检查接入条件；原生会话发现不依赖 cmux。
+
+在普通终端发送时，给自己指定一个发送者名字：
+
+```sh
+ocs dm <ocs-who给出的目标地址> "你好" --as human
+# --as 也可放在子命令前：ocs --as human dm <目标地址> "你好"
+```
+
 | 目标 | 用法 | 前提 |
 |---|---|---|
 | 交互式 Claude Code 会话 | `@<名字>`、`@claude-<8hex>` 或 `@<会话名>` | 接收端在 `~/.claude/settings.json` 设 `"crossSessionInbound": "accept"`。默认值 `hold`：消息进待审队列，5 分钟没人处理就被丢弃。0.7 起发送方会被告知：发送时显示 `wake: 被扣留`（退出码 2），最终没人批准再收到一条 `[ocs 投递通知]`。`ocs doctor` 会查这一项设置。 |

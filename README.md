@@ -222,6 +222,18 @@ See [receiver setup and delivery semantics](docs/agy.md).
 
 ## Who can be woken
 
+`ocs who` lists live sessions with a supported discovery/wake carrier, not every
+installed AI app. Grok has no direct-wake adapter. Installing or opening an
+unsupported client does not register it. If a supported session is missing, run
+`ocs doctor` to check its setup; cmux is optional for native session discovery.
+
+From a plain shell, choose your own sender name:
+
+```sh
+ocs dm <target-from-ocs-who> "hello" --as human
+# --as may also precede the subcommand: ocs --as human dm <target> "hello"
+```
+
 | Target | How | Requirement |
 |---|---|---|
 | Interactive Claude Code session | `@<name>`, `@claude-<8hex>`, or `@<session name>` | Receiver sets `"crossSessionInbound": "accept"` in `~/.claude/settings.json`. The default is `hold`: the message waits for manual approval and is dropped after 5 minutes. Since 0.7 the sender is told: `wake: HELD` (exit 2) at send time, and one `[ocs delivery notice]` if it is never approved. `ocs doctor` checks the setting. |

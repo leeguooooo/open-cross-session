@@ -22,7 +22,11 @@ const T = 60_000;
 function runCli(args: string[]): { code: number; stderr: string; stdout: string } {
   const home = tempDir("ocs-cli-");
   const proc = Bun.spawnSync(["bun", join(import.meta.dir, "..", "src", "cli.ts"), ...args], {
-    env: { ...process.env, CODEX_HOME: join(home, "codex"), OCS_HOME: home, OCS_LANG: "en", OCS_UPGRADE_CHECK: "0" },
+    env: {
+      ...process.env, CODEX_HOME: join(home, "codex"), OCS_HOME: home, OCS_LANG: "en", OCS_UPGRADE_CHECK: "0",
+      CODEX_THREAD_ID: "", OCS_NAME: "", OCS_PI_SESSION_ID: "", HERMES_SESSION_ID: "",
+      OCS_CLAUDE_NATIVE_SESSIONS_DIR: join(home, "claude-sessions"),
+    },
   });
   return {
     code: proc.exitCode,
@@ -32,6 +36,49 @@ function runCli(args: string[]): { code: number; stderr: string; stdout: string 
 }
 
 describe("命令级参数 schema", () => {
+  test("shell 中 --as 放在 dm 前后都只存一条相同消息，JSON 契约不变", () => {
+    const suffix = runCli(["dm", "offline-peer", "hello", "--as", "human", "--no-wake", "--json"]);
+    const prefix = runCli(["--as", "human", "dm", "offline-peer", "hello", "--no-wake", "--json"]);
+    expect(prefix.code).toBe(0);
+    expect(suffix.code).toBe(0);
+    const result = JSON.parse(prefix.stdout);
+    expect(result).toEqual(JSON.parse(suffix.stdout));
+    expect(result).toMatchObject({ stored: true, seq: 1, wake: "skipped" });
+    expect(prefix.stderr).toBe("");
+  }, T);
+
+  test("前置 --as 不绕过命令 schema，缺值与缺命令均报清楚", () => {
+    expect(runCli(["--as", "human", "who"]).stderr).toContain("unknown flag: --as");
+    expect(runCli(["--as"]).stderr).toContain("--as requires a value");
+    expect(runCli(["--as", "--json", "dm", "peer", "hello"]).stderr).toContain("--as requires a value");
+    expect(runCli(["--as", "human"]).stderr).toContain("missing command after --as");
+    const bad = runCli(["--as", "human", "dm", "peer", "hello", "--sneaky", "--json"]);
+    expect(bad.code).toBe(1);
+    expect(JSON.parse(bad.stdout)).toMatchObject({ stored: false, exit: 1, error: "unknown flag: --sneaky" });
+  }, T);
+
+  test("普通 shell 缺身份时给出修正方式并确认未发送", () => {
+    const r = runCli(["dm", "offline-peer", "hello", "--json"]);
+    expect(r.code).toBe(1);
+    const result = JSON.parse(r.stdout);
+    expect(result).toMatchObject({ stored: false, exit: 1 });
+    expect(result.error).toContain("no message was stored or sent");
+    expect(result.error).toContain("append --as human to the same command");
+    expect(result.error).toContain("ocs doctor");
+  }, T);
+
+  test("单短横线或排版长横线的 as 提示正确拼写，不误作消息发送", () => {
+    for (const flag of ["-as", "–as", "—as"]) {
+      const prefix = runCli([flag, "human", "dm", "peer", "hello"]);
+      expect(prefix.code).toBe(1);
+      expect(prefix.stderr).toContain("write --as with two ASCII hyphens");
+      const suffix = runCli(["dm", "peer", "hello", flag, "human", "--json"]);
+      expect(suffix.code).toBe(1);
+      expect(JSON.parse(suffix.stdout)).toMatchObject({ stored: false, exit: 1 });
+      expect(JSON.parse(suffix.stdout).error).toContain("write --as with two ASCII hyphens");
+    }
+  }, T);
+
   test("--codex 缺值：报错退出，绝不打印 stored", () => {
     const r = runCli(["send", "chat", "hello", "--as", "a", "--codex"]);
     expect(r.code).toBe(1);
