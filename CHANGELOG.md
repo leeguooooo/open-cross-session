@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A Claude desktop title that is not a valid address no longer becomes the message sender: it falls back to the session's `claude-<8hex>` id, so messages are stored and generated replies route back. Adds eight regression tests
+
 ## 0.9.0
 
 - Discover and message existing Grok Build shared-leader sessions with full UUID addresses, names, DM, mentions, inbox/replies, and paired LAN routing. Start Grok with `grok --leader` and submit its first prompt; standalone and web/mobile clients are not connected
