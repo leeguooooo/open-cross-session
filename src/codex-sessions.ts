@@ -199,6 +199,8 @@ export function summarizeCodexRolloutHead(head: string): {
 }
 
 export interface ListCodexSessionsOptions {
+  /** Filter file names before reading rollout contents. */
+  threadIds?: ReadonlySet<string>;
   limit?: number;
   /** Only sessions whose recorded cwd is exactly this path. */
   cwd?: string;
@@ -214,6 +216,7 @@ export function listCodexSessions(
   const sessions: CodexSessionSummary[] = [];
   for (const file of listCodexRolloutFiles(root)) {
     if (sessions.length >= limit) break;
+    if (options.threadIds !== undefined && !options.threadIds.has(file.threadId)) continue;
     let details: ReturnType<typeof summarizeCodexRolloutHead>;
     try {
       details = summarizeCodexRolloutHead(readHead(file.path, headBytes));

@@ -1007,6 +1007,7 @@ async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lan
   }
   if (codex.length > 0) {
     console.log(M.whoCodexHeader(roster.codexIpc));
+    console.log(M.whoCodexPidBoundary);
     for (const e of codex) {
       if (e.kind !== "codex-task") continue;
       const label = e.summary ?? (e.cwd === null ? "" : basename(e.cwd));
@@ -1018,7 +1019,7 @@ async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lan
       console.log(
         verbose
           ? `  ${named}${e.target}  thread=${e.threadId}  cwd=${e.cwd ?? "?"}  ${via}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`
-          : `  ${named}${e.target}  ${label.slice(0, 60)}  ${via}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`,
+          : `  ${named}${e.target}  ${label.slice(0, 60)}  cwd=${e.cwd ?? "?"}  ${via}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`,
       );
     }
   } else if (codexCandidates.length > 0) {
@@ -1507,7 +1508,7 @@ If the skill came from somewhere \`upgrade\` can't refresh:
 ## Commands
 
 \`\`\`bash
-ocs who                          # same-project peers + pending notices; you are marked
+ocs who                          # all reachable peers, current project first + pending notices; you are marked
 ocs who --verbose                # raw IDs/paths for diagnostics
 ocs dm <name-or-id> "<text>"     # request work / answer / deliver a result; wakes the peer
 ocs dm <name> "<text>" --no-wake # stored only; peer must read/inbox later
@@ -1535,10 +1536,11 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
   user asks to name or rename this session for ocs, run \`ocs rename <name>\`. A name taken
   by another session is refused; \`--force\` takes it over (only when the user says the old
   owner is gone). \`ocs whoami --json\` prints this session's host, id, name, and addresses.
+- A Codex transport PID may serve several threads. A child build process with that PPID does not identify its owning thread. Match the full thread ID and cwd; never pick the only listed peer as a substitute for an unknown owner.
 - Use the full ID shown by \`ocs who --verbose\` only if a short prefix is ambiguous.
 - \`ocs who\` lists every reachable Codex task: one whose rollout is held open by a
   live process (wakeable with \`codex queue\`, terminal TUIs included — shown as
-  \`[queue pid N · <host app> <tty>]\`) or one claimed by an open Desktop renderer
+  \`[queue transport pid N · <host app> <tty>]\`) or one claimed by an open Desktop renderer
   (\`[desktop]\`). Trust that host line over what a session says about itself: a
   Codex session cannot see which terminal it runs under and will guess wrong.
   \`ocs codex-sessions\` is rollout history and does not imply wakeability.

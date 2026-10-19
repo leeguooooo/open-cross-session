@@ -310,6 +310,8 @@ message stays in the append-only log for recovery with `ocs inbox`.
 | `ocs lan up \| pair \| who \| status \| peers \| scan \| unpair \| down` | Opt-in LAN mode: pair machines, then `ocs dm <address>@<peer>` and `ocs who --lan` (see [Cross-machine](#cross-machine)) |
 | `ocs version` | Print the version |
 
+Codex discovery includes live threads older than the latest history entries. A listed transport PID can serve several threads; it does not prove which thread owns a child build process. Select a peer by its full thread ID and project path, even when only one peer is shown.
+
 **Stuck below 0.4.3?** `ocs upgrade` only started upgrading the binary in 0.4.3 — before
 that it just printed a migration blurb and exited, so an older install can never reach a
 newer release on its own and will keep looking current. Re-run the installer once:

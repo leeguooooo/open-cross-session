@@ -126,9 +126,9 @@ export function codexThreadLivePids(
   /** 已解出的进程表；`ocs who` 传进来跟宿主解析共用一次 ps。 */
   table_?: ReadonlyMap<number, PsEntry>,
 ): Map<string, number> {
-  const holders = codexRolloutHolderPids(threadIds, env);
-  if (holders.size === 0) return holders;
   const table = table_ ?? psTable(env);
+  const holders = codexRolloutHolderPids(threadIds, env, table);
+  if (holders.size === 0) return holders;
   const live = new Map<string, number>();
   for (const [threadId, pid] of holders) {
     if (isCodexRolloutHolder(pid, table)) live.set(threadId, pid);
@@ -145,6 +145,7 @@ export function codexThreadLivePids(
 export function codexRolloutHolderPids(
   threadIds: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
+  table?: ReadonlyMap<number, PsEntry>,
 ): Map<string, number> {
   const live = new Map<string, number>();
   // 目录树只走一次：codexRolloutPath 每次都要遍历整棵 sessions 树（本机 2500+ 文件），
@@ -158,7 +159,13 @@ export function codexRolloutHolderPids(
     byPath.set(realpathOrSelf(file.path), file.threadId);
   }
   if (byPath.size === 0) return live;
-  const probe = spawnSync("lsof", ["-F", "pftn", "--", ...byPath.keys()], {
+  // Process-scoped enumeration avoids ARG_MAX when checking the entire rollout history.
+  // The raw diagnostic API still accepts any holder when no process table is supplied.
+  const pids = table === undefined ? null : [...table.keys()].filter((pid) => isCodexRolloutHolder(pid, table));
+  if (pids !== null && pids.length === 0) return live;
+  const args = pids === null ? ["-F", "pftn", "--", ...byPath.keys()]
+    : ["-F", "pftn", "-a", "-p", pids.join(",")];
+  const probe = spawnSync("lsof", args, {
     encoding: "utf8",
     timeout: CODEX_LSOF_TIMEOUT_MS,
     env: lsofEnv(env),
