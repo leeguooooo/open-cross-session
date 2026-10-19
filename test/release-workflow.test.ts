@@ -63,7 +63,12 @@ test("macOS CI signs the compiled binary before its smoke test", () => {
 test("every release carries notes from CHANGELOG.md (no more empty release pages)", () => {
   const workflow = readFileSync(join(import.meta.dir, "..", ".github", "workflows", "release.yml"), "utf8");
   expect(workflow).not.toContain('--notes ""');
-  expect(workflow.match(/--notes-file release-notes\.md/g)?.length).toBeGreaterThanOrEqual(4);
+  const publish = workflow.slice(workflow.indexOf("  publish:"));
+  expect(publish).toContain("needs: [binaries, windows]");
+  expect(publish).toContain('scripts/release-notes.sh "$RELEASE_TAG" > release-notes.md');
+  expect(publish).toContain('--verify-tag --draft --title "$RELEASE_TAG" --notes-file release-notes.md');
+  expect(publish.indexOf('sha256sum -c')).toBeLessThan(publish.indexOf('gh release create'));
+  expect(workflow.slice(0, workflow.indexOf("  publish:"))).not.toContain('gh release create');
   const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
   const version = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).version;
   const notes = spawnSync("sh", ["scripts/release-notes.sh", `v${version}`], { cwd: join(import.meta.dir, ".."), encoding: "utf8" });
