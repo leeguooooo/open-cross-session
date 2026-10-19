@@ -8,4 +8,4 @@ Email leeguoooo@gmail.com with the affected version, platform, reproduction step
 
 ## Boundaries
 
-ocs delivers messages into other agent sessions and can wake them. Anything a peer session sends is untrusted input for the receiving agent, which still applies its own permission prompts. Pair only computers you control: paired machines can message every session you expose to them. Pairing keys under the ocs state directory are credentials; do not copy them into issues or source control.
+ocs delivers messages into other agent sessions and can wake them. Anything a peer session sends is untrusted input for the receiving agent. Whether that agent asks for approval depends on its integration and permission mode, so do not rely on a permission prompt as the security boundary. Pair only computers you control: paired machines can message every session you expose to them. Pairing keys under the ocs state directory are credentials; do not copy them into issues or source control.
