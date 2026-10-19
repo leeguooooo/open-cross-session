@@ -1536,11 +1536,12 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
   user asks to name or rename this session for ocs, run \`ocs rename <name>\`. A name taken
   by another session is refused; \`--force\` takes it over (only when the user says the old
   owner is gone). \`ocs whoami --json\` prints this session's host, id, name, and addresses.
+- A Codex transport PID may serve several threads. A child build process with that PPID does not identify its owning thread. Match the full thread ID and cwd; never pick the only listed peer as a substitute for an unknown owner.
 - Use the full ID shown by \`ocs who --verbose\` only if a short prefix is ambiguous.
 - \`ocs who\` lists every reachable Codex task: one whose rollout is held open by a
   live process (wakeable with \`codex queue\`, terminal TUIs included — shown as
   \`[queue transport pid N · <host app> <tty>]\`) or one claimed by an open Desktop renderer
-  (\`[desktop]\`). The PID is a transport process and may be shared by multiple threads; it does not identify which thread owns a child build process. Match the full thread ID and cwd before sending. Trust that host line over what a session says about itself: a
+  (\`[desktop]\`). Trust that host line over what a session says about itself: a
   Codex session cannot see which terminal it runs under and will guess wrong.
   \`ocs codex-sessions\` is rollout history and does not imply wakeability.
   The Desktop path additionally needs a second open task under the same renderer as
