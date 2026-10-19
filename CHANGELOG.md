@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Automatically publish patch releases after main passes macOS and Windows CI; synchronize version metadata and publish all four platform assets together after validation
+
 - A Claude desktop title that is not a valid address no longer becomes the message sender: it falls back to the session's `claude-<8hex>` id, so messages are stored and generated replies route back. Adds eight regression tests
 
 ## 0.9.0

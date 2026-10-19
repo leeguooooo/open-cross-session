@@ -2,8 +2,18 @@ name: release
 on:
   push:
     tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
 permissions:
   contents: write
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 jobs:
   binaries:
     strategy:
@@ -25,9 +35,11 @@ jobs:
       HAS_SIGNING: ${{ secrets.APPLE_SIGNING_CERTIFICATE != '' && secrets.APPLE_SIGNING_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGN_IDENTITY != '' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2
       - name: release notes exist in CHANGELOG.md
-        run: scripts/release-notes.sh "${GITHUB_REF_NAME}" > /dev/null
+        run: scripts/release-notes.sh "${RELEASE_TAG}" > /dev/null
       - run: bun install
       - run: bun test
       - name: build binary
@@ -56,6 +68,8 @@ jobs:
           security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$APPLE_SIGNING_CERTIFICATE_PASSWORD" \
             -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$pw" "$kc" >/dev/null
+          # Runner keychain paths have no spaces; preserve the existing search list.
+          # shellcheck disable=SC2046
           security list-keychain -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
           rm -f "$RUNNER_TEMP/cert.p12"
           codesign --force --options runtime --timestamp --entitlements scripts/entitlements.plist \
@@ -81,14 +95,12 @@ jobs:
         run: |
           tar -czf ${{ matrix.asset }}.tar.gz ocs
           shasum -a 256 ${{ matrix.asset }}.tar.gz > ${{ matrix.asset }}.tar.gz.sha256
-      - name: attach to release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          scripts/release-notes.sh "${GITHUB_REF_NAME}" > release-notes.md
-          gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file release-notes.md 2>/dev/null \
-            || gh release edit "${GITHUB_REF_NAME}" --notes-file release-notes.md
-          gh release upload "${GITHUB_REF_NAME}" ${{ matrix.asset }}.tar.gz ${{ matrix.asset }}.tar.gz.sha256 --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}.tar.gz
+            ${{ matrix.asset }}.tar.gz.sha256
   windows:
     # Windows 只出二进制：仓库测试依赖 Unix socket / ps，照常在上面三个平台跑。
     # 冒烟测试必须在真 Windows 上跑编译产物（交叉编译出来不跑一次不算数）。
@@ -98,6 +110,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2
       - run: bun install
       - name: build binary
@@ -114,11 +128,45 @@ jobs:
         run: |
           7z a -tzip ocs-windows-x64.zip ocs.exe
           sha256sum ocs-windows-x64.zip > ocs-windows-x64.zip.sha256
-      - name: attach to release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ocs-windows-x64
+          path: |
+            ocs-windows-x64.zip
+            ocs-windows-x64.zip.sha256
+  publish:
+    needs: [binaries, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: verify complete release and checksums
+        run: |
+          set -euo pipefail
+          cd artifacts
+          for asset in ocs-darwin-arm64.tar.gz ocs-darwin-x64.tar.gz ocs-linux-x64.tar.gz ocs-windows-x64.zip; do
+            test -s "$asset"
+            sha256sum -c "$asset.sha256"
+          done
+      - name: publish complete release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          scripts/release-notes.sh "${GITHUB_REF_NAME}" > release-notes.md
-          gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file release-notes.md 2>/dev/null \
-            || gh release edit "${GITHUB_REF_NAME}" --notes-file release-notes.md
-          gh release upload "${GITHUB_REF_NAME}" ocs-windows-x64.zip ocs-windows-x64.zip.sha256 --clobber
+          set -euo pipefail
+          scripts/release-notes.sh "$RELEASE_TAG" > release-notes.md
+          if gh release view "$RELEASE_TAG" --json isDraft > release-state.json 2>/dev/null; then
+            if [ "$(jq -r .isDraft release-state.json)" != true ]; then
+              echo "Release already published; leaving assets unchanged"
+              exit 0
+            fi
+            gh release upload "$RELEASE_TAG" artifacts/* --clobber
+            gh release edit "$RELEASE_TAG" --notes-file release-notes.md
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes-file release-notes.md artifacts/*
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false --latest
