@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.2
+
 - Show a known update on every user-facing invocation, including help, version and upgrade checks; keep JSON stdout clean and background release checks limited to once a day
 
 ## 0.9.1
