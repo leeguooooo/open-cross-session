@@ -199,8 +199,7 @@ function updateCachePath(env: NodeJS.ProcessEnv): string {
 /** 约定 §2 的跳过条件，外加 ocs 既有的 OCS_UPGRADE_CHECK=0。 */
 export function updateNoticeDisabled(env: NodeJS.ProcessEnv, command: string | undefined): boolean {
   if (env.CI || env.OCS_NO_UPDATE_CHECK || env.USE_NO_UPDATE_CHECK || env[OCS_UPGRADE_CHECK_ENV] === "0") return true;
-  return command === undefined || command.startsWith("_") ||
-    ["upgrade", "version", "--version", "help", "--help"].includes(command);
+  return command?.startsWith("_") === true;
 }
 
 function readUpdateCache(env: NodeJS.ProcessEnv): { checked_at: number; latest: string | null } | null {

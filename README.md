@@ -318,7 +318,7 @@ newer release on its own and will keep looking current. Re-run the installer onc
 curl -fsSL https://raw.githubusercontent.com/leeguooooo/open-cross-session/main/install.sh | sh
 ```
 
-After that `ocs upgrade` works, and `ocs doctor` warns when the binary falls behind.
+After that `ocs upgrade` works. Every user-facing invocation (including help and version) prints an update notice to stderr when the cached latest release is newer. Background checks run at most once every 24 hours; the first call without a cache starts a check and subsequent calls show the result. Internal helpers and CI stay quiet. Set `OCS_NO_UPDATE_CHECK=1` to opt out. `ocs doctor` also warns when the binary falls behind.
 
 Data lives in `~/.ocs` (override with `OCS_HOME`). Channels are plain JSONL logs.
 Back up the whole directory, including `workspace-key`: that local secret keeps
