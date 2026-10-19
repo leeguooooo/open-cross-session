@@ -93,6 +93,7 @@ import {
   resolveDmTarget,
   resolveSelfName,
   selfIdentity,
+  claudeSenderName,
   claudeSessionIdentity,
   selfNameOwner,
   shadowFreeWorkspaceAlias,
@@ -239,7 +240,7 @@ function currentInboxIdentity(
       const selfPid = findSelfClaudePid();
       session = selfPid === null ? undefined : sessions.find((candidate) => candidate.pid === selfPid);
     }
-    if (session?.name === primaryName) {
+    if (session !== undefined && claudeSenderName(session) === primaryName) {
       identities.add(claudeSessionIdentity(session));
       const alias = shadowFreeWorkspaceAlias(session, sessions, names);
       if (alias !== null) mentionNames.add(alias);
@@ -757,7 +758,7 @@ async function cmdDm(parsed: Parsed): Promise<void> {
     : nativeSessions.find((session) => session.pid === nativeSelfPid);
   const autoNativeSender = parsed.flags.get("as") === undefined &&
     !(typeof pinnedName === "string" && NAME_RE.test(pinnedName)) &&
-    nativeSelf?.name === from;
+    nativeSelf !== undefined && claudeSenderName(nativeSelf) === from;
   const names = listOcsNames();
   const workspaceAlias = autoNativeSender && nativeSelf !== undefined
     ? shadowFreeWorkspaceAlias(nativeSelf, nativeSessions, names)
@@ -901,8 +902,9 @@ function cmdInbox(parsed: Parsed): void {
     if (parsed.flags.has("as")) fail(M.failInboxSessionWithAs);
     pinned = listNativeSessions().find((candidate) => candidate.sessionId === sessionFlag);
     if (pinned === undefined) fail(M.whoamiSessionNotFound(sessionFlag));
-    if (pinned.name === null) fail(M.whoamiSessionNotFound(sessionFlag));
-    name = pinned.name;
+    const pinnedName = claudeSenderName(pinned);
+    if (pinnedName === null) fail(M.whoamiSessionNotFound(sessionFlag));
+    name = pinnedName;
   } else {
     name = senderName(parsed);
   }
@@ -1111,8 +1113,10 @@ function cmdWhoami(parsed: Parsed): void {
     owner = selfNameOwner();
   }
   if (!parsed.flags.has("json")) {
-    if (owner?.kind === "claude" && typeof sessionFlag === "string" && owner.session.name !== null) {
-      console.log(owner.session.name);
+    if (owner?.kind === "claude" && typeof sessionFlag === "string") {
+      const name = claudeSenderName(owner.session);
+      if (name === null) fail(M.whoamiUnknown);
+      console.log(name);
       return;
     }
     const name = resolveSelfName();
@@ -1124,7 +1128,9 @@ function cmdWhoami(parsed: Parsed): void {
   const name = ocsNameFor(owner, listOcsNames())?.name ?? null;
   const id = owner.kind === "claude" ? claudeShortId(owner.session.sessionId) : ownerShortId(owner);
   const session = owner.kind === "claude" ? owner.session.name : null;
-  const addresses = [...new Set([name, id, session].filter((value): value is string => value !== null))];
+  const addresses = [...new Set([name, id, session].filter(
+    (value): value is string => value !== null && NAME_RE.test(value),
+  ))];
   // Codex 短 id 取 thread id 前 8 位，而 thread id 是 UUIDv7（时间戳打头），一分钟内建的线程
   // 短 id 会撞；只在 codex 上追加完整 threadId，Claude/Pi/Hermes 的输出保持逐字不变。
   const full = owner.kind === "codex" ? { threadId: owner.id } : {};

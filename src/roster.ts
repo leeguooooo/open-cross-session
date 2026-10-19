@@ -92,6 +92,11 @@ function safeVerifiedWorkspaceIdentity(
  * Hermes 排最后：它把 HERMES_SESSION_ID 注入每条终端命令，在 Hermes 里开的 Claude/Codex 也会继承。
  * agent 在自己的会话里跑 ocs 时自动识别，人一个字都不用打。
  */
+/** Keep valid legacy sender names; free-form desktop titles need a wire-safe ID. */
+export function claudeSenderName(session: Pick<NativeClaudeSession, "name" | "sessionId">): string | null {
+  if (session.name !== null && NAME_RE.test(session.name)) return session.name;
+  return claudeShortId(session.sessionId);
+}
 export function resolveSelfName(env: NodeJS.ProcessEnv = process.env): string | null {
   const explicit = env[OCS_NAME_ENV];
   if (typeof explicit === "string" && NAME_RE.test(explicit)) return explicit;
@@ -102,7 +107,9 @@ export function resolveSelfName(env: NodeJS.ProcessEnv = process.env): string | 
   const pid = findSelfClaudePid(env);
   if (pid !== null) {
     const session = listNativeSessions(env).find((s) => s.pid === pid);
-    if (session?.name !== null && session?.name !== undefined) return session.name;
+    // A detected Claude session must not borrow a different harness's inherited
+    // identity when neither its display name nor session ID is addressable.
+    if (session !== undefined) return claudeSenderName(session);
   }
   const codexThreadId = env[CODEX_THREAD_ID_ENV];
   if (typeof codexThreadId === "string" && isCodexThreadId(codexThreadId)) return codexThreadId.toLowerCase();
