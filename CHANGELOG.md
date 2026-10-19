@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Discover long-running Codex threads even when more than ten newer rollouts exist; inspect live processes before limiting historical candidates
+- Label Codex PIDs as transport processes and always show the project path; shared daemon PIDs do not identify which thread owns a child build process
+
 ## 0.9.2
 
 - Show a known update on every user-facing invocation, including help, version and upgrade checks; keep JSON stdout clean and background release checks limited to once a day

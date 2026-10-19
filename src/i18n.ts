@@ -162,6 +162,7 @@ interface Catalog {
   whoCodexNone: (ipc: boolean) => string;
   whoCodexViaQueue: (pid: number, host: string | null, tty: string | null) => string;
   whoCodexViaDesktop: string;
+  whoCodexPidBoundary: string;
   whoCodexQueueMissing: string;
   whoPiHeader: string;
   whoGrokHeader: string;
@@ -489,9 +490,10 @@ Details: https://github.com/leeguooooo/open-cross-session/blob/main/docs/lan.md`
     // agent 自己说不清宿主（实测有会话自称「不挂在任何终端上」，其实在 Terminal.app 里），
     // 所以这里报进程事实：宿主应用 + 控制终端，查不到就只留 pid。
     const where = [host, tty].filter((part) => part !== null).join(" ");
-    return `[queue pid ${pid}${where === "" ? "" : ` · ${where}`}]`;
+    return `[queue transport pid ${pid}${where === "" ? "" : ` · ${where}`}]`;
   },
   whoCodexViaDesktop: "[desktop]",
+  whoCodexPidBoundary: "  PID identifies the transport process, which may serve multiple threads; never infer a child process owner from it. Select by thread ID and cwd.",
   whoCodexQueueMissing:
     "  ｰ  `codex queue` not runnable from here (codex must be a real binary on PATH, not a shell alias/function): terminal Codex sessions above cannot be woken",
   whoPiHeader: "Pi sessions (wake: ocs dm pi-<short-id> / @pi-<short-id>)",
@@ -817,9 +819,10 @@ ${lanMessages("zh").help}
     : "Codex：没有活着的 rollout，Desktop IPC socket 也不可用——起一个 codex 会话或打开 ChatGPT Desktop",
   whoCodexViaQueue: (pid, host, tty) => {
     const where = [host, tty].filter((part) => part !== null).join(" ");
-    return `[queue pid ${pid}${where === "" ? "" : ` · ${where}`}]`;
+    return `[queue transport pid ${pid}${where === "" ? "" : ` · ${where}`}]`;
   },
   whoCodexViaDesktop: "[desktop]",
+  whoCodexPidBoundary: "  PID 是载体进程，可能由多个会话共享；不能据此判断子进程属于哪个会话。请按完整 thread ID 和 cwd 选择目标。",
   whoCodexQueueMissing:
     "  ｰ  这里跑不了 `codex queue`（codex 必须是 PATH 上的真实二进制，不能是 shell 别名/函数）：上面那些终端 Codex 会话无法被唤醒",
   whoPiHeader: "Pi 会话（唤醒: ocs dm pi-<短id> / @pi-<短id>）",
