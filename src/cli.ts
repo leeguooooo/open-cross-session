@@ -521,6 +521,19 @@ async function cmdSend(parsed: Parsed): Promise<void> {
   });
   console.log(M.stored(channel, message.seq));
   markStored(channel, message.seq);
+  // 回复了某条就不该再把它算未读：发送方读游标推进到被回复的 seq（只进不退）。
+  // 不推到自己这条的 seq——回复期间新到的消息仍要留在未读里。
+  if (parent !== undefined && parent.from !== from) {
+    try {
+      saveInboxCursor(
+        channel,
+        [from, ...(replyRoute === undefined ? [] : [identityCursorConsumer(replyRoute.from_identity)])],
+        parent.seq,
+      );
+    } catch (error) {
+      console.log(M.dmCursorWarning(String(error)));
+    }
+  }
 
   if (parsed.flags.has("no-wake")) {
     observeOutcome("skipped");
