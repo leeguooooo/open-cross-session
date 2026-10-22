@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.4
+
 - `ocs send --reply-to <seq>` now advances the sender's read cursor to the replied-to seq, so messages you answered stop counting as unread in `ocs inbox`; messages that arrived while you were replying stay unread
 
 ## 0.9.3
