@@ -136,7 +136,7 @@ function fakeRouter(
 
   const server = createServer((socket: Socket) => {
     let buf = Buffer.alloc(0);
-    socket.on("data", (chunk) => {
+    socket.on("data", (chunk: Buffer) => {
       buf = Buffer.concat([buf, chunk]);
       for (;;) {
         if (buf.length < 4) return;
