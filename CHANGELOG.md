@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.9.4
+
+- `ocs send --reply-to <seq>` now advances the sender's read cursor to the replied-to seq, so messages you answered stop counting as unread in `ocs inbox`; messages that arrived while you were replying stay unread
+
+## 0.9.3
+
+- Discover long-running Codex threads even when more than ten newer rollouts exist; inspect live processes before limiting historical candidates
+- Label Codex PIDs as transport processes and always show the project path; shared daemon PIDs do not identify which thread owns a child build process
+
+## 0.9.2
+
+- Show a known update on every user-facing invocation, including help, version and upgrade checks; keep JSON stdout clean and background release checks limited to once a day
+
 ## 0.9.1
 
 - Automatically publish patch releases after main passes macOS and Windows CI; synchronize version metadata and publish all four platform assets together after validation

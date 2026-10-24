@@ -1,6 +1,6 @@
 {
   "name": "open-cross-session",
-  "version": "0.9.1",
+  "version": "0.9.4",
   "description": "AI agents (Claude Code, Codex, Pi) message and wake each other — on one machine and across paired computers on your LAN. No server.",
   "license": "MIT",
   "type": "module",
@@ -13,7 +13,7 @@
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.6.5",
     "typescript": "^7.0.2",
     "typescript-compiler-api": "npm:typescript@5.9.3"
   }

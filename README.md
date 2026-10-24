@@ -310,6 +310,8 @@ message stays in the append-only log for recovery with `ocs inbox`.
 | `ocs lan up \| pair \| who \| status \| peers \| scan \| unpair \| down` | Opt-in LAN mode: pair machines, then `ocs dm <address>@<peer>` and `ocs who --lan` (see [Cross-machine](#cross-machine)) |
 | `ocs version` | Print the version |
 
+Codex discovery includes live threads older than the latest history entries. A listed transport PID can serve several threads; it does not prove which thread owns a child build process. Select a peer by its full thread ID and project path, even when only one peer is shown.
+
 **Stuck below 0.4.3?** `ocs upgrade` only started upgrading the binary in 0.4.3 — before
 that it just printed a migration blurb and exited, so an older install can never reach a
 newer release on its own and will keep looking current. Re-run the installer once:
@@ -318,7 +320,7 @@ newer release on its own and will keep looking current. Re-run the installer onc
 curl -fsSL https://raw.githubusercontent.com/leeguooooo/open-cross-session/main/install.sh | sh
 ```
 
-After that `ocs upgrade` works, and `ocs doctor` warns when the binary falls behind.
+After that `ocs upgrade` works. Every user-facing invocation (including help and version) prints an update notice to stderr when the cached latest release is newer. Background checks run at most once every 24 hours; the first call without a cache starts a check and subsequent calls show the result. Internal helpers and CI stay quiet. Set `OCS_NO_UPDATE_CHECK=1` to opt out. `ocs doctor` also warns when the binary falls behind.
 
 Data lives in `~/.ocs` (override with `OCS_HOME`). Channels are plain JSONL logs.
 Back up the whole directory, including `workspace-key`: that local secret keeps

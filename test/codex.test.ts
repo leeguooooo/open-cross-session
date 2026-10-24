@@ -41,12 +41,12 @@ function rolloutFixture(options: { withThreadC?: boolean } = {}): NodeJS.Process
  * 起一个真名叫 `codex` 的进程持有 rollout fd —— 判活除了「有人持有」还要求持有者
  * 确实是个 codex 会话（issue #35），所以测试不能再拿自己的 fd 冒充。
  */
-function holdRolloutAsCodex(rollout: string): { pid: number; stop: () => void } {
+function holdRolloutAsCodex(rollout: string, secondRollout?: string): { pid: number; stop: () => void } {
   // 必须是二进制本体叫 codex：脚本 + shebang 的话 ps 报的是解释器路径，判活会（正确地）拒绝。
   const bin = join(tempDir("ocs-fakecodex-"), "codex");
   copyFileSync("/bin/sh", bin);
   chmodSync(bin, 0o755);
-  const child = spawn(bin, ["-c", `exec 3< "$1"; while :; do sleep 1; done`, "sh", rollout], {
+  const child = spawn(bin, ["-c", `exec 3< "$1"; if [ -n "$2" ]; then exec 4< "$2"; fi; while :; do sleep 1; done`, "sh", rollout, secondRollout ?? ""], {
     stdio: "ignore",
   });
   // lsof 要看到那个 fd 已经打开：轮询到命中为止，别用固定 sleep。
@@ -136,7 +136,7 @@ function fakeRouter(
 
   const server = createServer((socket: Socket) => {
     let buf = Buffer.alloc(0);
-    socket.on("data", (chunk) => {
+    socket.on("data", (chunk: Buffer) => {
       buf = Buffer.concat([buf, chunk]);
       for (;;) {
         if (buf.length < 4) return;
@@ -243,6 +243,34 @@ async function runCli(
 }
 
 describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
+  test("who finds old live threads beyond ten newer dead rollouts and distinguishes shared transport PID", async () => {
+    const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_A, THREAD_B]) });
+    const day = join(router.env.CODEX_HOME!, "sessions", "2026", "08", "31");
+    const a = join(day, `rollout-2026-08-31T10-00-00-${THREAD_A}.jsonl`);
+    const b = join(day, `rollout-2026-08-31T11-00-00-${THREAD_B}.jsonl`);
+    for (let i = 0; i < 15; i++) {
+      const id = `dddddddd-0000-4000-8000-${String(i).padStart(12, "0")}`;
+      writeFileSync(join(day, `rollout-2026-08-31T12-${String(i).padStart(2, "0")}-00-${id}.jsonl`),
+        JSON.stringify({ type: "session_meta", payload: { cwd: "/tmp/closed" } }) + "\n");
+    }
+    const holder = holdRolloutAsCodex(a, b);
+    try {
+      const result = await runCli(router, ["who", "--json"]);
+      expect(result.code).toBe(0);
+      const entries = JSON.parse(result.stdout).entries.filter((e: {kind: string}) => e.kind === "codex-task");
+      expect(entries.filter((e: {livePid: number}) => e.livePid === holder.pid)
+        .map((e: {threadId: string}) => e.threadId).sort()).toEqual([THREAD_A, THREAD_B]);
+      expect(entries.find((e: {threadId: string}) => e.threadId === THREAD_A)?.cwd).toBe("/tmp/a");
+      expect(entries.find((e: {threadId: string}) => e.threadId === THREAD_B)?.cwd).toBe("/tmp/b");
+      // The fake renderer claims recent history, so those rows are independently reachable.
+      const human = await runCli(router, ["who"]);
+      expect(human.stdout).toContain("queue transport pid");
+      expect(human.stdout).toContain("never infer a child process owner");
+      expect(human.stdout).toContain("cwd=/tmp/a");
+      expect(human.stdout).toContain("cwd=/tmp/b");
+    } finally { holder.stop(); router.close(); }
+  }, T);
+
   test("ocs who 展示被 open renderer 认领的 Codex task（无人持有 rollout 时 livePid 为 null）", async () => {
     const router = fakeRouter({ ignoreOwnerFor: new Set([THREAD_A]) });
     try {

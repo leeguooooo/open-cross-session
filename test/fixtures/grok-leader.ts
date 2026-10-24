@@ -9,7 +9,7 @@ const frame = (value: unknown) => { const b = Buffer.from(JSON.stringify(value))
 const server = createServer((socket) => {
   let buffer = Buffer.alloc(0);
   socket.on("error", () => {});
-  socket.on("data", (chunk) => {
+  socket.on("data", (chunk: Buffer) => {
     buffer = Buffer.concat([buffer, chunk]);
     while (buffer.length >= 4 && buffer.length >= buffer.readUInt32BE(0) + 4) {
       const n = buffer.readUInt32BE(0);

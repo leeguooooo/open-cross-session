@@ -239,6 +239,37 @@ describe("inbox 离线续接", () => {
     }
   }, T);
 
+  test("send --reply-to 把发送方读游标推进到被回复的 seq，回复期间新到的仍算未读", async () => {
+    const f = fixture();
+    try {
+      for (const body of ["first", "second"]) {
+        appendMessage({
+          channel: "dm-reply-cursor",
+          from: "worker-a",
+          from_identity: "name:worker-a",
+          to_identity: "name:tester",
+          body,
+          env: f.env,
+        });
+      }
+      const unread = async () =>
+        (JSON.parse((await run(f, ["inbox", "--json", "--as", "tester"])).stdout) as Array<{ unread: number }>)
+          .reduce((sum, thread) => sum + thread.unread, 0);
+      expect(await unread()).toBe(2);
+
+      const first = await run(f, ["send", "dm-reply-cursor", "ack 1", "--as", "tester", "--reply-to", "1", "--no-wake"]);
+      expect({ code: first.code, stderr: first.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(await unread()).toBe(1);
+
+      await run(f, ["send", "dm-reply-cursor", "ack 2", "--as", "tester", "--reply-to", "2", "--no-wake"]);
+      expect(await unread()).toBe(0);
+      // 对端没回复过，它的未读不受影响。
+      expect((await run(f, ["inbox", "--json", "--as", "worker-a"])).stdout).toContain("dm-reply-cursor");
+    } finally {
+      f.close();
+    }
+  }, T);
+
   test("inbox --session：不在 Claude 进程树里也能按 sessionId 查指定会话的未读", async () => {
     const f = fixture();
     try {

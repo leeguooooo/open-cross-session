@@ -383,11 +383,14 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
   const selfCodexThreadId = isCodexThreadId(env[CODEX_THREAD_ID_ENV] ?? "")
     ? env[CODEX_THREAD_ID_ENV]!.toLowerCase()
     : null;
-  const codexSessions = listCodexSessions(codexSessionsRoot(env), { limit: 10 });
-  // 一次 lsof 批量判活：rollout fd 的持有者证明会话在跑，终端 TUI 和 Desktop 任务通用。
-  // 一张进程表喂两处：判活要校验持有者身份，宿主解析要走同一条祖先链。
+  const root = codexSessionsRoot(env);
+  const files = listCodexRolloutFiles(root);
   const ps = psTable(env);
-  const codexLive = codexThreadLivePids(codexSessions.map((s) => s.threadId), env, ps);
+  // Check every rollout for liveness before limiting historical Desktop candidates.
+  // Long-running threads can be days older than the ten newest, already-exited tasks.
+  const codexLive = codexThreadLivePids(files.map((file) => file.threadId), env, ps);
+  const candidateIds = new Set([...files.slice(0, 10).map((file) => file.threadId), ...codexLive.keys()]);
+  const codexSessions = listCodexSessions(root, { limit: candidateIds.size, threadIds: candidateIds });
   // 宿主（tty + GUI 应用）只对活会话有意义，一次 ps 全解出来。
   const codexHostByPid = codexHosts([...new Set(codexLive.values())], env, ps);
   for (const s of codexSessions) {

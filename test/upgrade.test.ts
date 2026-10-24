@@ -9,6 +9,7 @@ import {
   OCS_UPGRADE_INSTALLER_ENV,
   OCS_UPGRADE_LATEST_URL_ENV,
   parseVersion,
+  updateNoticeDisabled,
 } from "../src/upgrade.ts";
 import { autoCleanupTempDirs, tempDir } from "./tmp";
 
@@ -234,16 +235,35 @@ describe("每日新版本提示（use-family 升级约定 §2）", () => {
     return { XDG_CACHE_HOME: cache, OCS_NO_UPDATE_CHECK: "", USE_NO_UPDATE_CHECK: "", CI: "" };
   }
 
-  test("缓存新鲜且更新：stderr 恰好一行，stdout 不受影响；upgrade/version 不提示", async () => {
+  test("缓存新鲜且更新：每次调用都提示，包含帮助和版本，stdout 不受影响", async () => {
     const env = cacheEnv({ checked_at: Math.floor(Date.now() / 1000), latest: bump(OCS_VERSION, 1) });
     const r = await runCli(["read", "some-channel", "--as", "tester", "--peek"], env);
     expect(r.stderr).toBe(notice(bump(OCS_VERSION, 1)));
     expect(r.stdout).not.toContain("is available");
-    expect((await runCli(["version"], env)).stderr).toBe("");
+    const gh = fakeGithub({ tag: `v${bump(OCS_VERSION, 1)}` });
+    for (const args of [["read", "some-channel", "--as", "tester", "--peek"], [], ["help"], ["--help"],
+      ["version"], ["--version"], ["upgrade", "--check"]]) {
+      const result = await runCli(args, { ...env, [OCS_UPGRADE_LATEST_URL_ENV]: gh.url });
+      expect(result.stderr).toBe(notice(bump(OCS_VERSION, 1)));
+      expect(result.stdout).not.toContain("is available");
+    }
+    const json = await runCli(["upgrade", "--json"], { ...env, [OCS_UPGRADE_LATEST_URL_ENV]: gh.url });
+    expect(json.stderr).toBe(notice(bump(OCS_VERSION, 1)));
+    expect(JSON.parse(json.stdout)).toMatchObject({ update_available: true });
     for (const disabled of [{ CI: "true" }, { OCS_NO_UPDATE_CHECK: "1" }, { USE_NO_UPDATE_CHECK: "1" }]) {
       expect((await runCli(["read", "c", "--as", "t", "--peek"], { ...env, ...disabled })).stderr).toBe("");
     }
   }, T);
+
+  test("internal helpers remain quiet and opt-out still applies to all commands", () => {
+    for (const command of ["_update-check", "_lan-daemon", "_claude-wake"]) {
+      expect(updateNoticeDisabled({}, command)).toBe(true);
+    }
+    for (const command of [undefined, "help", "version", "upgrade", "dm"]) {
+      expect(updateNoticeDisabled({}, command)).toBe(false);
+      expect(updateNoticeDisabled({ OCS_UPGRADE_CHECK: "0" }, command)).toBe(true);
+    }
+  });
 
   test("缓存过期：前台不等，后台 _update-check 查一次写回缓存（失败也写 checked_at）", async () => {
     const gh = fakeGithub({ tag: `v${bump(OCS_VERSION, 2)}` });
