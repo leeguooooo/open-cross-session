@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import ts from "typescript";
+// TypeScript 7 no longer exports the classic compiler API from its root entry.
+// Keep this test-only AST parser separate from the current tsc toolchain.
+import ts from "typescript-compiler-api";
 
 const TEST_DIR = new URL(".", import.meta.url).pathname;
 type TestSource = { name: string; source: string };
