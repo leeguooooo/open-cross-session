@@ -29,7 +29,7 @@ function fakeServer(options: { prompt?: "queued" | "running" | "drop" | "silent"
     let buffer = Buffer.alloc(0);
     const send = (v: unknown) => { const body = Buffer.from(JSON.stringify(v)); const h = Buffer.alloc(4); h.writeUInt32BE(body.length); socket.write(h.subarray(0,2)); socket.write(Buffer.concat([h.subarray(2),body])); };
     const rpc = (v: unknown) => send({ type: "acp", payload: JSON.stringify(v) });
-    socket.on("data", (chunk) => {
+    socket.on("data", (chunk: Buffer) => {
       buffer = Buffer.concat([buffer,chunk]);
       while (buffer.length >= 4 && buffer.length >= buffer.readUInt32BE(0)+4) {
         const n=buffer.readUInt32BE(0), packet=JSON.parse(buffer.subarray(4,n+4).toString()); buffer=buffer.subarray(n+4);
