@@ -322,6 +322,8 @@ curl -fsSL https://raw.githubusercontent.com/leeguooooo/open-cross-session/main/
 
 After that `ocs upgrade` works. Every user-facing invocation (including help and version) prints an update notice to stderr when the cached latest release is newer. Background checks run at most once every 24 hours; the first call without a cache starts a check and subsequent calls show the result. Internal helpers and CI stay quiet. Set `OCS_NO_UPDATE_CHECK=1` to opt out. `ocs doctor` also warns when the binary falls behind.
 
+Release checks fall back to GitHub's public latest-release redirect when the anonymous API quota is exhausted; no token is required. On older builds that stop at `HTTP 403`, rerun the installer above once.
+
 Data lives in `~/.ocs` (override with `OCS_HOME`). Channels are plain JSONL logs.
 Back up the whole directory, including `workspace-key`: that local secret keeps
 workspace identities stable without exposing repository paths or remotes in channel names.

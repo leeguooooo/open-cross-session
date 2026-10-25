@@ -8,6 +8,7 @@ import {
   OCS_UPGRADE_CHECK_ENV,
   OCS_UPGRADE_INSTALLER_ENV,
   OCS_UPGRADE_LATEST_URL_ENV,
+  OCS_UPGRADE_FALLBACK_URL_ENV,
   parseVersion,
   updateNoticeDisabled,
 } from "../src/upgrade.ts";
@@ -38,6 +39,28 @@ function fakeGithub(reply: { tag?: string; status?: number }): { url: string; hi
   });
   servers.push(server);
   return { url: `http://127.0.0.1:${server.port}/latest`, hits: () => hits };
+}
+
+function rateLimitedGithub(status = 403, location = `https://github.com/leeguooooo/open-cross-session/releases/tag/v${bump(OCS_VERSION, 1)}`) {
+  const requests: Array<{ path: string; method: string }> = [];
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch(request) {
+      const path = new URL(request.url).pathname;
+      requests.push({ path, method: request.method });
+      if (path === "/api") return new Response("API rate limit exceeded", { status });
+      return new Response(null, { status: 302, headers: { location } });
+    },
+  });
+  servers.push(server);
+  return {
+    env: {
+      [OCS_UPGRADE_LATEST_URL_ENV]: `http://127.0.0.1:${server.port}/api`,
+      [OCS_UPGRADE_FALLBACK_URL_ENV]: `http://127.0.0.1:${server.port}/latest`,
+    },
+    requests,
+  };
 }
 
 /** 假 installer：写一个 marker 文件然后按指定码退出，证明它被（或没被）调用。 */
@@ -86,6 +109,38 @@ describe("版本解析与比较", () => {
 });
 
 describe("checkUpgrade（本地假 GitHub）", () => {
+  test("API 403/429 falls back to the public latest-release redirect without following it", async () => {
+    for (const status of [403, 429]) {
+      const gh = rateLimitedGithub(status);
+      expect(await checkUpgrade(OCS_VERSION, gh.env)).toMatchObject({
+        status: "behind", latest: `v${bump(OCS_VERSION, 1)}`,
+      });
+      expect(gh.requests).toEqual([{ path: "/api", method: "GET" }, { path: "/latest", method: "HEAD" }]);
+    }
+  });
+
+  test("rejects fallback redirects to another origin, repository, or a non-stable tag", async () => {
+    for (const location of [
+      "https://example.com/leeguooooo/open-cross-session/releases/tag/v99.0.0",
+      "https://github.com/someone/other/releases/tag/v99.0.0",
+      "https://github.com/leeguooooo/open-cross-session/releases/tag/v99.0.0-rc1",
+      "https://github.com/leeguooooo/open-cross-session/releases/tag/v99.0.0?untrusted=1",
+      "https://user:secret@github.com/leeguooooo/open-cross-session/releases/tag/v99.0.0",
+      "https://github.com/leeguooooo/open-cross-session/releases/tag/v99.0.0#fragment",
+    ]) {
+      const gh = rateLimitedGithub(403, location);
+      expect(await checkUpgrade(OCS_VERSION, gh.env)).toMatchObject({ status: "unknown" });
+    }
+  });
+
+  test("if the fallback is unreachable the check remains unknown and retains the API error", async () => {
+    const gh = fakeGithub({ status: 403 });
+    expect(await checkUpgrade(OCS_VERSION, {
+      [OCS_UPGRADE_LATEST_URL_ENV]: gh.url,
+      [OCS_UPGRADE_FALLBACK_URL_ENV]: "http://127.0.0.1:1/latest",
+    })).toMatchObject({ status: "unknown", error: expect.stringContaining("HTTP 403;") });
+  });
+
   test("落后 / 一致 / 领先 三态", async () => {
     const behind = fakeGithub({ tag: `v${bump(OCS_VERSION, 1)}` });
     expect(await checkUpgrade(OCS_VERSION, { [OCS_UPGRADE_LATEST_URL_ENV]: behind.url }))
@@ -110,6 +165,14 @@ describe("checkUpgrade（本地假 GitHub）", () => {
 });
 
 describe("ocs upgrade（端到端，假 GitHub + 假 installer）", () => {
+  test("a rate-limited API does not block installing a verified newer public release", async () => {
+    const gh = rateLimitedGithub();
+    const inst = fakeInstaller();
+    const r = await runCli(["upgrade"], { ...gh.env, [OCS_UPGRADE_INSTALLER_ENV]: inst.path });
+    expect({ code: r.code, stderr: r.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(existsSync(inst.marker)).toBe(true);
+  }, T);
+
   test("落后时跑 installer，成功退出码 0，并附跨机器提示", async () => {
     const gh = fakeGithub({ tag: `v${bump(OCS_VERSION, 1)}` });
     const inst = fakeInstaller(0);

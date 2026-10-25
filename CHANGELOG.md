@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep `ocs upgrade`, version notices, and doctor working when the anonymous GitHub API quota returns HTTP 403/429 by checking the public latest-release redirect. No token or login is required; fallback redirects must name a stable release in this repository
+
 ## 0.9.5
 
 - Recognize live `codex-cxs` (Codex Statebar) sessions when discovering and waking Codex threads. Replies previously remained in the inbox with a failed wake because the running CLI was mistaken for an unrelated process; exact-name checks still exclude indexers and monitors
