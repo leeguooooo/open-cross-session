@@ -502,6 +502,8 @@ describe("安全审查回归（v0.6.0 发布前）", () => {
       const socket: Socket = connect({ host: "127.0.0.1", port: server.port });
       await new Promise((r) => socket.once("connect", r));
       socket.on("error", () => {});
+      // Drain the server hello so an unread readable side cannot hide its FIN.
+      socket.resume();
       const hello = Buffer.from(JSON.stringify(clientHs().hello));
       const head = Buffer.alloc(4);
       head.writeUInt32BE(hello.length, 0);

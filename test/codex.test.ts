@@ -46,6 +46,12 @@ function holdRolloutAsCodex(rollout: string, secondRollout?: string): { pid: num
   const bin = join(tempDir("ocs-fakecodex-"), "codex");
   copyFileSync("/bin/sh", bin);
   chmodSync(bin, 0o755);
+  if (process.platform === "darwin") {
+    // A copied platform binary retains its restricted signature. macOS kills it
+    // before it can open the rollout unless the fixture gets its own signature.
+    const signed = spawnSync("codesign", ["--force", "--sign", "-", bin], { encoding: "utf8" });
+    if (signed.status !== 0) throw new Error(`could not sign Codex holder fixture: ${signed.stderr}`);
+  }
   const child = spawn(bin, ["-c", `exec 3< "$1"; if [ -n "$2" ]; then exec 4< "$2"; fi; while :; do sleep 1; done`, "sh", rollout, secondRollout ?? ""], {
     stdio: "ignore",
   });

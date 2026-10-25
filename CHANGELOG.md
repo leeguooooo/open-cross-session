@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Recognize live `codex-cxs` (Codex Statebar) sessions when discovering and waking Codex threads. Replies previously remained in the inbox with a failed wake because the running CLI was mistaken for an unrelated process; exact-name checks still exclude indexers and monitors
+
 ## 0.9.4
 
 - `ocs send --reply-to <seq>` now advances the sender's read cursor to the replied-to seq, so messages you answered stop counting as unread in `ocs inbox`; messages that arrived while you were replying stay unread
