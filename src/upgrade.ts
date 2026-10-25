@@ -18,9 +18,12 @@ export const OCS_REPO = "leeguooooo/open-cross-session";
 export const OCS_INSTALL_SCRIPT_URL = `https://raw.githubusercontent.com/${OCS_REPO}/main/install.sh`;
 export const OCS_INSTALL_PS1_URL = `https://raw.githubusercontent.com/${OCS_REPO}/main/install.ps1`;
 export const OCS_LATEST_RELEASE_URL = `https://api.github.com/repos/${OCS_REPO}/releases/latest`;
+export const OCS_LATEST_RELEASE_PAGE_URL = `https://github.com/${OCS_REPO}/releases/latest`;
 
 /** 覆盖最新 release 的查询地址（测试指向本地假服务器）。 */
 export const OCS_UPGRADE_LATEST_URL_ENV = "OCS_UPGRADE_LATEST_URL";
+/** 覆盖备用 Release 重定向查询地址（测试用）。自定义 API 默认不访问真实 GitHub。 */
+export const OCS_UPGRADE_FALLBACK_URL_ENV = "OCS_UPGRADE_FALLBACK_URL";
 /** 覆盖 installer：给一个本地脚本路径，用 `sh <path>` 跑，替代 `curl … | sh`。 */
 export const OCS_UPGRADE_INSTALLER_ENV = "OCS_UPGRADE_INSTALLER";
 /** 设为 "0" 时 doctor 跳过版本检查（离线、CI、测试）。 */
@@ -54,6 +57,45 @@ function latestReleaseUrl(env: NodeJS.ProcessEnv): string {
   return typeof override === "string" && override !== "" ? override : OCS_LATEST_RELEASE_URL;
 }
 
+function fallbackReleaseUrl(env: NodeJS.ProcessEnv): string | null {
+  const override = env[OCS_UPGRADE_FALLBACK_URL_ENV];
+  if (typeof override === "string" && override !== "") return override;
+  // A custom API endpoint must stay hermetic unless it also opts into a fallback.
+  return latestReleaseUrl(env) === OCS_LATEST_RELEASE_URL ? OCS_LATEST_RELEASE_PAGE_URL : null;
+}
+
+/** The public /releases/latest redirect is independent of the anonymous REST quota. */
+async function fetchPublicReleaseTag(url: string, timeoutMs: number): Promise<{ tag: string } | { error: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: "HEAD", redirect: "manual", signal: controller.signal,
+      headers: { "user-agent": "ocs-upgrade", accept: "text/html" },
+    });
+    if (![301, 302, 303, 307, 308].includes(response.status)) {
+      return { error: `public release redirect returned HTTP ${response.status}` };
+    }
+    const location = response.headers.get("location");
+    if (location === null) return { error: "public release redirect is missing Location" };
+    const target = new URL(location, url);
+    const prefix = `/${OCS_REPO}/releases/tag/`;
+    const tag = target.pathname.startsWith(prefix) ? target.pathname.slice(prefix.length) : "";
+    // Do not follow redirects or trust a tag from a different project, login page,
+    // or prerelease. No API token or gh login is needed for this fallback.
+    if (target.origin !== "https://github.com" || target.username || target.password ||
+        target.search || target.hash || parseVersion(tag) === null) {
+      return { error: "unexpected public release redirect" };
+    }
+    return { tag };
+  } catch (error) {
+    const e = error as { name?: string; message?: string };
+    return { error: e.name === "AbortError" ? `public release check timed out after ${timeoutMs}ms` : String(e.message ?? error) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** 查最新 release 的 tag。任何失败（离线、限流、格式不对）都归 unknown，绝不抛。 */
 export async function fetchLatestVersion(
   env: NodeJS.ProcessEnv = process.env,
@@ -67,7 +109,15 @@ export async function fetchLatestVersion(
       // GitHub API 无 UA 会 403。
       headers: { "user-agent": "ocs-upgrade", accept: "application/vnd.github+json" },
     });
-    if (!response.ok) return { error: `HTTP ${response.status}` };
+    if (!response.ok) {
+      const fallback = fallbackReleaseUrl(env);
+      if ((response.status === 403 || response.status === 429) && fallback !== null) {
+        await response.body?.cancel();
+        const publicRelease = await fetchPublicReleaseTag(fallback, timeoutMs);
+        return "tag" in publicRelease ? publicRelease : { error: `HTTP ${response.status}; ${publicRelease.error}` };
+      }
+      return { error: `HTTP ${response.status}` };
+    }
     const body = (await response.json()) as unknown;
     const tag = typeof body === "object" && body !== null && !Array.isArray(body)
       ? (body as Record<string, unknown>).tag_name
@@ -251,7 +301,7 @@ function writeUpdateCache(env: NodeJS.ProcessEnv, now: number, latest: string | 
   writeFileSync(path, `${JSON.stringify({ checked_at: Math.floor(now / 1000), latest })}\n`);
 }
 
-/** `ocs _update-check`：2 秒超时查一次，成败都写 checked_at（离线机器不被每次调用重试）。 */
+/** `ocs _update-check`：每个查询源最多 2 秒，成败都写 checked_at，避免反复重试。 */
 export async function runUpdateCheck(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const latest = await fetchLatestVersion(env, 2000);
   const previous = readUpdateCache(env)?.latest ?? null;

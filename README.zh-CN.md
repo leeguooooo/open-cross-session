@@ -287,6 +287,8 @@ fail closed，IPC 结果未知时绝不降级。没有安全载体时，消息�
 | `ocs lan up \| pair \| who \| status \| peers \| scan \| unpair \| down` | 局域网模式（默认关闭）：配对机器后 `ocs dm <地址>@<对端>`、`ocs who --lan`（见[跨机器](#跨机器)） |
 | `ocs version` | 打印版本 |
 
+GitHub 匿名 API 限流时，版本检查会改查公开 Release 重定向，不需要 token。旧版若卡在 `HTTP 403`，重新运行一次安装命令即可更新。
+
 数据在 `~/.ocs`（`OCS_HOME` 可覆盖），频道是 JSONL 文件。备份时应保留整个目录，
 包括 `workspace-key`；这个本机密钥用来稳定派生工作区身份，频道名不会暴露仓库路径或远程地址。
 
