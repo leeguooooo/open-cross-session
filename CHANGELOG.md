@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.6
+
 - Keep `ocs upgrade`, version notices, and doctor working when the anonymous GitHub API quota returns HTTP 403/429 by checking the public latest-release redirect. No token or login is required; fallback redirects must name a stable release in this repository
 
 ## 0.9.5
