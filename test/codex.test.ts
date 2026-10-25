@@ -406,6 +406,7 @@ echo "Queued message 01a079c9-7318-7192-ae2c-8078515ad91a for thread $3."
       expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
       expect(result.stdout).toContain("Desktop IPC router socket available");
       expect(result.stdout).toContain("this Codex task (bbbbbbbb) is not claimed by an open Desktop renderer");
+      expect(result.stdout).toContain("Terminal sessions with a verified live rollout use `codex queue` independently");
       expect(result.stdout).toContain("local Codex rollout record(s) found (history only");
     } finally {
       router.close();

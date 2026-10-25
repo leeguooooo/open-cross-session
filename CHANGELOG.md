@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Recognize live `codex-cxs` (Codex Statebar) sessions when discovering and waking Codex threads. Replies previously remained in the inbox with a failed wake because the running CLI was mistaken for an unrelated process; exact-name checks still exclude indexers and monitors
+- Clarify that missing Desktop renderer ownership only blocks Desktop IPC, not the independent terminal queue transport
 
 ## 0.9.4
 
