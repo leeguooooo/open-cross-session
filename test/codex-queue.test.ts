@@ -126,6 +126,35 @@ describe("codex-queue：持有者身份校验", () => {
     expect(isCodexRolloutHolder(755, table)).toBe(false);
     expect(isCodexRolloutHolder(999_999, table)).toBe(false);
   });
+
+  test("codex-cxs TUI and its children are live; similarly named monitors are not", () => {
+    const cxs = new Map([
+      [100, { ppid: 1, tty: "ttys019", comm: "/Users/leo/.local/bin/codex-cxs" }],
+      [101, { ppid: 100, tty: "ttys019", comm: "/usr/bin/helper" }],
+      [102, { ppid: 1, tty: "??", comm: "/opt/tools/codex-cxs-monitor" }],
+      [103, { ppid: 1, tty: "??", comm: "/opt/tools/not-codex-cxs" }],
+    ]);
+    expect(isCodexRolloutHolder(100, cxs)).toBe(true);
+    expect(isCodexRolloutHolder(101, cxs)).toBe(true);
+    expect(isCodexRolloutHolder(102, cxs)).toBe(false);
+    expect(isCodexRolloutHolder(103, cxs)).toBe(false);
+  });
+
+  test("a codex-cxs rollout holder is found without accepting an unrelated open rollout", () => {
+    const { env, live, dead } = rolloutFixture();
+    const liveFd = openSync(live, "r");
+    const deadFd = openSync(dead, "r");
+    const table = new Map([[process.pid, { ppid: 1, tty: "ttys019", comm: "/fixture/codex-cxs" }]]);
+    try {
+      // Only requested threads are eligible, even when the same transport holds other files.
+      const found = codexThreadLivePids([THREAD_LIVE], env, table);
+      expect(found.get(THREAD_LIVE)).toBe(process.pid);
+      expect(found.has(THREAD_DEAD)).toBe(false);
+    } finally {
+      closeSync(liveFd);
+      closeSync(deadFd);
+    }
+  });
 });
 
 describe("codex-queue：投递", () => {

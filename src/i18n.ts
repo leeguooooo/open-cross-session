@@ -426,7 +426,7 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
     `Desktop IPC pipe not used — ${reason}. ocs only talks to a pipe served by ChatGPT Desktop running as you; messages stay in the inbox`,
   doctorIpcRouteOk: "this Codex task is claimed by an open Desktop renderer (wakeable)",
   doctorIpcRouteMissing: (thread) =>
-    `this Codex task (${thread.slice(0, 8)}) is not claimed by an open Desktop renderer; stored messages still appear in \`ocs inbox\`, but wake needs its task view open/selected`,
+    `this Codex task (${thread.slice(0, 8)}) is not claimed by an open Desktop renderer; Desktop IPC needs its task view open/selected. Terminal sessions with a verified live rollout use \`codex queue\` independently; stored messages remain in \`ocs inbox\``,
   doctorIpcRouteProbeFailed: (detail) => `could not verify Desktop renderer routing: ${detail}`,
   doctorIpcRouteUnverified: "renderer routing not verified (run doctor from inside a Codex task)",
   doctorRollouts: (n) => `${n}+ local Codex rollout record(s) found (history only; \`ocs who\` verifies open tasks)`,
@@ -759,7 +759,7 @@ ${lanMessages("zh").help}
     `Desktop IPC 管道不用——${reason}。ocs 只跟「以你的身份运行的 ChatGPT Desktop」提供的管道通信，消息留在收件箱`,
   doctorIpcRouteOk: "当前 Codex task 已被打开的 Desktop renderer 认领（可唤醒）",
   doctorIpcRouteMissing: (thread) =>
-    `当前 Codex task（${thread.slice(0, 8)}）未被打开的 Desktop renderer 认领；持久消息仍会进入 \`ocs inbox\`，但主动唤醒需要打开或选中该 task 页面`,
+    `当前 Codex task（${thread.slice(0, 8)}）未被打开的 Desktop renderer 认领；Desktop IPC 需要打开或选中该 task 页面。持有 rollout 且通过活性校验的终端会话独立走 \`codex queue\`，持久消息仍可通过 \`ocs inbox\` 读取`,
   doctorIpcRouteProbeFailed: (detail) => `无法验证 Desktop renderer 路由：${detail}`,
   doctorIpcRouteUnverified: "尚未验证 renderer 路由（请从 Codex task 内运行 doctor）",
   doctorRollouts: (n) => `找到 ${n}+ 条本地 Codex rollout 记录（只是历史；\`ocs who\` 才验证打开的 task）`,

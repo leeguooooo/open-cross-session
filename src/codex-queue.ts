@@ -381,6 +381,9 @@ export function psTable(env: NodeJS.ProcessEnv = process.env): Map<number, PsEnt
 }
 
 const CHATGPT_BUNDLE_RE = /\/ChatGPT\.app\//;
+// codex-cxs is the Codex Statebar build of the same CLI. Keep exact basenames:
+// prefix/substring matching would also admit codex-issue-runner and monitors.
+const CODEX_EXECUTABLE_NAMES = new Set(["codex", "codex-cxs"]);
 
 /**
  * 这个 rollout 持有者是不是一个真的 codex 会话。
@@ -390,9 +393,9 @@ const CHATGPT_BUNDLE_RE = /\/ChatGPT\.app\//;
  * 永远没人读——正是 fail-closed 想拦的场景。
  *
  * 两条合法路径，对应铁律 10 的两种载体：
- *   * 终端 TUI：持有者自己（或祖先）就是 `codex` 二进制；
+ *   * 终端 TUI：持有者自己（或祖先）就是 `codex` / `codex-cxs` 二进制；
  *   * Desktop 托管：持有者挂在 ChatGPT.app 的进程树下。
- * 名字按 basename 精确比，不用 includes ——`codex-issue-runner` 正是靠子串混进来的。
+ * 名字按 basename 精确比（codex / codex-cxs），不用 includes；索引器、监控器不算。
  */
 export function isCodexRolloutHolder(pid: number, table: ReadonlyMap<number, PsEntry>): boolean {
   let cursor: number | undefined = pid;
@@ -400,7 +403,7 @@ export function isCodexRolloutHolder(pid: number, table: ReadonlyMap<number, PsE
   for (let hop = 0; hop < 12 && cursor !== undefined && cursor > 1; hop++) {
     const node: PsEntry | undefined = table.get(cursor);
     if (node === undefined) return false;
-    if (node.comm.split("/").pop() === "codex") return true;
+    if (CODEX_EXECUTABLE_NAMES.has(node.comm.split("/").pop() ?? "")) return true;
     if (CHATGPT_BUNDLE_RE.test(node.comm)) return true;
     cursor = node.ppid;
   }
