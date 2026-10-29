@@ -2,6 +2,7 @@
 // 规则：新增用户可见字符串必须两种语言同时补齐（TypeScript 结构保证漏一即报错）。
 
 import { lanMessages } from "./i18n-lan.ts";
+import type { CodexLivenessDiagnosis } from "./codex-queue.ts";
 
 export type Lang = "en" | "zh";
 
@@ -117,6 +118,7 @@ interface Catalog {
   doctorRollouts: (n: number) => string;
   doctorOneRollout: string;
   doctorNoRollouts: string;
+  codexLivenessWhy: (d: CodexLivenessDiagnosis) => string;
   doctorPi: string;
   doctorPiExtensionOk: (path: string) => string;
   doctorPiExtensionFixed: (path: string) => string;
@@ -432,6 +434,24 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   doctorRollouts: (n) => `${n}+ local Codex rollout record(s) found (history only; \`ocs who\` verifies open tasks)`,
   doctorOneRollout: "1 local Codex rollout record found (history only; an open renderer is required for wake)",
   doctorNoRollouts: "no Codex rollouts (have you run codex?)",
+  codexLivenessWhy: (d) => {
+    switch (d.kind) {
+      case "no-rollouts":
+        return `why: no rollout files under ${d.root} — Codex writes elsewhere (check CODEX_HOME) or runs on another machine / in the cloud`;
+      case "probe-failed":
+        return `why: liveness probe failed (${d.tool}: ${d.detail}) — treated as offline; check that ${d.tool} is installed and responsive`;
+      case "no-holder":
+        return d.recent === 0
+          ? `why: no rollout under ${d.root} was written in the last 24h — the running Codex likely uses a different CODEX_HOME`
+          : `why: ${d.recent} recent rollout(s), but no process holds one open — this Codex build may not keep its rollout open; please report \`codex --version\``;
+      case "holder-rejected":
+        return `why: rollouts are held by processes that are not codex / codex-cxs / ChatGPT.app: ${
+          d.holders.map((h) => `${h.pid} ${h.comm}`).join(", ")
+        } — please report this line`;
+      case "live":
+        return `codex holders: pid ${d.pids.join(", ")}`;
+    }
+  },
   doctorPi: "Pi side",
   doctorPiExtensionOk: (path) => `direct-wake extension installed (${path})`,
   doctorPiExtensionFixed: (path) => `direct-wake extension repaired (${path}); restart open Pi sessions`,
@@ -765,6 +785,24 @@ ${lanMessages("zh").help}
   doctorRollouts: (n) => `找到 ${n}+ 条本地 Codex rollout 记录（只是历史；\`ocs who\` 才验证打开的 task）`,
   doctorOneRollout: "找到 1 条本地 Codex rollout 记录（只是历史；唤醒仍需要打开的 renderer）",
   doctorNoRollouts: "没有 Codex rollout（跑过 codex 吗？）",
+  codexLivenessWhy: (d) => {
+    switch (d.kind) {
+      case "no-rollouts":
+        return `原因：${d.root} 下没有 rollout 文件——Codex 写在别处（查 CODEX_HOME），或跑在另一台机器/云端`;
+      case "probe-failed":
+        return `原因：活性探测失败（${d.tool}：${d.detail}），按离线处理；检查 ${d.tool} 是否安装、是否卡住`;
+      case "no-holder":
+        return d.recent === 0
+          ? `原因：${d.root} 下 24 小时内没有写过的 rollout——正在跑的 Codex 多半用的是别的 CODEX_HOME`
+          : `原因：有 ${d.recent} 个近期 rollout，但没有进程开着它——这个 Codex 版本可能不再常开 rollout，请反馈 \`codex --version\``;
+      case "holder-rejected":
+        return `原因：rollout 被非 codex / codex-cxs / ChatGPT.app 的进程持有：${
+          d.holders.map((h) => `${h.pid} ${h.comm}`).join("，")
+        }——请把这一行反馈过来`;
+      case "live":
+        return `codex 持有者：pid ${d.pids.join(", ")}`;
+    }
+  },
   doctorPi: "Pi 侧",
   doctorPiExtensionOk: (path) => `直投扩展已安装（${path}）`,
   doctorPiExtensionFixed: (path) => `直投扩展已修复（${path}）；已打开的 Pi 会话需要重启`,

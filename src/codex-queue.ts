@@ -18,7 +18,7 @@
 // 超时/信号杀死一律记 unknown-outcome：帧可能已写进 store（铁律 5，绝不重放）。
 
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, realpathSync } from "node:fs";
+import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isCodexThreadId, listCodexRolloutFiles, codexSessionsRoot } from "./codex-sessions.ts";
 
@@ -163,16 +163,48 @@ export function codexRolloutHolderPids(
   // The raw diagnostic API still accepts any holder when no process table is supplied.
   const pids = table === undefined ? null : [...table.keys()].filter((pid) => isCodexRolloutHolder(pid, table));
   if (pids !== null && pids.length === 0) return live;
-  const args = pids === null ? ["-F", "pftn", "--", ...byPath.keys()]
-    : ["-F", "pftn", "-a", "-p", pids.join(",")];
-  const probe = spawnSync("lsof", args, {
+  const probe = runLsof(pids === null ? ["--", ...byPath.keys()] : ["-a", "-p", pids.join(",")], env);
+  for (const [path, holders] of parseLsofRegHolders(probe.stdout)) {
+    const id = byPath.get(path);
+    if (id !== undefined && !live.has(id)) live.set(id, holders[0]!);
+  }
+  return live;
+}
+
+/** 一次 lsof 的结果。`failure` 非空 = 探测本身没跑成，空输出不能当「没人持有」。 */
+interface LsofProbe {
+  stdout: string;
+  failure: string | null;
+}
+
+/**
+ * `-n -P`：不做反向 DNS / 端口名解析。codex 进程开着多条 TCP 连接，DNS 慢的网络下
+ * 不带这两个开关会把整次探测拖过超时，表现成「没有活会话」。
+ */
+function runLsof(args: readonly string[], env: NodeJS.ProcessEnv): LsofProbe {
+  const probe = spawnSync("lsof", ["-n", "-P", "-F", "pftn", ...args], {
     encoding: "utf8",
     timeout: CODEX_LSOF_TIMEOUT_MS,
     env: lsofEnv(env),
   });
+  // 部分文件无人持有时 lsof 退 1，这是正常结果；只有没跑起来/超时/被杀才算失败。
+  const failure = probe.error !== undefined
+    ? String((probe.error as NodeJS.ErrnoException).code ?? probe.error)
+    : probe.signal !== null
+    ? `killed by ${probe.signal}`
+    : null;
+  return { stdout: probe.stdout ?? "", failure };
+}
+
+/**
+ * `lsof -F pftn` 逐文件输出 `f<fd>` / `t<TYPE>` / `n<path>`。只认 REG（这条 rollout 文件
+ * 本身）——只持有所在目录 fd 的进程不是持有者。返回 路径 → 持有者 pid 列表。
+ */
+function parseLsofRegHolders(stdout: string): Map<string, number[]> {
+  const holders = new Map<string, number[]>();
   let pid: number | null = null;
   let isReg = false;
-  for (const line of (probe.stdout ?? "").split("\n")) {
+  for (const line of stdout.split("\n")) {
     const tag = line[0];
     if (tag === "p") {
       const parsed = Number(line.slice(1));
@@ -183,11 +215,64 @@ export function codexRolloutHolderPids(
     } else if (tag === "t") {
       isReg = line.slice(1) === "REG";
     } else if (tag === "n" && pid !== null && isReg) {
-      const id = byPath.get(line.slice(1));
-      if (id !== undefined && !live.has(id)) live.set(id, pid);
+      const path = line.slice(1);
+      const list = holders.get(path) ?? [];
+      if (!list.includes(pid)) list.push(pid);
+      holders.set(path, list);
     }
   }
-  return live;
+  return holders;
+}
+
+/** 诊断看的「近期」：这段时间内写过的 rollout 才可能属于活会话。 */
+export const CODEX_DIAGNOSE_RECENT_MS = 24 * 60 * 60 * 1000;
+/** 诊断最多扫这么多条近期 rollout（按路径传给 lsof，要躲开 ARG_MAX）。 */
+const CODEX_DIAGNOSE_MAX_FILES = 64;
+
+/**
+ * `ocs who` 列不出 Codex 时为什么列不出。热路径的判活只回答「活/不活」，几种完全不同的
+ * 原因在用户那里都长成同一句 "no live rollout"；这里把它们拆开，doctor 和 who 照实说。
+ */
+export type CodexLivenessDiagnosis =
+  | { kind: "no-rollouts"; root: string }
+  | { kind: "probe-failed"; tool: "lsof" | "ps"; detail: string }
+  | { kind: "no-holder"; recent: number; root: string }
+  | { kind: "holder-rejected"; holders: Array<{ pid: number; comm: string }> }
+  | { kind: "live"; pids: number[] };
+
+export function diagnoseCodexLiveness(
+  env: NodeJS.ProcessEnv = process.env,
+  options: { now?: number; table?: ReadonlyMap<number, PsEntry> } = {},
+): CodexLivenessDiagnosis {
+  const root = codexSessionsRoot(env);
+  const files = listCodexRolloutFiles(root);
+  if (files.length === 0) return { kind: "no-rollouts", root };
+  const now = options.now ?? Date.now();
+  const recent: string[] = [];
+  for (const file of files) {
+    try {
+      if (now - statSync(file.path).mtimeMs > CODEX_DIAGNOSE_RECENT_MS) continue;
+    } catch {
+      continue;
+    }
+    recent.push(realpathOrSelf(file.path));
+    if (recent.length >= CODEX_DIAGNOSE_MAX_FILES) break;
+  }
+  if (recent.length === 0) return { kind: "no-holder", recent: 0, root };
+  const table = options.table ?? psTable(env);
+  if (table.size === 0) return { kind: "probe-failed", tool: "ps", detail: "empty process table" };
+  // 故意不按身份预过滤：要看到「谁持有」，才分得清「没人持有」和「持有者没过身份校验」。
+  const probe = runLsof(["--", ...recent], env);
+  if (probe.failure !== null) return { kind: "probe-failed", tool: "lsof", detail: probe.failure };
+  const pids = new Set<number>();
+  for (const holders of parseLsofRegHolders(probe.stdout).values()) for (const pid of holders) pids.add(pid);
+  if (pids.size === 0) return { kind: "no-holder", recent: recent.length, root };
+  const accepted = [...pids].filter((pid) => isCodexRolloutHolder(pid, table));
+  if (accepted.length > 0) return { kind: "live", pids: accepted };
+  return {
+    kind: "holder-rejected",
+    holders: [...pids].map((pid) => ({ pid, comm: table.get(pid)?.comm ?? "?" })),
+  };
 }
 
 /**
