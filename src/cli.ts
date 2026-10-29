@@ -113,6 +113,7 @@ import {
 import { verifiedClaudeWorkspaceIdentity } from "./workspace-registry.ts";
 import {
   codexQueueSupported,
+  diagnoseCodexLiveness,
 } from "./codex-queue.ts";
 import {
   findSelfClaudePid,
@@ -1037,6 +1038,8 @@ async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lan
     }
   } else if (codexCandidates.length > 0) {
     console.log(M.whoCodexNone(roster.codexIpc));
+    // 只在列不出时才多花一次探测：几种原因在用户那里都长成上面那一句。
+    if (process.platform !== "win32") console.log(`  ${M.codexLivenessWhy(diagnoseCodexLiveness())}`);
   }
   // 静默降级最难查：`codex` 是 shell 函数/别名时探测判不可用，终端里活着的 codex 就
   // 只能靠 IPC/cmux 够——而它们够不着终端。有活的非 Desktop 目标时必须把这句说出来。
@@ -1405,6 +1408,11 @@ async function cmdDoctor(parsed: Parsed): Promise<void> {
   if (codex.length >= 2) ok(M.doctorRollouts(codex.length));
   else if (codex.length === 1) warn(M.doctorOneRollout);
   else warn(M.doctorNoRollouts);
+  if (process.platform !== "win32") {
+    const why = diagnoseCodexLiveness();
+    if (why.kind === "live") ok(M.codexLivenessWhy(why));
+    else warn(M.codexLivenessWhy(why));
+  }
 
   console.log(M.doctorPi);
   let piCurrent = piExtensionCurrent();

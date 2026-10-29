@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- When `ocs who` finds no live Codex task, say why: no rollout files (check `CODEX_HOME`), the liveness probe failed (lsof missing or timed out), no process holds a recent rollout, or the holders failed the identity check (their process names are listed). `ocs doctor` prints the same line. The probe now runs `lsof -n -P`, so slow reverse DNS can no longer push it past the timeout and hide a running session
+
 ## 0.9.6
 
 - Keep `ocs upgrade`, version notices, and doctor working when the anonymous GitHub API quota returns HTTP 403/429 by checking the public latest-release redirect. No token or login is required; fallback redirects must name a stable release in this repository

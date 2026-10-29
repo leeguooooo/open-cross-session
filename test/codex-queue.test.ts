@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { closeSync, mkdirSync, openSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   classifyQueueOutcome,
@@ -11,6 +11,7 @@ import {
   isCodexRolloutHolder,
   codexThreadLivePid,
   codexThreadLivePids,
+  diagnoseCodexLiveness,
   queueCodexThread,
   resetCodexCliProbeCache,
 } from "../src/codex-queue.ts";
@@ -154,6 +155,82 @@ describe("codex-queue：持有者身份校验", () => {
       closeSync(liveFd);
       closeSync(deadFd);
     }
+  });
+});
+
+describe("codex-queue：列不出时说清原因", () => {
+  const NOW = Date.now();
+  const codexSelf = () => new Map([[process.pid, { ppid: 1, tty: "ttys001", comm: "/fixture/codex" }]]);
+
+  /** 临时把 lsof 换成假的：探测固定用进程自己的 PATH，不看调用方 env。 */
+  function withFakeLsof<T>(script: string | null, run: (argsLog: string) => T): T {
+    const bin = tempDir("ocs-lsofbin-");
+    const argsLog = join(bin, "args.log");
+    if (script !== null) writeFileSync(join(bin, "lsof"), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(argsLog)}\n${script}\n`, { mode: 0o755 });
+    const saved = process.env.PATH;
+    process.env.PATH = bin; // 没写假 lsof 时 PATH 里就没有 lsof
+    try {
+      return run(argsLog);
+    } finally {
+      process.env.PATH = saved;
+    }
+  }
+
+  test("没有 rollout 文件 → no-rollouts（提示 CODEX_HOME）", () => {
+    const env = { CODEX_HOME: tempDir("ocs-codexempty-") };
+    expect(diagnoseCodexLiveness(env, { now: NOW, table: codexSelf() }).kind).toBe("no-rollouts");
+  });
+
+  test("lsof 跑不起来 → probe-failed，不能报成没人持有", () => {
+    const { env } = rolloutFixture();
+    const why = withFakeLsof(null, () => diagnoseCodexLiveness(env, { now: NOW, table: codexSelf() }));
+    expect(why.kind).toBe("probe-failed");
+  });
+
+  test("lsof 带 -n -P（不做反向 DNS，慢网络下不拖过超时）", () => {
+    const { env } = rolloutFixture();
+    withFakeLsof("exit 1", (argsLog) => {
+      codexRolloutHolderPids([THREAD_LIVE], env);
+      diagnoseCodexLiveness(env, { now: NOW, table: codexSelf() });
+      const lines = readFileSync(argsLog, "utf8").trim().split("\n");
+      expect(lines.length).toBe(2);
+      for (const line of lines) expect(line.startsWith("-n -P ")).toBe(true);
+    });
+  });
+
+  test("近期 rollout 无人持有 → no-holder；持有者是 codex → live", () => {
+    const { env, live } = rolloutFixture();
+    expect(diagnoseCodexLiveness(env, { now: NOW, table: codexSelf() })).toEqual({
+      kind: "no-holder",
+      recent: 2,
+      root: join(env.CODEX_HOME!, "sessions"),
+    });
+    const fd = openSync(live, "r");
+    try {
+      expect(diagnoseCodexLiveness(env, { now: NOW, table: codexSelf() })).toEqual({ kind: "live", pids: [process.pid] });
+    } finally {
+      closeSync(fd);
+    }
+  });
+
+  test("持有者没过身份校验 → holder-rejected，并报出进程名", () => {
+    const { env, live } = rolloutFixture();
+    const indexer = new Map([[process.pid, { ppid: 0, tty: "??", comm: "/fixture/node" }]]);
+    const fd = openSync(live, "r");
+    try {
+      expect(diagnoseCodexLiveness(env, { now: NOW, table: indexer })).toEqual({
+        kind: "holder-rejected",
+        holders: [{ pid: process.pid, comm: "/fixture/node" }],
+      });
+    } finally {
+      closeSync(fd);
+    }
+  });
+
+  test("24 小时内没写过的 rollout 不算近期", () => {
+    const { env } = rolloutFixture();
+    const why = diagnoseCodexLiveness(env, { now: NOW + 2 * 24 * 60 * 60 * 1000, table: codexSelf() });
+    expect(why).toEqual({ kind: "no-holder", recent: 0, root: join(env.CODEX_HOME!, "sessions") });
   });
 });
 
