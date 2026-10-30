@@ -114,7 +114,7 @@ describe("命令级参数 schema", () => {
     expect(JSON.parse(who.stdout)).toHaveProperty("entries");
   }, T);
 
-  test("doctor --fix 一次修复三端 skill、Pi 扩展和数据目录权限", () => {
+  test("doctor --fix 修复各宿主 skill、Pi 扩展、OpenCode 插件和数据目录权限", () => {
     const root = tempDir("ocs-doctor-fix-");
     const home = join(root, "home");
     const dataHome = join(root, "ocs-home");
@@ -150,8 +150,10 @@ describe("命令级参数 schema", () => {
     expect(existsSync(join(home, ".grok", "skills", "ocs", "SKILL.md"))).toBe(true);
     expect(existsSync(join(piAgentDir, "skills", "ocs", "SKILL.md"))).toBe(true);
     expect(existsSync(join(piAgentDir, "extensions", "ocs.ts"))).toBe(true);
+    expect(existsSync(join(home, ".config", "opencode", "skills", "ocs", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(home, ".config", "opencode", "plugins", "ocs.js"))).toBe(true);
     expect(statSync(dataHome).mode & 0o777).toBe(0o700);
-    expect(stdout).toContain("updated the ocs skill for Claude, Codex, Pi, and Grok");
+    expect(stdout).toContain("updated the ocs skill for Claude, Codex, Pi, OpenCode, and Grok");
     expect(stdout).toContain("direct-wake extension installed");
     expect(stdout).toContain("owner-only permissions");
   }, T);

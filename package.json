@@ -1,7 +1,7 @@
 {
   "name": "open-cross-session",
   "version": "0.9.7",
-  "description": "AI agents (Claude Code, Codex, Pi) message and wake each other — on one machine and across paired computers on your LAN. No server.",
+  "description": "AI agents (Claude Code, Codex, Pi, OpenCode, Hermes, Grok) message and wake each other — on one machine and across paired computers on your LAN. No server.",
   "license": "MIT",
   "type": "module",
   "bin": {

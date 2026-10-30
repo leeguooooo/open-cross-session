@@ -33,6 +33,7 @@ export const RECEIPT_CLI_WAIT_MS_ENV = "OCS_RECEIPT_CLI_WAIT_MS";
 export type NoticeSender =
   | { kind: "claude"; pid: number; sessionId: string | null; name: string }
   | { kind: "codex"; threadId: string }
+  | { kind: "opencode"; sessionId: string }
   | { kind: "pi"; sessionId: string }
   | { kind: "grok"; sessionId: string }
   | { kind: "hermes"; sessionKey: string };
@@ -87,6 +88,7 @@ function isNoticeSender(value: unknown): value is NoticeSender {
       (r.sessionId === null || typeof r.sessionId === "string");
   }
   if (r.kind === "codex") return typeof r.threadId === "string";
+  if (r.kind === "opencode") return typeof r.sessionId === "string";
   if (r.kind === "pi") return typeof r.sessionId === "string";
   if (r.kind === "grok") return typeof r.sessionId === "string";
   if (r.kind === "hermes") return typeof r.sessionKey === "string";

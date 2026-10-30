@@ -2,7 +2,7 @@
 
 ## 项目一句话
 
-本地无服务器版 agent party：Claude Code ↔ Codex ↔ Pi 互相唤醒/互发消息（`ocs` CLI），同机直连，局域网内配对的电脑之间也能互通（v0.6 起，docs/lan.md），不同网络的机器经 Tailscale/WireGuard 等虚拟局域网走同一套 `ocs lan`。**AgentParty 已停止维护（2026-10），本项目不再向它引流**：README、帮助、提示文案里不许再出现「迁到 Agent Party」类引导（代码出处与许可证说明除外）。架构与决策记录在 **DESIGN.md**（必读），组件出处细节在 **docs/agentparty-extraction-map.md**。
+本地无服务器版 agent party：Claude Code ↔ Codex ↔ Pi ↔ OpenCode 互相唤醒/互发消息（`ocs` CLI），同机直连，局域网内配对的电脑之间也能互通（v0.6 起，docs/lan.md），不同网络的机器经 Tailscale/WireGuard 等虚拟局域网走同一套 `ocs lan`。**AgentParty 已停止维护（2026-10），本项目不再向它引流**：README、帮助、提示文案里不许再出现「迁到 Agent Party」类引导（代码出处与许可证说明除外）。架构与决策记录在 **DESIGN.md**（必读），组件出处细节在 **docs/agentparty-extraction-map.md**。
 
 ## 常用命令
 
@@ -33,6 +33,8 @@ bun src/cli.ts <cmd>   # 本地跑 CLI（who/dm/send/read/notify-when-idle/sessi
 13. **Codex 回合进行中不许往宿主队列塞唤醒**（#41，docs/wake-protocol.md §1.1）：排进去的每条都会在回合结束后单独开一轮。先 `turn/steer`（`src/codex-steer.ts`，守护进程控制 socket，必须带 rollout 里读到的 `expectedTurnId`，socket 及其目录必须属于本用户）；插不进才并入积压（`src/codex-defer.ts`），回合结束合成一条、读游标已覆盖的不发。Desktop 托管的不 steer（会丢原生来源信封，铁律 10）。steer 帧发出无应答 = unknown，不降级不重放；等待器取走的批次无论结果如何都不补发。`test/codex-steer.test.ts`、`test/codex-defer.test.ts` 守着。
 
 14. **Grok Build 接入**（`src/grok.ts`）：只投已有 shared leader 的 resident/local 会话，不做 `session/load` 或自动启动 leader。`session/prompt` 必须 `sendNow:false`；只有同 session + promptId 的原生 queue/running 接纳通知或关联终态才算 accepted。帧写出无确认 = unknown，不重发。Windows 必须在实际写帧句柄上核对管道属主、服务端用户/PID/映像，不能先探测再另连。新 adapter 测试在 `test/grok.test.ts`；真实账户验收与 fixture 验收分别报告。
+
+15. **OpenCode（2.2.1+）**：本地 V2 插件登记实际观察到的会话，完整 `ses_…` ID 大小写不可折叠；短地址对完整 ID 做哈希，不截时间前缀。工具 shell 身份只从执行上下文传入，不往共享 `process.env` 写“当前会话”。原生投递必须 `delivery: "queue"`，核对目标 session 和 queue 接纳后才确认；提交后异常是 unknown，不重放，不启动服务器、不创建目标会话。私有 socket / 随机 Windows 管道和 token 约束见 `src/opencode.ts`；测试在 `test/opencode.test.ts`。V1 不在此适配器支持范围，真实宿主验收与 fixture 分开报告。
 
 ## 路线（owner 已拍板）
 

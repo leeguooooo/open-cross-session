@@ -119,6 +119,15 @@ interface Catalog {
   doctorOneRollout: string;
   doctorNoRollouts: string;
   codexLivenessWhy: (d: CodexLivenessDiagnosis) => string;
+  doctorOpenCode: string;
+  whoOpenCodeHeader: string;
+  openCodePlugin: (path: string, current: boolean) => string;
+  openCodeInstalled: (path: string) => string;
+  openCodeSessions: (n: number) => string;
+  openCodeSelf: (target: string) => string;
+  openCodeParked: (target: string, channel: string) => string;
+  openCodeWake: (target: string, result: string) => string;
+  openCodeAccepted: string;
   doctorPi: string;
   doctorPiExtensionOk: (path: string) => string;
   doctorPiExtensionFixed: (path: string) => string;
@@ -279,13 +288,13 @@ Usage:
       Health-check all wake paths; --fix safely repairs agent skills, the Pi extension,
       data-directory permissions, and crossSessionInbound (backing up settings first).
   ocs skill install
-      Install the ocs skill for Claude, Codex, and Pi, plus Pi's direct-wake extension.
+      Install agent skills, the Pi extension and the OpenCode 2.2.1+ local plugin.
   ocs upgrade [--check]
       Upgrade the ocs binary to the latest GitHub Release. --check only reports.
 ${lanMessages("en").help}
   ocs version | help
 
---as is optional inside Claude, Codex, Pi, Hermes, and Grok sessions (auto-detected; OCS_NAME also works).
+--as is optional inside Claude, Codex, Pi, OpenCode, Hermes, and Grok sessions (auto-detected; OCS_NAME also works).
 From a plain shell, use --as human before or after the subcommand.
 Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   stored: (channel, seq) => `stored #${channel} seq ${seq}`,
@@ -409,10 +418,10 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
     `crossSessionInbound = ${value} — injected messages queue for manual approval and are silently dropped after 5 minutes. ` +
     'Run `ocs doctor --fix` to set "accept" (backs up the file), or edit ~/.claude/settings.json yourself',
   doctorSkills: "Agent skills",
-  doctorSkillsOk: "version-matched ocs skill installed for Claude, Codex, Pi, and Grok",
+  doctorSkillsOk: "version-matched ocs skill installed for Claude, Codex, Pi, OpenCode, and Grok",
   doctorSkillsMissing: (n) =>
     `${n} agent skill installation(s) missing or outdated — run \`ocs doctor --fix\``,
-  doctorSkillsFixed: "updated the ocs skill for Claude, Codex, Pi, and Grok",
+  doctorSkillsFixed: "updated the ocs skill for Claude, Codex, Pi, OpenCode, and Grok",
   doctorSkillsFixFailed: (detail) => `integration repair failed: ${detail}`,
   doctorCodex: "Codex side (`codex queue` preferred; Desktop IPC is the fallback)",
   doctorCodexQueueOk:
@@ -452,6 +461,15 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
         return `codex holders: pid ${d.pids.join(", ")}`;
     }
   },
+  doctorOpenCode: "OpenCode side (2.2.1+)",
+  whoOpenCodeHeader: "OpenCode sessions (native queued delivery; full ID or oc-<8hex> hash alias)",
+  openCodePlugin: (path, current) => `OpenCode plugin: ${path}${current ? " (current)" : " — run ocs skill install; requires OpenCode 2.2.1+"}`,
+  openCodeInstalled: (path) => `OpenCode plugin installed: ${path} (2.2.1+; reload OpenCode)`,
+  openCodeSessions: (n) => `${n} registered OpenCode session(s)`,
+  openCodeSelf: (target) => `OpenCode ${target}: self wake skipped`,
+  openCodeParked: (target, channel) => `OpenCode ${target}: parked in #${channel}; no registered live plugin; NOT woken`,
+  openCodeWake: (target, result) => `OpenCode ${target}: ${result}`,
+  openCodeAccepted: "accepted by native queue (not a read receipt)",
   doctorPi: "Pi side",
   doctorPiExtensionOk: (path) => `direct-wake extension installed (${path})`,
   doctorPiExtensionFixed: (path) => `direct-wake extension repaired (${path}); restart open Pi sessions`,
@@ -461,7 +479,7 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   doctorNoPiSessions: "no live Pi TUI sessions (restart Pi after installing the extension)",
   doctorAccel: "Optional accelerators",
   doctorCmuxOk: "cmux is running — terminal codex/claude TUIs can be woken too (surface-addressed)",
-  doctorCmuxMissing: "cmux not detected (optional; native Claude/Codex/Pi/Hermes/Grok discovery does not require it)",
+  doctorCmuxMissing: "cmux not detected (optional; native Claude/Codex/Pi/OpenCode/Hermes/Grok discovery does not require it)",
   doctorData: "Data directory",
   doctorDataExists: (path) => `${path} exists`,
   doctorDataAuto: (path) => `${path} will be created on first send`,
@@ -556,7 +574,7 @@ Details: https://github.com/leeguooooo/open-cross-session/blob/main/docs/lan.md`
   dmCmuxWoken: (ref) => `woke terminal ${ref} via cmux`,
   dmCmuxFailed: (ref, detail) => `cmux wake failed for ${ref}: ${detail}`,
   whoamiUnknown:
-    "cannot tell who you are: not inside a registered Claude/Codex/Pi/Hermes/Grok session, and OCS_NAME is unset. Pass --as <name> or export OCS_NAME",
+    "cannot tell who you are: not inside a registered Claude/Codex/Pi/OpenCode/Hermes/Grok session, and OCS_NAME is unset. Pass --as <name> or export OCS_NAME",
   whoamiSessionNotFound: (sessionId) => `no live Claude session has sessionId ${sessionId}`,
   failInboxSessionWithAs: "--session and --as pick the identity in different ways; use one",
   whoRenameHint: "tip: `ocs rename <name>` gives this session a memorable address (its id keeps working too)",
@@ -642,7 +660,7 @@ const zh: Catalog = {
       体检全部唤醒链；--fix 安全修复三端 skill、Pi 扩展、数据目录权限，
       并在备份后把 crossSessionInbound 设为 accept
   ocs skill install
-      给 Claude、Codex、Pi 安装 ocs skill，并安装 Pi 直投扩展
+      给各宿主安装 ocs skill、Pi 直投扩展和 OpenCode 2.2.1+ 插件
   ocs upgrade [--check]
       把 ocs 二进制升级到最新 GitHub Release。--check 只报告不安装。
 ${lanMessages("zh").help}
@@ -803,6 +821,15 @@ ${lanMessages("zh").help}
         return `codex 持有者：pid ${d.pids.join(", ")}`;
     }
   },
+  doctorOpenCode: "OpenCode 侧（2.2.1+）",
+  whoOpenCodeHeader: "OpenCode 会话（原生排队投递；完整 ID 或 oc-<8hex> 哈希短地址）",
+  openCodePlugin: (path, current) => `OpenCode 插件：${path}${current ? "（当前版本）" : "；运行 ocs skill install，需要 OpenCode 2.2.1+"}`,
+  openCodeInstalled: (path) => `已安装 OpenCode 插件：${path}（需要 2.2.1+；重新加载 OpenCode）`,
+  openCodeSessions: (n) => `已登记 ${n} 个 OpenCode 会话`,
+  openCodeSelf: (target) => `OpenCode ${target}：跳过自我唤醒`,
+  openCodeParked: (target, channel) => `OpenCode ${target}：消息保留在 #${channel}；没有已登记的活插件，没有被唤醒`,
+  openCodeWake: (target, result) => `OpenCode ${target}：${result}`,
+  openCodeAccepted: "已进入原生队列（不代表已读）",
   doctorPi: "Pi 侧",
   doctorPiExtensionOk: (path) => `直投扩展已安装（${path}）`,
   doctorPiExtensionFixed: (path) => `直投扩展已修复（${path}）；已打开的 Pi 会话需要重启`,
@@ -811,7 +838,7 @@ ${lanMessages("zh").help}
   doctorNoPiSessions: "没有活着的 Pi TUI 会话（安装扩展后重启 Pi）",
   doctorAccel: "可选加速器",
   doctorCmuxOk: "cmux 在运行——终端里的 codex/claude TUI 也能被唤醒（按 surface 寻址）",
-  doctorCmuxMissing: "cmux 未检测到（可选；Claude/Codex/Pi/Hermes/Grok 原生会话发现不依赖它）",
+  doctorCmuxMissing: "cmux 未检测到（可选；Claude/Codex/Pi/OpenCode/Hermes/Grok 原生会话发现不依赖它）",
   doctorData: "数据目录",
   doctorDataExists: (path) => `${path} 存在`,
   doctorDataAuto: (path) => `${path} 首次 send 时自动创建`,
@@ -899,7 +926,7 @@ ${lanMessages("zh").help}
   dmCmuxBusy: (ref) => `${ref} 正在跑一轮，不打断。消息已在频道里，它下轮会读到；也可稍后重试`,
   dmCmuxWoken: (ref) => `已经由 cmux 唤醒终端 ${ref}`,
   dmCmuxFailed: (ref, detail) => `cmux 唤醒 ${ref} 失败: ${detail}`,
-  whoamiUnknown: "认不出你是谁：不在已登记的 Claude/Codex/Pi/Hermes/Grok 会话里，OCS_NAME 也没设。用 --as <name> 或 export OCS_NAME",
+  whoamiUnknown: "认不出你是谁：不在已登记的 Claude/Codex/Pi/OpenCode/Hermes/Grok 会话里，OCS_NAME 也没设。用 --as <name> 或 export OCS_NAME",
   whoamiSessionNotFound: (sessionId) => `没有 sessionId 为 ${sessionId} 的活 Claude 会话`,
   failInboxSessionWithAs: "--session 和 --as 是两种指定身份的方式，只能用一个",
   whoRenameHint: "提示：`ocs rename <名字>` 给当前会话起个好记的地址（原 id 照样能用）",

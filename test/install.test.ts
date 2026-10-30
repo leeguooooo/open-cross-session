@@ -88,7 +88,7 @@ async function run(env: Record<string, string>): Promise<{ code: number; stdout:
 }
 
 describe("curl installer skill setup", () => {
-  test("pins skills add to the downloaded ocs version and targets Claude, Codex, and Pi", async () => {
+  test("pins skills add to the downloaded ocs version and targets Claude, Codex, Pi, and OpenCode", async () => {
     const f = fixture();
     const result = await run(f.env);
     expect(result.code).toBe(0);
@@ -96,7 +96,7 @@ describe("curl installer skill setup", () => {
     expect(existsSync(join(f.installDir, "ocs"))).toBe(true);
     expect(readFileSync(f.npxLog, "utf8").trim()).toBe(
       "-y skills@1.5.23 add https://github.com/leeguooooo/open-cross-session/tree/v0.4.2/skills/ocs " +
-        "--skill ocs --global --agent claude-code --agent codex --agent pi --yes",
+        "--skill ocs --global --agent claude-code --agent codex --agent pi --agent opencode --yes",
     );
     expect(readFileSync(f.binaryLog, "utf8").trim()).toBe("skill install");
     expect(result.stdout).toContain("skill registered via skills CLI (source: v0.4.2)");

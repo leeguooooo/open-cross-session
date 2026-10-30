@@ -1,3 +1,4 @@
+import { listOpenCodeSessions, selfOpenCodeSessionId, opencodeTargetName, opencodeSessionIdFromTarget, openCodeShortId, type OpenCodeSessionRegistration } from "./opencode.ts";
 // 全机 agent 花名册与直发（dm）支撑：发现任意 agent、识别自己、派生 dm 频道。
 //
 // 目标体验：人只说自然语言，agent 自己跑 `ocs who` 发现同伴、`ocs dm` 搭话。
@@ -113,6 +114,8 @@ export function resolveSelfName(env: NodeJS.ProcessEnv = process.env): string | 
   }
   const codexThreadId = env[CODEX_THREAD_ID_ENV];
   if (typeof codexThreadId === "string" && isCodexThreadId(codexThreadId)) return codexThreadId.toLowerCase();
+  const ocId = selfOpenCodeSessionId(env);
+  if (ocId !== null) return opencodeTargetName(ocId);
   const hermesKey = selfHermesSessionKey(env);
   return hermesKey === null ? null : hermesTargetName(hermesKey);
 }
@@ -329,6 +332,7 @@ export type RosterEntry =
       status: string | null;
       self: boolean;
     }
+  | { kind: "opencode"; target: string; shortId: string; sessionId: string; name: string | null; pid: number; cwd: string; self: boolean; ocsName?: string }
   | { kind: "grok"; target: string; sessionId: string; cwd: string; title: string | null; status: string; self: boolean; ocsName?: string }
   | { kind: "agy"; target: "agy"; pid: number; cwd: string; status: string; self: boolean; ocsName: "agy" }
   | { kind: "cmux"; ref: string; title: string };
@@ -424,6 +428,12 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
       self: selfPiSessionId === s.session_id,
     });
   }
+  for (const session of listOpenCodeSessions(env)) {
+    const ocsName = ocsNameFor({ kind: "opencode", id: session.session_id }, names)?.name;
+    entries.push({ kind: "opencode", target: opencodeTargetName(session.session_id), shortId: openCodeShortId(session.session_id), sessionId: session.session_id,
+      name: session.name, pid: session.pid, cwd: session.cwd, self: selfOpenCodeSessionId(env) === session.session_id,
+      ...(ocsName === undefined ? {} : { ocsName }) });
+  }
   const selfHermesKey = selfHermesSessionKey(env);
   for (const s of hermes) {
     const ocsName = ocsNameFor({ kind: "hermes", id: s.key }, names)?.name;
@@ -451,7 +461,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
   return { entries, codexIpc, codexQueue: codexQueueAvailable(env), cmux, home: ocsHome(env) };
 }
 
-export type DmTargetKind = "claude" | "codex-task" | "pi" | "hermes" | "grok" | "agy" | "cmux";
+export type DmTargetKind = "opencode" | "claude" | "codex-task" | "pi" | "hermes" | "grok" | "agy" | "cmux";
 
 export interface ResolvedDmTarget {
   kind: DmTargetKind;
@@ -488,6 +498,8 @@ export interface ResolvedDmTarget {
   /** Hermes 会话的持久 id。在不在线只有投递时连宿主才知道（解析是同步的）。 */
   hermesSessionKey?: string;
   grokSessionId?: string;
+  openCodeSessionId?: string;
+  openCodeSession?: OpenCodeSessionRegistration;
   cmuxRef?: string;
 }
 
@@ -503,6 +515,8 @@ export function claudeSessionIdentity(session: Pick<NativeClaudeSession, "name" 
 
 /** 发送方的注入式身份串（与 ResolvedDmTarget.identity 同一命名空间规则）。 */
 export function selfIdentity(from: string): string {
+  const ocId = opencodeSessionIdFromTarget(from);
+  if (ocId !== null) return `opencode:${ocId}`;
   const grokId = grokSessionIdFromTarget(from);
   if (grokId !== null) return `grok:${grokId}`;
   const piSessionId = piSessionIdFromTarget(from);
@@ -585,6 +599,7 @@ function resolveNamedTarget(
   if (named.kind === "codex") return { ...resolveDmTarget(named.id, env)!, via: "ocs-name" };
   if (named.kind === "pi") return { ...resolveDmTarget(piTargetName(named.id), env)!, via: "ocs-name" };
   if (named.kind === "hermes") return { ...resolveDmTarget(hermesTargetName(named.id), env)!, via: "ocs-name" };
+  if (named.kind === "opencode") return { ...resolveDmTarget(opencodeTargetName(named.id), env)!, via: "ocs-name" };
   if (named.kind === "grok") return { ...resolveDmTarget(grokTargetName(named.id), env)!, via: "ocs-name" };
   const live = sessions.find((candidate) => claudeEntryMatches(named, candidate));
   if (live !== undefined) return { ...claudeTarget(live, sessions, env), via: "ocs-name" };
@@ -628,6 +643,8 @@ export function selfNameOwner(env: NodeJS.ProcessEnv = process.env): NameOwner |
   if (typeof codexThreadId === "string" && isCodexThreadId(codexThreadId)) {
     return { kind: "codex", id: codexThreadId.toLowerCase() };
   }
+  const ocId = selfOpenCodeSessionId(env);
+  if (ocId !== null) return { kind: "opencode", id: ocId };
   const hermesKey = selfHermesSessionKey(env);
   return hermesKey === null ? null : { kind: "hermes", id: hermesKey };
 }
@@ -646,7 +663,7 @@ export function canonicalWakeAddress(address: string, env: NodeJS.ProcessEnv = p
   ) return address;
   const shortId = CLAUDE_SHORT_TARGET_RE.test(address) ||
     CODEX_SHORT_TARGET_RE.test(address) ||
-    PI_SHORT_TARGET_RE.test(address);
+    PI_SHORT_TARGET_RE.test(address) || /^oc-[0-9a-f]{8}$/.test(address);
   // 只在确实可能改写时才走完整解析：普通名字的解析会顺带写工作区索引。
   if (!shortId && readOcsName(address, env) === null) return address;
   const resolved = resolveDmTarget(address, env);
@@ -659,6 +676,7 @@ export function canonicalWakeAddress(address: string, env: NodeJS.ProcessEnv = p
   if (resolved.kind === "codex-task" && resolved.threadId !== undefined) return resolved.threadId;
   if (resolved.kind === "pi" && resolved.piSessionId !== undefined) return piTargetName(resolved.piSessionId);
   if (resolved.kind === "hermes" && resolved.hermesSessionKey !== undefined) return hermesTargetName(resolved.hermesSessionKey);
+  if (resolved.kind === "opencode" && resolved.openCodeSessionId !== undefined) return opencodeTargetName(resolved.openCodeSessionId);
   if (resolved.kind === "grok" && resolved.grokSessionId !== undefined) return grokTargetName(resolved.grokSessionId);
   if (resolved.kind === "claude" && resolved.claude?.name) return resolved.claude.name;
   return address;
@@ -674,6 +692,17 @@ export function resolveDmTarget(
   target: string,
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedDmTarget | null {
+  const ocId = opencodeSessionIdFromTarget(target);
+  const ocShort = /^oc-[0-9a-f]{8}$/.test(target);
+  if (ocId !== null || ocShort) {
+    const matches = listOpenCodeSessions(env).filter((session) => ocId !== null ? session.session_id === ocId : openCodeShortId(session.session_id) === target);
+    if (matches.length > 1) return { kind: "opencode", name: target, identity: `name:${target}`,
+      ambiguousNameTargets: matches.map((s) => `${s.target}(pid ${s.pid}, cwd ${s.cwd})`) };
+    const id = ocId ?? matches[0]?.session_id;
+    if (id === undefined) return null;
+    return { kind: "opencode", name: opencodeTargetName(id), identity: `opencode:${id}`, openCodeSessionId: id,
+      ...(matches[0] === undefined ? {} : { openCodeSession: matches[0] }) };
+  }
   const grokId = grokSessionIdFromTarget(target);
   if (grokId !== null) return { kind: "grok", name: grokTargetName(grokId), identity: `grok:${grokId}`, grokSessionId: grokId };
   if (target.toLowerCase() === "agy") {

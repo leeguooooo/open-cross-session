@@ -8,6 +8,7 @@
 // 网络和 installer 都留了环境变量注入口，测试用本地假服务器和假脚本跑通全路径，
 // 绝不在测试里碰真 GitHub。doctor 的检查用 OCS_UPGRADE_CHECK=0 可整体关掉，
 // 离线/CI 环境不受影响。
+import { openCodeSkillPath } from "./opencode-plugin.ts";
 import { spawnSync } from "node:child_process";
 import { spawnDetached } from "./detach.ts";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -197,7 +198,7 @@ export function detectSkillChannels(home: string = homedir(), env: NodeJS.Proces
   } catch {
     // 没装 Claude Code 插件
   }
-  const managed = new Set([join(home, ".claude", "skills", "ocs"), join(home, ".codex", "skills", "ocs"), join(env.GROK_HOME || join(home, ".grok"), "skills", "ocs")]);
+  const managed = new Set([dirname(openCodeSkillPath(env, home)),join(home, ".claude", "skills", "ocs"), join(home, ".codex", "skills", "ocs"), join(env.GROK_HOME || join(home, ".grok"), "skills", "ocs")]);
   for (const dir of [join(home, ".agents", "skills", "ocs"), ...managed]) {
     if (!existsSync(join(dir, "SKILL.md"))) continue;
     let real = dir;
