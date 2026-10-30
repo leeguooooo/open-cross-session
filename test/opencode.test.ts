@@ -35,7 +35,18 @@ async function host(prompt: (input: { sessionID: string; delivery: string; text:
       return event.env;
     } },
   ];
+  let eventReceiver: ((event: unknown) => void) | undefined;
   const cleanup = await plugin.setup({
+    event: { subscribe: async function* ({ signal }: { signal: AbortSignal }) {
+      while (!signal.aborted) {
+        const event = await new Promise((resolve) => {
+          eventReceiver = resolve;
+          signal.addEventListener("abort", () => resolve(null), { once: true });
+        });
+        if (event === null) return;
+        yield event;
+      }
+    } },
     session: {
       get: async ({ sessionID }: { sessionID: string }) => ({ id: sessionID, title: "Test", location: { directory: home } }),
       prompt,
@@ -49,7 +60,7 @@ async function host(prompt: (input: { sessionID: string; delivery: string; text:
   });
   cleanups.push(cleanup);
   if (old === undefined) delete process.env.OCS_HOME; else process.env.OCS_HOME = old;
-  return { home, hooks, tools, env: { OCS_HOME: home } };
+  return { home, hooks, tools, event: (type: string, id: string) => eventReceiver?.({ type, data: { sessionID: id } }), env: { OCS_HOME: home } };
 }
 
 test("shipped plugin registers exact session identity, queues one wake and cleans up", async () => {
@@ -214,4 +225,16 @@ test("self wake is skipped only for the actual OpenCode host, not a nested Codex
   await deliverDm({ ...input, env: { ...h.env, OCS_OPENCODE_SESSION_ID: ID, CODEX_THREAD_ID: "11111111-2222-4333-8444-555555555555" } }, messages("en"), sink);
   expect(calls).toBe(1);
   expect(skipped).toBe(1);
+});
+
+
+test("deleting or archiving a session removes its reachable registration", async () => {
+  const h = await host();
+  for (const [type, id] of [["session.deleted", ID], ["session.archived", "ses_Archived123"]]) {
+    await h.hooks.get("context")!({ sessionID: id! });
+    expect(listOpenCodeSessions(h.env)).toHaveLength(1);
+    h.event(type!, id!);
+    for (let i = 0; i < 50 && listOpenCodeSessions(h.env).length; i++) await Bun.sleep(2);
+    expect(listOpenCodeSessions(h.env)).toHaveLength(0);
+  }
 });

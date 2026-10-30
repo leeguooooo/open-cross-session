@@ -23,11 +23,23 @@ export default {
       if (process.platform !== "win32") chmodSync(dir, 0o700);
     }
     let closed = false;
+    async function stopSession(id) {
+      const pending = sessions.get(id);
+      if (!pending) return;
+      sessions.delete(id);
+      let current;
+      try { current = await pending; } catch { return; }
+      try { if (JSON.parse(readFileSync(current.registryPath, "utf8")).token === current.token) unlinkSync(current.registryPath); } catch {}
+      for (const socket of current.sockets) socket.destroy();
+      await new Promise((resolve) => current.server.close(resolve));
+      if (process.platform !== "win32") try { unlinkSync(current.socketPath); } catch {}
+    }
     async function register(id) {
       if (closed || !/^ses_[A-Za-z0-9]{1,51}$/.test(id)) throw new Error("invalid OpenCode session");
       if (sessions.has(id)) return sessions.get(id);
       const pending = (async () => {
         const info = await ctx.session.get({ sessionID: id });
+        if (closed || info.time?.archived) throw new Error("OpenCode session is unavailable");
         const cwd = info.location?.directory;
         if (!isAbsolute(cwd || "")) throw new Error("OpenCode session has no absolute directory");
         const token = randomBytes(32).toString("hex");
@@ -59,7 +71,8 @@ export default {
               reply({ v: 1, ok: false, error: "invalid wake frame" }); return;
             }
             try {
-              await ctx.session.get({ sessionID: id });
+              const info = await ctx.session.get({ sessionID: id });
+              if (info.time?.archived) throw new Error("session archived");
             } catch { reply({ v: 1, ok: false, error: "session is gone" }); return; }
             try {
               const admitted = await ctx.session.prompt({ sessionID: id, text: frame.note, delivery: "queue",
@@ -118,17 +131,22 @@ export default {
         event.env.OCS_HOME = home;
       }
     }));
+    const events = new AbortController();
+    void (async () => {
+      for await (const event of ctx.event.subscribe({ types: ["session.deleted", "session.archived", "session.moved"], signal: events.signal })) {
+        await stopSession(event.data.sessionID);
+      }
+    })().finally(async () => {
+      if (!events.signal.aborted) {
+        closed = true;
+        await Promise.all([...sessions.keys()].map(stopSession));
+      }
+    }).catch(() => {});
     return async () => {
       closed = true;
+      events.abort();
       for (const hook of hooks) await hook.dispose();
-      for (const pending of sessions.values()) {
-        let current;
-        try { current = await pending; } catch { continue; }
-        try { if (JSON.parse(readFileSync(current.registryPath, "utf8")).token === current.token) unlinkSync(current.registryPath); } catch {}
-        for (const socket of current.sockets) socket.destroy();
-        await new Promise((resolve) => current.server.close(resolve));
-        if (process.platform !== "win32") try { unlinkSync(current.socketPath); } catch {}
-      }
+      await Promise.all([...sessions.keys()].map(stopSession));
     };
   },
 };

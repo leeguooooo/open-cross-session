@@ -20,7 +20,7 @@ Full addresses retain the exact `ses_…` ID: `opencode-ses_…`. An `oc-<8hex>`
 
 ## Delivery
 
-Prompt, model-context and tool hooks register observed sessions, without scanning stored session history. Private registrations live in `$OCS_HOME/opencode-sessions`; sockets in `opencode-inbox`, with owner-only permissions and a random runtime token. Windows uses a session-bound random named pipe. `who` omits dead registrations. The adapter checks session existence again before submission.
+Prompt, model-context and tool hooks register observed sessions, without scanning stored session history. Private registrations live in `$OCS_HOME/opencode-sessions`; sockets in `opencode-inbox`, with owner-only permissions and a random runtime token. Windows uses a session-bound random named pipe. `who` omits dead registrations. Deleting, archiving or moving a session closes its registration; plugin unload closes all owned receivers. Losing the host event stream disables registration until reload. The adapter checks session existence again before submission.
 
 The tool executor carries the exact session ID through async context into `shell.create.before`; concurrent sessions do not share a process environment identity. Tool shells receive `OCS_OPENCODE_SESSION_ID` and the same OCS data home. An explicitly supplied `OPENCODE_SESSION_ID` is also recognized. A terminal opened outside a model tool must provide an exact identity or `--as`.
 
