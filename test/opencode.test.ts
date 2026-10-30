@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { tempDir as makeTempDir, cleanupTempDirs } from "./tmp.ts";
 import { listOpenCodeSessions, wakeOpenCodeSession, opencodeTargetName, openCodeShortId, opencodeInboxPathValid } from "../src/opencode.ts";
-import { OPENCODE_PLUGIN_SOURCE, installOpenCodeIntegration, openCodePluginCurrent, openCodePluginPath } from "../src/opencode-plugin.ts";
+import { OPENCODE_PLUGIN_SOURCE, installOpenCodeIntegration, openCodePluginCurrent, openCodePluginPath, openCodeConfigDir } from "../src/opencode-plugin.ts";
 import { resolveDmTarget, selfIdentity, resolveSelfName, selfNameOwner, canonicalWakeAddress } from "../src/roster.ts";
 import { setOcsName, ocsNameFor, listOcsNames } from "../src/names.ts";
 import { appendMessage, readRoutedMessages } from "../src/store.ts";
@@ -237,4 +237,13 @@ test("deleting or archiving a session removes its reachable registration", async
     for (let i = 0; i < 50 && listOpenCodeSessions(h.env).length; i++) await Bun.sleep(2);
     expect(listOpenCodeSessions(h.env)).toHaveLength(0);
   }
+});
+
+
+test("OpenCode config resolution honors explicit and XDG roots before HOME", () => {
+  const home = makeTempDir("ocs-oc-config-");
+  const xdg = join(home, "xdg"), explicit = join(home, "explicit");
+  expect(openCodeConfigDir({ XDG_CONFIG_HOME: xdg }, home)).toBe(join(xdg, "opencode"));
+  expect(openCodeConfigDir({ XDG_CONFIG_HOME: xdg, OPENCODE_CONFIG_DIR: explicit }, home)).toBe(explicit);
+  expect(openCodeConfigDir({ XDG_CONFIG_HOME: "relative", OPENCODE_CONFIG_DIR: "relative" }, home)).toBe(join(home, ".config", "opencode"));
 });

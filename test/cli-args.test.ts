@@ -136,6 +136,8 @@ describe("命令级参数 schema", () => {
         OCS_HOME: dataHome,
         OCS_CLAUDE_SETTINGS_PATH: settings,
         PI_CODING_AGENT_DIR: piAgentDir,
+        OPENCODE_CONFIG_DIR: join(home, ".config", "opencode"),
+        XDG_CONFIG_HOME: join(home, ".config"),
         OCS_LANG: "en",
         OCS_UPGRADE_CHECK: "0",
       },
