@@ -14,7 +14,7 @@ bun src/cli.ts <cmd>   # 本地跑 CLI（who/dm/send/read/notify-when-idle/sessi
                        # 内部子命令（不进 help）：_idle-watch、_claude-wake（回执 helper）、_lan-daemon
 ```
 
-发布：main 的 macOS / Windows CI 通过后，若 `CHANGELOG.md` 的 `Unreleased` 非空，自动递增 patch、同步 `package.json` / `OCS_VERSION` / changelog、原子推送版本提交及 tag，并直接调用 release workflow。较旧 main 的 CI、空说明均跳过。四平台构建、签名、测试及校验和全部通过后才公开 GitHub Release；失败可重跑对应 CI 的失败 job。手动 `v*` tag 发布入口保留（minor / major 需同步版本及 changelog）。**不发 npm registry。**
+发布：main 的 macOS / Linux / Windows CI 通过后，若 `CHANGELOG.md` 的 `Unreleased` 非空，自动递增 patch、同步 `package.json` / `OCS_VERSION` / changelog、原子推送版本提交及 tag，并直接调用 release workflow。较旧 main 的 CI、空说明均跳过。四平台构建、签名、测试及校验和全部通过后才公开 GitHub Release；失败可重跑对应 CI 的失败 job。手动 `v*` tag 发布入口保留（minor / major 需同步版本及 changelog）。**不发 npm registry。**
 
 ## 铁律（改代码前必知）
 

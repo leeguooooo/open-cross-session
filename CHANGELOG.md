@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- First public release of OpenCode 2.2.1+ support: identity, native queued wakes, DM/replies, inbox, rename, short aliases, installation/repair and paired LAN. Install with `ocs skill install`; V1 requires an upgrade
+- Isolate the doctor installation test from inherited OpenCode/XDG config paths on Linux runners, and check configuration-path precedence. Linux now runs the full suite before tagging, rather than first discovering failures during binary publication. The v0.9.8 tag did not produce a public release because this test blocked it
+
 ## 0.9.8
 
 - Add OpenCode 2.2.1+ identity, live plugin registration, native queued wakes, DM/replies, inbox/read, rename, short hash aliases, batch/no-wake, doctor repair and paired LAN discovery/delivery. Install the self-contained local plugin and skill with `ocs skill install`; V1 requires an upgrade. Queue acknowledgement does not claim a read or completion

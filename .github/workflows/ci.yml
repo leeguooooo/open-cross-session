@@ -18,6 +18,16 @@ jobs:
           codesign --force --sign - /tmp/ocs
           codesign --verify --deep --strict --verbose=4 /tmp/ocs
           /tmp/ocs help
+  linux-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - run: bun install --frozen-lockfile || bun install
+      - run: bun test
+      - run: bunx tsc --noEmit
+      - run: bun build --compile src/cli.ts --outfile /tmp/ocs
+      - run: /tmp/ocs help
   windows-agy:
     runs-on: windows-latest
     defaults:
@@ -37,7 +47,7 @@ jobs:
         run: bun test test/grok.test.ts
 
   prepare-release:
-    needs: [check, windows-agy]
+    needs: [check, linux-check, windows-agy]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
