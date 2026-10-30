@@ -1,4 +1,4 @@
-import { listOpenCodeSessions, selfOpenCodeSessionId, wakeOpenCodeSession } from "./opencode.ts";
+import { listOpenCodeSessions, wakeOpenCodeSession } from "./opencode.ts";
 import { startDeliveryObservation, type TrafficOutcome } from "./traffic.ts";
 // 投递阶梯（消息此前已落盘，这里只负责唤醒）。
 //
@@ -20,6 +20,7 @@ import { hermesTargetName, wakeHermesSession, type HermesWakeResult } from "./he
 import { listPiSessions, wakePiSession } from "./pi-sessions.ts";
 import {
   CODEX_THREAD_ID_ENV,
+  selfNameOwner,
   findCodexCmuxSurface,
   wakeCmuxSurface,
   type ResolvedDmTarget,
@@ -434,7 +435,8 @@ async function deliverDmImpl(
   const env = input.env ?? process.env;
   const anyReply = input.anyReplyTarget === undefined ? {} : { dmReplyTarget: input.anyReplyTarget };
   if (resolved.kind === "opencode") {
-    if (resolved.openCodeSessionId === selfOpenCodeSessionId(env)) {
+    const owner = selfNameOwner(env);
+    if (owner?.kind === "opencode" && resolved.openCodeSessionId === owner.id) {
       sink.log(M.openCodeSelf(resolved.name)); sink.skipped?.(); return null;
     }
     if (resolved.openCodeSession === undefined) {

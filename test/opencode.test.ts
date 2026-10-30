@@ -9,6 +9,8 @@ import { OPENCODE_PLUGIN_SOURCE, installOpenCodeIntegration, openCodePluginCurre
 import { resolveDmTarget, selfIdentity, resolveSelfName, selfNameOwner, canonicalWakeAddress } from "../src/roster.ts";
 import { setOcsName, ocsNameFor, listOcsNames } from "../src/names.ts";
 import { appendMessage, readRoutedMessages } from "../src/store.ts";
+import { deliverDm } from "../src/deliver.ts";
+import { messages } from "../src/i18n.ts";
 import { listInboxThreads } from "../src/inbox.ts";
 
 const ID = "ses_MixedCase123456789";
@@ -194,4 +196,22 @@ test("plugin rejects a wrong token or session without invoking native admission"
     expect(JSON.parse(ack)).toMatchObject({ ok: false });
   }
   expect(calls).toBe(0);
+});
+
+
+test("self wake is skipped only for the actual OpenCode host, not a nested Codex", async () => {
+  let calls = 0;
+  const h = await host(async (input) => { calls++; return input; });
+  await h.hooks.get("context")!({ sessionID: ID });
+  const resolved = resolveDmTarget(opencodeTargetName(ID), h.env)!;
+  let skipped = 0;
+  const sink = { log: () => {}, fail: () => { throw new Error("wake failed"); }, skipped: () => { skipped++; } };
+  const input = { resolved, target: resolved.name, channel: "dm-self-test", firstMessage: true, stableChannel: false,
+    wakeInput: { channel: "dm-self-test", seq: 1, from: "test-peer", body: "hello", lang: "en" as const }, dmReplyTarget: null };
+  await deliverDm({ ...input, env: { ...h.env, OCS_OPENCODE_SESSION_ID: ID } }, messages("en"), sink);
+  expect(skipped).toBe(1);
+  expect(calls).toBe(0);
+  await deliverDm({ ...input, env: { ...h.env, OCS_OPENCODE_SESSION_ID: ID, CODEX_THREAD_ID: "11111111-2222-4333-8444-555555555555" } }, messages("en"), sink);
+  expect(calls).toBe(1);
+  expect(skipped).toBe(1);
 });

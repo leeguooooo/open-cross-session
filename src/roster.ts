@@ -428,10 +428,11 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
       self: selfPiSessionId === s.session_id,
     });
   }
+  const openCodeOwner = selfNameOwner(env);
   for (const session of listOpenCodeSessions(env)) {
     const ocsName = ocsNameFor({ kind: "opencode", id: session.session_id }, names)?.name;
     entries.push({ kind: "opencode", target: opencodeTargetName(session.session_id), shortId: openCodeShortId(session.session_id), sessionId: session.session_id,
-      name: session.name, pid: session.pid, cwd: session.cwd, self: selfOpenCodeSessionId(env) === session.session_id,
+      name: session.name, pid: session.pid, cwd: session.cwd, self: openCodeOwner?.kind === "opencode" && openCodeOwner.id === session.session_id,
       ...(ocsName === undefined ? {} : { ocsName }) });
   }
   const selfHermesKey = selfHermesSessionKey(env);
