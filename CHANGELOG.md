@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.8
+
 - Add OpenCode 2.2.1+ identity, live plugin registration, native queued wakes, DM/replies, inbox/read, rename, short hash aliases, batch/no-wake, doctor repair and paired LAN discovery/delivery. Install the self-contained local plugin and skill with `ocs skill install`; V1 requires an upgrade. Queue acknowledgement does not claim a read or completion
 
 ## 0.9.7

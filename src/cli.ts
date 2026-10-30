@@ -140,7 +140,7 @@ import {
   upgradeCheckEnabled,
 } from "./upgrade.ts";
 
-export const OCS_VERSION = "0.9.7";
+export const OCS_VERSION = "0.9.8";
 
 const LANG = detectLang();
 const M = messages(LANG);
