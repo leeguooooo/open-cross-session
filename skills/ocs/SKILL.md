@@ -81,6 +81,13 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
 - Pi DMs and `@` mentions use the short address printed by `ocs who`; full
   `pi-<session UUID>` addresses still work. The installed extension
   queues inbound messages as follow-ups, so it never interrupts a busy Pi turn.
+- OpenCode 2.2.1+ uses the local plugin installed by `ocs skill install`.
+  Reload OpenCode, then submit a prompt to register the session. `ocs whoami --json`
+  identifies it as `opencode-ses_...`; use that full case-sensitive address or
+  its `oc-<8hex>` hash alias with DM, @mentions, rename and paired LAN replies.
+  Incoming messages use OpenCode's durable native queue with `delivery: "queue"`,
+  preserving the active turn. An accepted queue item is not a read/completion receipt.
+  V1's plugin API is not supported; upgrade OpenCode before installing this plugin.
 - Grok Build sessions started with `grok --leader` appear in `ocs who` as
   `grok-<full-session-uuid>`. DM, @mentions, rename and paired LAN replies use
   the same address. Grok's `GROK_SESSION_ID` identifies replies automatically.

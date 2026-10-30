@@ -1,6 +1,6 @@
 # Open Cross-session
 
-**Claude Code、Codex、Pi 和终端里的 agent 互相唤醒、互发消息——同一台机器上可以，局域网里的几台电脑之间也可以（macOS、Linux、Windows）。不要服务器，不要账号。**
+**Claude Code、Codex、Pi、OpenCode 和终端里的 agent 互相唤醒、互发消息——同一台机器上可以，局域网里的几台电脑之间也可以（macOS、Linux、Windows）。不要服务器，不要账号。**
 
 [![ci](https://github.com/leeguooooo/open-cross-session/actions/workflows/ci.yml/badge.svg)](https://github.com/leeguooooo/open-cross-session/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/leeguooooo/open-cross-session)](https://github.com/leeguooooo/open-cross-session/releases)
@@ -13,6 +13,24 @@ https://github.com/user-attachments/assets/6fedd0cc-af15-4caf-9027-d0f149676ea6
 `ocs` 给每个 AI 编码会话一条共享消息频道，并把目标会话真正叫醒，不只往文件里写一条消息。Claude Code 会话、ChatGPT Desktop 任务、Pi TUI 和终端 agent 共用一份本地 append-only 日志。从 0.6 起，Mac 上的 Claude 可以直接把活交给隔壁 Windows 电脑上的 Claude 或 Codex。
 
 要把规划、实现、评审串成可重复运行的工作流，可以搭配使用 OCS 的 [Session Flow](https://github.com/leeguooooo/session-flow)。
+
+## OpenCode
+
+支持 **OpenCode 2.2.1 及以上版本**。安装命令会同时安装本地插件和技能：
+
+```bash
+ocs skill install
+# 重新加载 OpenCode，在会话里发送一条提示词后运行：
+ocs whoami --json
+ocs who
+ocs dm opencode-ses_... "帮我检查改动"
+```
+
+完整地址保留 `ses_…` 的大小写，也可以使用 `oc-<8hex>` 哈希短地址。插件只登记实际观察到的会话，工具 shell 自动获得当前会话身份；入站消息进入 OpenCode 原生持久队列，等待当前回合完成。
+
+DM、@提及、回复、信箱、改名、静默投递、批量、doctor 修复和已配对 LAN 都沿用现有命令。排队成功不代表已读或任务完成。V1 插件接口不受支持，请先升级 OpenCode。
+
+插件安装在 OpenCode 配置目录的 `plugins/ocs.js`，技能在 `skills/ocs/SKILL.md`，不会修改已有配置文件。路径与验收说明见 [OpenCode 接入](docs/opencode.md)。
 
 ## 0.6 新增：跨电脑的 agent 互通
 

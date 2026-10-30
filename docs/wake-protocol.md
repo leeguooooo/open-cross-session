@@ -333,3 +333,24 @@ fields. Diagnostics never authorize replay. See [traffic.md](traffic.md).
 LAN quiet delivery is a distinct authenticated dm-quiet operation. Old receivers reject
 it before storing. LAN JSON describes the remote commit; an unanswered request is
 stored:null, wake:unknown, exit 3, never a known unstored failure.
+
+## OpenCode 2.2.1+
+
+`ocs skill install` installs a local V2 plugin. The canonical address is
+`opencode-<full ses_ ID>`; `oc-<8hex>` hashes the full ID rather than truncating its
+time prefix. Session IDs remain case-sensitive in route sidecars and name records.
+No fields are added to `OcsMessage v1`.
+
+Only sessions observed by the plugin's prompt/context/tool hooks register. Each
+registration has a private socket (or a random Windows pipe), live process ID and
+runtime token. The shell hook gets identity from the tool invocation's async context,
+never a mutable process-wide "current session". DM replies retain the ordinary
+`Reply:` / `Thread:` envelope and do not imply user authorization.
+
+The receiver calls `session.prompt` with `delivery: "queue"` and source metadata.
+Only matching native queue admission produces the local `queued` acknowledgement.
+Errors after submitting the prompt, malformed acknowledgements or lost responses
+remain unknown; no fallback, automatic replay or session creation is allowed.
+The durable OCS channel remains available through inbox/read. Queue acceptance
+proves neither model consumption nor task completion. V1 is outside this adapter's
+supported API contract.

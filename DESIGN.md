@@ -25,6 +25,7 @@ AgentParty 已停止维护。原定抽取公共包、向 AgentParty 单向同步
 | Claude Code | 原生收件箱 socket 与回执 helper | 保留原生来源与权限闸；accept 不发已读证明，hold/refuse 等回执可报告未送达；Windows 暂无回执 |
 | Codex Desktop | 被 renderer 认领的原生 IPC | 保留 delegation 来源信封；私有协议运行时探测，结果未知绝不降级补发 |
 | Codex 终端 | 官方 queue，运行中可尝试 steer | 用 rollout FD 持有者及进程身份证明活性；不能 steer 时在宿主入队前合并积压 |
+| OpenCode 2.2.1+ | 本地插件与私有 socket / Windows 随机管道 | 精确会话 ID；原生持久队列 `delivery: "queue"`；工具执行上下文隔离 shell 身份，unknown 不重放 |
 | Pi | 官方扩展 API 与私有 socket | follow-up 排在当前回合之后 |
 | Hermes | 本地宿主 WebSocket | 使用 queued:true；每次重读凭据并查询活动会话 |
 | Grok Build | 现有共享 leader 的原生 IPC | 完整会话 UUID 寻址；sendNow:false 排队；精确 prompt ID 接纳后才报 accepted，写出后无确认为 unknown |

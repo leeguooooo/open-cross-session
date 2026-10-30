@@ -32,7 +32,7 @@ export function agyEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const clean = { ...env };
   // Prevent a receiver spawned inside another agent from replying with that agent's identity.
   for (const key of ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET",
-    "CLAUDECODE", "OCS_PI_SESSION_ID", "GROK_SESSION_ID", "HERMES_SESSION_ID", "HERMES_SESSION_SOURCE", "HERMES_UI_SESSION_ID"]) delete clean[key];
+    "CLAUDECODE", "OCS_PI_SESSION_ID", "OCS_OPENCODE_SESSION_ID", "OPENCODE_SESSION_ID", "GROK_SESSION_ID", "HERMES_SESSION_ID", "HERMES_SESSION_SOURCE", "HERMES_UI_SESSION_ID"]) delete clean[key];
   clean.OCS_NAME = "agy";
   return clean;
 }

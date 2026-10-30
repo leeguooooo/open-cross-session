@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { listOpenCodeSessions, selfOpenCodeSessionId, opencodeSessionIdFromTarget, opencodeTargetName, openCodeShortId } from "./opencode.ts";
+import { installOpenCodeIntegration, openCodePluginCurrent, openCodePluginPath, openCodeSkillPath } from "./opencode-plugin.ts";
 // ocs — open-cross-session CLI。
 //
 // 命令面沿用 party CLI 的使用习惯（ocs 从 AgentParty 孵化；AgentParty 已停止维护）。
@@ -444,6 +446,7 @@ function noticeSender(): NoticeSender | null {
     };
   }
   if (owner.kind === "codex") return { kind: "codex", threadId: owner.id };
+  if (owner.kind === "opencode") return { kind: "opencode", sessionId: owner.id };
   if (owner.kind === "hermes") return { kind: "hermes", sessionKey: owner.id };
   if (owner.kind === "grok") return { kind: "grok", sessionId: owner.id };
   return { kind: "pi", sessionId: owner.id };
@@ -624,6 +627,13 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     }
   }
 
+  const openCodeMentions = claudeNames.filter((name) => opencodeSessionIdFromTarget(name) !== null);
+  for (const target of openCodeMentions) {
+    const resolved = resolveDmTarget(target);
+    if (resolved === null) continue;
+    await deliverDm({ resolved, target, channel, firstMessage: false, stableChannel: false,
+      wakeInput, dmReplyTarget: null, env: process.env }, M, CLI_SINK);
+  }
   const grokMentions = claudeNames.filter((name) => grokSessionIdFromTarget(name) !== null);
   for (const target of grokMentions) {
     await deliverDm({ resolved: resolveDmTarget(target)!, target, channel,
@@ -634,8 +644,8 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     await deliverDm({ resolved: resolveDmTarget("agy")!, target: "agy", channel,
       firstMessage: message.seq === 1, stableChannel: false, wakeInput, dmReplyTarget: null }, M, CLI_SINK);
   }
-  const wakeNames = claudeNames.filter((name) => name.toLowerCase() !== "agy" && grokSessionIdFromTarget(name) === null);
-  if (wakeNames.length === 0 && codexTargets.length === 0 && piTargets.length === 0 && hermesTargets.length === 0 && !agyMention && grokMentions.length === 0) {
+  const wakeNames = claudeNames.filter((name) => !openCodeMentions.includes(name) && name.toLowerCase() !== "agy" && grokSessionIdFromTarget(name) === null);
+  if (wakeNames.length === 0 && codexTargets.length === 0 && piTargets.length === 0 && hermesTargets.length === 0 && !agyMention && grokMentions.length === 0 && openCodeMentions.length === 0) {
     // #36：一个人都没叫醒时必须明说，不能只留一行 stored 让发送方以为送到了。
     const dm = channel.startsWith("dm-");
     console.log(M.sendNoWakeTarget(dm));
@@ -712,7 +722,7 @@ function lanDmSender(parsed: Parsed, from: string): LanDmSender {
     const name = ocsNameFor(owner, listOcsNames())?.name ?? null;
     const identity = owner.kind === "claude"
       ? claudeSessionIdentity(owner.session)
-      : owner.kind === "hermes" ? hermesIdentity(owner.id) : `${owner.kind}:${owner.id.toLowerCase()}`;
+      : owner.kind === "hermes" ? hermesIdentity(owner.id) : `${owner.kind}:${owner.kind === "opencode" ? owner.id : owner.id.toLowerCase()}`;
     return {
       display: name ?? id ?? from,
       key: id ?? from,
@@ -991,13 +1001,14 @@ async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lan
     entry.kind === "codex-task" && (codexOwners[entry.threadId] !== undefined || entry.livePid !== null));
   const pi = relevantFirst(roster.entries.filter((e) => e.kind === "pi"));
   const hermesEntries = roster.entries.filter((e) => e.kind === "hermes");
+  const openCodeEntries = relevantFirst(roster.entries.filter((e) => e.kind === "opencode"));
   const grokEntries = roster.entries.filter((e) => e.kind === "grok");
   const agyEntries = roster.entries.filter((e) => e.kind === "agy");
   const cmux = roster.entries.filter((e) => e.kind === "cmux");
   if (json) {
     console.log(JSON.stringify({
       ...roster,
-      entries: [...claude, ...codex, ...pi, ...hermesEntries, ...grokEntries, ...agyEntries, ...cmux].map((entry) => ({
+      entries: [...claude, ...codex, ...pi, ...openCodeEntries, ...hermesEntries, ...grokEntries, ...agyEntries, ...cmux].map((entry) => ({
         ...entry, capabilities: entryCapabilities(entry, roster, entry.kind === "codex-task" && codexOwners[entry.threadId] !== undefined),
       })),
       hermes: hermes.available,
@@ -1046,6 +1057,13 @@ async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lan
   if (!roster.codexQueue &&
       codex.some((entry) => entry.kind === "codex-task" && entry.livePid !== null)) {
     console.log(M.whoCodexQueueMissing);
+  }
+  if (openCodeEntries.length > 0) {
+    console.log(M.whoOpenCodeHeader);
+    for (const e of openCodeEntries) {
+      if (e.kind !== "opencode") continue;
+      console.log(`  ${e.ocsName ? e.ocsName + "  " : ""}${e.shortId}  ${e.target}  ${e.name ?? ""}${verbose ? `  pid=${e.pid}  cwd=${e.cwd}` : ""}${e.self ? M.whoSelfTag : ""}`);
+    }
   }
   if (pi.length > 0) {
     console.log(M.whoPiHeader);
@@ -1150,7 +1168,8 @@ function cmdWhoami(parsed: Parsed): void {
   ))];
   // Codex 短 id 取 thread id 前 8 位，而 thread id 是 UUIDv7（时间戳打头），一分钟内建的线程
   // 短 id 会撞；只在 codex 上追加完整 threadId，Claude/Pi/Hermes 的输出保持逐字不变。
-  const full = owner.kind === "codex" ? { threadId: owner.id } : {};
+  if (owner.kind === "opencode") addresses.push(openCodeShortId(owner.id));
+  const full = owner.kind === "codex" ? { threadId: owner.id } : owner.kind === "opencode" ? { sessionId: owner.id } : {};
   console.log(JSON.stringify({ host: owner.kind, id, name, session, addresses, ...full }));
 }
 
@@ -1414,6 +1433,13 @@ async function cmdDoctor(parsed: Parsed): Promise<void> {
     else warn(M.codexLivenessWhy(why));
   }
 
+  console.log(M.doctorOpenCode);
+  if (!openCodePluginCurrent() && parsed.flags.has("fix")) {
+    try { installOpenCodeIntegration(SKILL_MD); }
+    catch (error) { bad(M.doctorSkillsFixFailed(String(error))); }
+  }
+  (openCodePluginCurrent() ? ok : warn)(M.openCodePlugin(openCodePluginPath(), openCodePluginCurrent()));
+  console.log(M.openCodeSessions(listOpenCodeSessions().length));
   console.log(M.doctorPi);
   let piCurrent = piExtensionCurrent();
   if (!piCurrent && parsed.flags.has("fix")) {
@@ -1580,6 +1606,13 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
 - Pi DMs and \`@\` mentions use the short address printed by \`ocs who\`; full
   \`pi-<session UUID>\` addresses still work. The installed extension
   queues inbound messages as follow-ups, so it never interrupts a busy Pi turn.
+- OpenCode 2.2.1+ uses the local plugin installed by \`ocs skill install\`.
+  Reload OpenCode, then submit a prompt to register the session. \`ocs whoami --json\`
+  identifies it as \`opencode-ses_...\`; use that full case-sensitive address or
+  its \`oc-<8hex>\` hash alias with DM, @mentions, rename and paired LAN replies.
+  Incoming messages use OpenCode's durable native queue with \`delivery: "queue"\`,
+  preserving the active turn. An accepted queue item is not a read/completion receipt.
+  V1's plugin API is not supported; upgrade OpenCode before installing this plugin.
 - Grok Build sessions started with \`grok --leader\` appear in \`ocs who\` as
   \`grok-<full-session-uuid>\`. DM, @mentions, rename and paired LAN replies use
   the same address. Grok's \`GROK_SESSION_ID\` identifies replies automatically.
@@ -1676,6 +1709,8 @@ interface OcsIntegrationPaths {
   claudePath: string;
   codexPath: string;
   grokPath: string;
+  openCodeSkillPath: string;
+  openCodePluginPath: string;
   piSkillPath: string;
   extensionPath: string;
 }
@@ -1685,6 +1720,8 @@ function integrationPaths(): OcsIntegrationPaths {
   return {
     claudePath: join(home, ".claude", "skills", "ocs", "SKILL.md"),
     codexPath: join(home, ".codex", "skills", "ocs", "SKILL.md"),
+    openCodeSkillPath: openCodeSkillPath(process.env, home),
+    openCodePluginPath: openCodePluginPath(process.env, home),
     grokPath: join(process.env.GROK_HOME || join(home, ".grok"), "skills", "ocs", "SKILL.md"),
     piSkillPath: piSkillPath(process.env, home),
     extensionPath: piExtensionPath(process.env, home),
@@ -1702,7 +1739,7 @@ function skillFileCurrent(path: string): boolean {
 
 function outdatedSkillPaths(): string[] {
   const paths = integrationPaths();
-  return [paths.claudePath, paths.codexPath, paths.grokPath, paths.piSkillPath].filter((path) => !skillFileCurrent(path));
+  return [paths.claudePath, paths.codexPath, paths.grokPath, paths.piSkillPath, paths.openCodeSkillPath].filter((path) => !skillFileCurrent(path));
 }
 
 function installOcsIntegration(): OcsIntegrationPaths {
@@ -1735,6 +1772,7 @@ function installOcsIntegration(): OcsIntegrationPaths {
   installSkill(paths.claudePath);
   installSkill(paths.codexPath);
   installSkill(paths.grokPath);
+  installOpenCodeIntegration(SKILL_MD);
   const pi = installPiIntegration(SKILL_MD);
   return { ...paths, piSkillPath: pi.skillPath, extensionPath: pi.extensionPath };
 }
@@ -1746,6 +1784,8 @@ function cmdSkill(parsed: Parsed): void {
   console.log(M.skillInstalled(paths.claudePath));
   console.log(M.skillInstalled(paths.codexPath));
   console.log(M.skillInstalled(paths.grokPath));
+  console.log(M.skillInstalled(paths.openCodeSkillPath));
+  console.log(M.openCodeInstalled(paths.openCodePluginPath));
   console.log(M.skillInstalled(paths.piSkillPath));
   console.log(M.piExtensionInstalled(paths.extensionPath));
 }

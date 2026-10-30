@@ -1,6 +1,6 @@
 # Open Cross-session
 
-**Claude Code, Codex, Pi, and terminal agents message and wake each other — on one machine, and across the computers on your LAN (macOS, Linux, Windows). No server, no account.**
+**Claude Code, Codex, Pi, OpenCode, and terminal agents message and wake each other — on one machine, and across the computers on your LAN (macOS, Linux, Windows). No server, no account.**
 
 [![ci](https://github.com/leeguooooo/open-cross-session/actions/workflows/ci.yml/badge.svg)](https://github.com/leeguooooo/open-cross-session/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/leeguooooo/open-cross-session)](https://github.com/leeguooooo/open-cross-session/releases)
@@ -13,6 +13,23 @@ https://github.com/user-attachments/assets/4c86fd18-f935-467b-ac23-5283d40bb63d
 `ocs` gives every AI coding session a shared message channel, and wakes the target session for real instead of only writing a file. Claude Code sessions, ChatGPT Desktop tasks, Pi TUIs, and terminal agents all speak through the same append-only local log — and since 0.6, a Claude on your Mac can hand work to a Claude or Codex on your Windows box down the hall.
 
 For repeatable planning, implementation, and review across independent sessions, pair OCS with [Session Flow](https://github.com/leeguooooo/session-flow).
+
+## OpenCode
+
+OpenCode **2.2.1 or later** uses a local plugin installed alongside the skill:
+
+```bash
+ocs skill install
+# Reload OpenCode, then send a prompt in the session.
+ocs whoami --json
+ocs who
+ocs dm opencode-ses_... "Review the changes"
+# The oc-<8hex> hash alias from `ocs who` also works.
+```
+
+The plugin registers sessions that it actually observes, injects the current session identity into tool shells, and submits incoming messages to OpenCode's durable native queue (`delivery: "queue"`). Busy sessions finish their active turn first. DM, @mentions, replies, inbox/read, rename, no-wake, batch, doctor repair and paired LAN addressing use the same commands as other hosts. Queue acceptance does not prove a read or task completion. V1 is not supported; upgrade OpenCode first.
+
+The installer adds `plugins/ocs.js` and `skills/ocs/SKILL.md` under the OpenCode configuration directory without editing your configuration. See [the adapter contract](docs/opencode.md) for paths, lifecycle and verification.
 
 ## New in 0.6: agents across your computers
 

@@ -65,7 +65,7 @@ export const LAN_DAEMON_ENV_STRIP = [
   "CLAUDECODE",
   "CODEX_THREAD_ID",
   "OCS_NAME",
-  "OCS_PI_SESSION_ID",
+  "OCS_PI_SESSION_ID", "OCS_OPENCODE_SESSION_ID", "OPENCODE_SESSION_ID",
   "GROK_SESSION_ID",
   "HERMES_SESSION_ID",
   "HERMES_SESSION_SOURCE",
@@ -117,6 +117,9 @@ export function localAddressOf(
     const key = hermesTargetName(resolved.hermesSessionKey);
     return { key, display: ocsNameFor({ kind: "hermes", id: resolved.hermesSessionKey }, names)?.name ?? key };
   }
+  if (resolved.kind === "opencode" && resolved.openCodeSessionId !== undefined) {
+    return { key: resolved.name, display: ocsNameFor({ kind: "opencode", id: resolved.openCodeSessionId }, names)?.name ?? resolved.name };
+  }
   if (resolved.kind === "grok" && resolved.grokSessionId !== undefined) {
     const key = grokTargetName(resolved.grokSessionId);
     return { key, display: ocsNameFor({ kind: "grok", id: resolved.grokSessionId }, names)?.name ?? key };
@@ -126,7 +129,7 @@ export function localAddressOf(
 
 export interface LanWhoEntry {
   address: string;
-  kind: "claude" | "codex" | "pi" | "hermes" | "grok" | "agy";
+  kind: "opencode" | "claude" | "codex" | "pi" | "hermes" | "grok" | "agy";
   status?: string;
   label?: string;
   capabilities?: Capabilities;
@@ -159,6 +162,11 @@ export async function lanWhoEntries(env: NodeJS.ProcessEnv = process.env): Promi
   for (const entry of roster.entries) {
     const capabilities = { ...entryCapabilities(entry, roster,
       entry.kind === "codex-task" && claimed.has(entry.threadId.toLowerCase()), process.platform, env), deliveryReceipt: "none" as const };
+    if (entry.kind === "opencode") {
+      out.push({ capabilities, address: entry.ocsName ?? entry.target, kind: "opencode",
+        ...(entry.name === null ? {} : { label: entry.name.slice(0, 60) }) });
+      continue;
+    }
     if (entry.kind === "agy") {
       out.push({ capabilities, address: "agy", kind: "agy", status: entry.status, label: "Antigravity CLI worker" });
       continue;
@@ -256,6 +264,7 @@ export async function handleLanDm(
       (codexThreadLivePid(thread, env) !== null || (await desktopClaimed([thread], env)).has(thread.toLowerCase()));
     if (!live) return { ok: false, error: "not-found" };
   }
+  if (resolved.kind === "opencode" && resolved.openCodeSession === undefined) return { ok: false, error: "not-found" };
   if (resolved.kind === "pi" && resolved.piSession === undefined) return { ok: false, error: "not-found" };
   if (resolved.kind === "grok") {
     const grok = await listGrokSessions({ env });

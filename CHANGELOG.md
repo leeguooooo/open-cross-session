@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add OpenCode 2.2.1+ identity, live plugin registration, native queued wakes, DM/replies, inbox/read, rename, short hash aliases, batch/no-wake, doctor repair and paired LAN discovery/delivery. Install the self-contained local plugin and skill with `ocs skill install`; V1 requires an upgrade. Queue acknowledgement does not claim a read or completion
+
 ## 0.9.7
 
 - When `ocs who` finds no live Codex task, say why: no rollout files (check `CODEX_HOME`), the liveness probe failed (lsof missing or timed out), no process holds a recent rollout, or the holders failed the identity check (their process names are listed). `ocs doctor` prints the same line. The probe now runs `lsof -n -P`, so slow reverse DNS can no longer push it past the timeout and hide a running session

@@ -1,3 +1,4 @@
+import { listOpenCodeSessions, wakeOpenCodeSession } from "./opencode.ts";
 import { startDeliveryObservation, type TrafficOutcome } from "./traffic.ts";
 // 投递阶梯（消息此前已落盘，这里只负责唤醒）。
 //
@@ -19,6 +20,7 @@ import { hermesTargetName, wakeHermesSession, type HermesWakeResult } from "./he
 import { listPiSessions, wakePiSession } from "./pi-sessions.ts";
 import {
   CODEX_THREAD_ID_ENV,
+  selfNameOwner,
   findCodexCmuxSurface,
   wakeCmuxSurface,
   type ResolvedDmTarget,
@@ -300,6 +302,8 @@ const SELF_ENV_KEYS = [
   "CODEX_THREAD_ID",
   "OCS_NAME",
   "OCS_PI_SESSION_ID",
+  "OCS_OPENCODE_SESSION_ID",
+  "OPENCODE_SESSION_ID",
   "HERMES_SESSION_ID",
   "HERMES_SESSION_SOURCE",
 ];
@@ -356,6 +360,14 @@ export async function deliverNotice(
   }
   const clean: NodeJS.ProcessEnv = { ...env };
   for (const key of SELF_ENV_KEYS) delete clean[key];
+  if (target.kind === "opencode") {
+    const session = listOpenCodeSessions(clean).find((s) => s.session_id === target.sessionId);
+    if (session === undefined) { sink.fail("failed"); return; }
+    const result = await wakeOpenCodeSession(session, note);
+    sink.log(M.openCodeWake(target.sessionId, result.ok ? M.openCodeAccepted : result.reason));
+    if (!result.ok) sink.fail(result.reason === "unknown-outcome" ? "unknown" : "failed");
+    return;
+  }
   if (target.kind === "codex") {
     await deliverToCodexTask(target.threadId, input, M, sink, undefined, clean);
     return;
@@ -422,6 +434,21 @@ async function deliverDmImpl(
   const { resolved, target, channel } = input;
   const env = input.env ?? process.env;
   const anyReply = input.anyReplyTarget === undefined ? {} : { dmReplyTarget: input.anyReplyTarget };
+  if (resolved.kind === "opencode") {
+    const owner = selfNameOwner(env);
+    if (owner?.kind === "opencode" && resolved.openCodeSessionId === owner.id) {
+      sink.log(M.openCodeSelf(resolved.name)); sink.skipped?.(); return null;
+    }
+    if (resolved.openCodeSession === undefined) {
+      sink.log(M.openCodeParked(resolved.name, channel));
+      sink.pending?.("parked"); return null;
+    }
+    const result = await wakeOpenCodeSession(resolved.openCodeSession,
+      wakeNote({ ...input.wakeInput, ...anyReply, receiver: resolved.name, implicitReceiver: true }));
+    sink.log(M.openCodeWake(resolved.name, result.ok ? M.openCodeAccepted : result.reason + (result.detail ? ": " + result.detail : "")));
+    if (!result.ok) sink.fail(result.reason === "unknown-outcome" ? "unknown" : "failed");
+    return null;
+  }
   if (resolved.kind === "agy") {
     const A = agyMessages(input.wakeInput.lang ?? detectLang(env));
     if (resolved.ambiguousNameTargets !== undefined) {

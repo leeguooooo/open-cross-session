@@ -63,17 +63,17 @@ case ":$PATH:" in
   *) echo "note: add $INSTALL_DIR to your PATH" ;;
 esac
 
-# Install the same versioned ocs skill for Claude Code, Codex, and Pi. The
+# Install the same versioned ocs skill for Claude Code, Codex, Pi, and OpenCode. The
 # skills CLI is optional: the binary has an embedded fallback and also installs
-# Pi's runtime extension, which a SKILL.md package cannot provide by itself.
+# Pi's extension and OpenCode's local plugin, which SKILL.md alone cannot provide.
 if [ "${OCS_INSTALL_SKILLS:-1}" != "0" ]; then
   ocs_version=$("$INSTALL_DIR/ocs" version | awk 'NR == 1 { print $2 }')
   skill_source="https://github.com/$REPO/tree/v$ocs_version/skills/ocs"
   if command -v npx >/dev/null 2>&1; then
-    echo "installing ocs skill for Claude Code, Codex, and Pi"
+    echo "installing ocs skill for Claude Code, Codex, Pi, and OpenCode"
     if DISABLE_TELEMETRY=1 npx -y "skills@$SKILLS_CLI_VERSION" add "$skill_source" \
       --skill ocs --global \
-      --agent claude-code --agent codex --agent pi --yes </dev/null; then
+      --agent claude-code --agent codex --agent pi --agent opencode --yes </dev/null; then
       echo "skill registered via skills CLI (source: v$ocs_version)"
     else
       echo "warning: skills CLI failed; using the embedded skill installer" >&2
@@ -82,7 +82,7 @@ if [ "${OCS_INSTALL_SKILLS:-1}" != "0" ]; then
     echo "note: npx not found; using the embedded skill installer" >&2
   fi
   if ! "$INSTALL_DIR/ocs" skill install </dev/null; then
-    echo "warning: ocs installed, but skill/Pi extension setup failed; rerun: ocs skill install" >&2
+    echo "warning: ocs installed, but skill/Pi extension/OpenCode plugin setup failed; rerun: ocs skill install" >&2
   fi
 else
   echo "note: skill installation skipped (OCS_INSTALL_SKILLS=0)"
