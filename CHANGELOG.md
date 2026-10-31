@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.10
+
 - Treat `codex-<full-thread-id>` as the Codex thread instead of a plain name, so an offline DM reaches the thread's `ocs inbox` on resume. Messages already sent to that address are discoverable too
 - Report an offline Codex DM as `parked` (exit 0) on new and existing channels, and state that the message must not be resent; parked DM notices now warn that sending to another alias can produce duplicates
 - `ocs read` with an invalid channel name prints a one-line error instead of a stack trace
