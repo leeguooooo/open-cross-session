@@ -200,6 +200,7 @@ interface Catalog {
   dmParked: (target: string, channel: string) => string;
   dmParkedNew: (target: string, channel: string) => string;
   dmParkedStable: (target: string, channel: string) => string;
+  dmCodexParked: (thread: string, channel: string) => string;
   dmPiParked: (target: string, channel: string) => string;
   dmTargetNotFound: (target: string) => string;
   dmCmuxBusy: (ref: string) => string;
@@ -226,6 +227,7 @@ interface Catalog {
   failCommandRequired: string;
   failAsSpelling: string;
   failName: (name: string) => string;
+  failReadChannel: (channel: string) => string;
   failFlagRequired: (flag: string) => string;
   failCodexAddress: (flag: string, value: string) => string;
   failBatch: (detail: string) => string;
@@ -560,11 +562,13 @@ Details: https://github.com/leeguooooo/open-cross-session/blob/main/docs/lan.md`
   dmCursorWarning: (detail) =>
     `warning: message is stored, but the sender cursor could not be advanced (${detail}); delivery will continue`,
   dmParked: (target, channel) =>
-    `${target} has no live session right now — NOT woken. The message is in ${channel}, but only that exact name can read it; a restarted session with a new name will not discover it. Run \`ocs who\` to find a live workspace alias, or pin OCS_NAME/--as.`,
+    `${target} has no live session right now — NOT woken. The message is in ${channel}, but only that exact name can read it; a restarted session with a new name will not discover it. Do not resend to this address. If you send to a live alias from \`ocs who\` instead, the peer may see both messages. Pin OCS_NAME/--as for a stable name.`,
   dmParkedNew: (target, channel) =>
-    `${target} has no live session — NOT woken. This created a new DM channel ${channel}; a restarted session with a different name will not discover or read it. Run \`ocs who\` and send to its live workspace alias instead.`,
+    `${target} has no live session — NOT woken. This created a new DM channel ${channel}; a restarted session with a different name will not discover or read it. Do not resend to this address. If you send to a live alias from \`ocs who\` instead, the peer may see both messages.`,
   dmParkedStable: (target, channel) =>
     `${target} has no live session — NOT woken. The message was appended to stable workspace DM ${channel}; the peer can read it after restart by using the same workspace alias, but ocs does not auto-nudge offline sessions.`,
+  dmCodexParked: (thread, channel) =>
+    `Codex thread ${thread} has no live session — NOT woken. The message is parked in ${channel}; \`ocs inbox\` in that thread will find it after it resumes. Do not resend.`,
   dmPiParked: (target, channel) =>
     `${target} is not a live registered Pi TUI — NOT woken. The message is in ${channel}; run \`ocs skill install\` and restart Pi before retrying.`,
   dmTargetNotFound: (target) =>
@@ -601,6 +605,8 @@ Details: https://github.com/leeguooooo/open-cross-session/blob/main/docs/lan.md`
   failCommandRequired: "missing command after --as <name>. Use: ocs --as <name> dm <target> <text>",
   failAsSpelling: "write --as with two ASCII hyphens (-), not -as / –as / —as. Use: ocs dm <target> <text> --as human",
   failName: (name) => `invalid name: ${name}`,
+  failReadChannel: (channel) =>
+    `invalid channel: ${channel} — copy the exact name from \`ocs inbox\` (at most 64 lowercase characters)`,
   failFlagRequired: (flag) => `--${flag} <value> is required`,
   failCodexAddress: (flag, value) =>
     `--${flag} must be a full thread id or an unambiguous codex-<8hex> address from \`ocs who\`: ${value}`,
@@ -915,11 +921,13 @@ ${lanMessages("zh").help}
   dmConversationFailed: (detail) => `无法解析 DM 会话：${detail}`,
   dmCursorWarning: (detail) => `警告：消息已写入，但发送方 cursor 推进失败（${detail}）；仍继续投递`,
   dmParked: (target, channel) =>
-    `${target} 当前没有活会话——**没有被唤醒**。消息在 ${channel}，但只有这个精确名字能读；重启后换了名字的会话不会发现它。请运行 \`ocs who\` 查找实时工作区别名，或用 OCS_NAME/--as 固定名字。`,
+    `${target} 当前没有活会话——**没有被唤醒**。消息在 ${channel}，但只有这个精确名字能读；重启后换了名字的会话不会发现它。不要向此地址重发。若改发到 \`ocs who\` 里的实时别名，对方可能看到两条。可用 OCS_NAME/--as 固定名字。`,
   dmParkedNew: (target, channel) =>
-    `${target} 当前没有活会话——**没有被唤醒**。这次发送新建了 DM 频道 ${channel}；对方若已重启并更名，将不会发现或读到它。请运行 \`ocs who\`，改发到实时工作区别名。`,
+    `${target} 当前没有活会话——**没有被唤醒**。这次发送新建了 DM 频道 ${channel}；对方若已重启并更名，将不会发现或读到它。不要向此地址重发。若改发到 \`ocs who\` 里的实时别名，对方可能看到两条。`,
   dmParkedStable: (target, channel) =>
     `${target} 当前没有活会话——**没有被唤醒**。消息已追加到稳定工作区 DM ${channel}；对方重启后使用同一工作区别名即可读取，但 ocs 不会自动催收离线会话。`,
+  dmCodexParked: (thread, channel) =>
+    `Codex 线程 ${thread} 当前没有活会话——**没有被唤醒**。消息停靠在 ${channel}；该线程恢复后用 \`ocs inbox\` 能找到。请勿重发。`,
   dmPiParked: (target, channel) =>
     `${target} 不是已登记的活 Pi TUI——**没有被唤醒**。消息已写入 ${channel}；先跑 \`ocs skill install\` 并重启 Pi，再重试。`,
   dmTargetNotFound: (target) => `找不到目标: ${target}——跑 \`ocs who\` 看可达的 agent`,
@@ -948,6 +956,8 @@ ${lanMessages("zh").help}
   failCommandRequired: "--as <name> 后缺少子命令。用法：ocs --as <name> dm <target> <text>",
   failAsSpelling: "请用两个英文短横线写 --as，不是 -as / –as / —as。用法：ocs dm <target> <text> --as human",
   failName: (name) => `名字不合法: ${name}`,
+  failReadChannel: (channel) =>
+    `频道名不合法: ${channel}——请从 \`ocs inbox\` 原样复制（最多 64 个小写字符）`,
   failFlagRequired: (flag) => `--${flag} <value> 是必填项`,
   failCodexAddress: (flag, value) =>
     `--${flag} 必须是完整 thread id，或 \`ocs who\` 给出的唯一 codex-<8hex> 短地址：${value}`,

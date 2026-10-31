@@ -86,6 +86,7 @@ import {
   readRoutedMessages,
   NAME_RE,
   OCS_IDENTITY_RE,
+  CHANNEL_RE,
 } from "./store.ts";
 import {
   buildRoster,
@@ -226,6 +227,8 @@ function currentInboxIdentity(
   pinned?: NativeClaudeSession,
 ): InboxIdentityContext {
   const identities = new Set([selfIdentity(primaryName)]);
+  // #62: DMs sent to `codex-<uuid>` by older versions are routed to this name identity.
+  if (isCodexThreadId(primaryName)) identities.add(`name:codex-${primaryName.toLowerCase()}`);
   const mentionNames = new Set([primaryName]);
   const pinnedName = process.env[OCS_NAME_ENV];
   const explicit = pinned === undefined && (parsed.flags.has("as") ||
@@ -1206,6 +1209,7 @@ function cmdRename(parsed: Parsed): void {
 function cmdRead(parsed: Parsed): void {
   const [channel] = parsed.positional;
   if (channel === undefined) fail(M.failReadUsage);
+  if (!CHANNEL_RE.test(channel)) fail(M.failReadChannel(channel));
   const consumer = senderName(parsed);
   if (!NAME_RE.test(consumer)) fail(M.failName(consumer));
   const context = currentInboxIdentity(parsed, consumer);

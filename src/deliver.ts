@@ -126,7 +126,7 @@ async function deliverToCodexTaskImpl(
   sink: DeliverySink,
   sourceThreadId?: string,
   env: NodeJS.ProcessEnv = process.env,
-  options: { defer?: boolean } = {},
+  options: { defer?: boolean; parkOffline?: boolean } = {},
 ): Promise<boolean> {
   // 自我唤醒防回环：Claude（findSelfClaudePid）和 Pi（piWakeSelfSkipped）两条路都有，
   // codex 一直缺——以前 Desktop IPC 前置条件多不易触发，`codex queue` 又快又稳之后
@@ -247,6 +247,14 @@ async function deliverToCodexTaskImpl(
       sink.fail("unknown");
       return true;
     }
+  }
+  // #62: an offline thread is the normal parked case for a DM, not a transport failure.
+  // Its `codex:` route makes the message discoverable from `ocs inbox` on resume.
+  if (options.parkOffline === true && livePid === null &&
+      (result.reason === "unavailable" || result.reason === "not-open")) {
+    sink.log(M.dmCodexParked(targetThreadId, wakeInput.channel));
+    sink.pending?.("parked");
+    return false;
   }
   sink.log(M.codexFailed(result.reason, result.detail ?? ""));
   sink.fail("failed");
@@ -506,7 +514,7 @@ async function deliverDmImpl(
     return resolved.claude;
   }
   if (resolved.kind === "codex-task" && resolved.threadId !== undefined) {
-    await deliverToCodexTaskImpl(resolved.threadId, { ...input.wakeInput, ...anyReply }, M, sink, undefined, env);
+    await deliverToCodexTaskImpl(resolved.threadId, { ...input.wakeInput, ...anyReply }, M, sink, undefined, env, { parkOffline: true });
     return null;
   }
   if (resolved.kind === "pi" && resolved.piSessionId !== undefined) {

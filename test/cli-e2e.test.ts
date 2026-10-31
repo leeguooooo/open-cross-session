@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLAUDE_NATIVE_SESSIONS_DIR_ENV } from "../src/claude-inject.ts";
 import { IDLE_POLL_MS_ENV } from "../src/idle.ts";
-import { appendMessage, loadCursor, readMessages, readRoutedMessages, OCS_HOME_ENV } from "../src/store.ts";
+import { appendDmMessage, appendMessage, loadCursor, readMessages, readRoutedMessages, OCS_HOME_ENV } from "../src/store.ts";
 import { autoCleanupTempDirs, tempDir } from "./tmp";
 
 autoCleanupTempDirs();
@@ -200,6 +200,53 @@ describe("inbox 离线续接", () => {
       const read = await run(f, ["read", "dm-inbox-test", "--as", "tester"]);
       expect(read.stdout).toContain("queued while you were away");
       expect((await run(f, ["inbox", "--as", "tester"])).stdout).toContain("no unread threads");
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("#62: dm to an offline codex-<uuid> parks where the resumed thread's inbox finds it", async () => {
+    const f = fixture({ withSelf: false });
+    const thread = "0ee6aaaa-1111-4222-8333-444455556666";
+    const asThread = { ...f.env, CODEX_THREAD_ID: thread };
+    try {
+      const sent = await run(f, ["dm", `codex-${thread}`, "stored for resume", "--as", "alice", "--json"]);
+      expect({ code: sent.code, stderr: sent.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(JSON.parse(sent.stdout).wake).toBe("parked");
+
+      const channel = JSON.parse(sent.stdout).channel as string;
+      const bare = await run(f, ["dm", thread, "second", "--as", "alice", "--json"]);
+      expect(JSON.parse(bare.stdout).channel).toBe(channel);
+
+      const inbox = await run({ ...f, env: asThread }, ["inbox", "--json"]);
+      expect(JSON.parse(inbox.stdout).map((t: { channel: string }) => t.channel)).toEqual([channel]);
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("#62: a pre-fix name-routed codex DM stays discoverable by that thread", async () => {
+    const f = fixture({ withSelf: false });
+    const thread = "0ee6aaaa-1111-4222-8333-444455556667";
+    try {
+      const appended = appendDmMessage({
+        fallbackChannel: "dm-legacy-codex", from: "alice", fromIdentity: "name:alice",
+        toIdentity: `name:codex-${thread}`, body: "stranded", env: f.env,
+      });
+      const inbox = await run({ ...f, env: { ...f.env, CODEX_THREAD_ID: thread } }, ["inbox", "--json"]);
+      expect(JSON.parse(inbox.stdout).map((t: { channel: string }) => t.channel)).toEqual([appended.channel]);
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("#62: ocs read with an invalid channel prints one line, no stack", async () => {
+    const f = fixture();
+    try {
+      const r = await run(f, ["read", "Bad Channel", "--as", "alice"]);
+      expect(r.code).not.toBe(0);
+      expect(r.stderr.trim().split("\n")).toHaveLength(1);
+      expect(r.stderr).toContain("invalid channel: Bad Channel");
     } finally {
       f.close();
     }

@@ -62,6 +62,7 @@ import {
 export const OCS_NAME_ENV = "OCS_NAME";
 export const CODEX_THREAD_ID_ENV = "CODEX_THREAD_ID";
 const CODEX_SHORT_TARGET_RE = /^codex-([0-9a-f]{8})$/i;
+const CODEX_FULL_TARGET_PREFIX_RE = /^codex-/i;
 const PI_SHORT_TARGET_RE = /^pi-([0-9a-f]{8})$/i;
 const CLAUDE_SHORT_TARGET_RE = /^claude-([0-9a-f]{8})$/i;
 export {
@@ -719,12 +720,15 @@ export function resolveDmTarget(
   if (/^surface:\d+$/.test(target)) {
     return { kind: "cmux", name: target.replace(":", "-"), identity: `cmux:${target}`, cmuxRef: target };
   }
-  if (isCodexThreadId(target)) {
+  // #62: `codex-<full uuid>` is the same thread as the bare UUID. Treating it as a
+  // plain name derived a `name:` identity the thread could never claim from `ocs inbox`.
+  const codexThreadId = target.replace(CODEX_FULL_TARGET_PREFIX_RE, "");
+  if (isCodexThreadId(codexThreadId)) {
     return {
       kind: "codex-task",
-      name: `codex-${target.slice(0, 8).toLowerCase()}`,
-      identity: `codex:${target.toLowerCase()}`,
-      threadId: target.toLowerCase(),
+      name: `codex-${codexThreadId.slice(0, 8).toLowerCase()}`,
+      identity: `codex:${codexThreadId.toLowerCase()}`,
+      threadId: codexThreadId.toLowerCase(),
     };
   }
   const codexShort = CODEX_SHORT_TARGET_RE.exec(target);
