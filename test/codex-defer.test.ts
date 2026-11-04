@@ -55,6 +55,19 @@ describe("codex-defer：回合判定", () => {
     expect(codexActiveTurnId(THREAD, e)).toBeNull();
   });
 
+  test("#67: codex 0.163 把 turn_attribution 写在 turn_id 前面，仍能取到 turn id", () => {
+    const e = env();
+    // 逐字取自 codex 0.163.0 的 rollout（只换了 id）
+    appendFileSync(
+      e.rollout,
+      `{"timestamp":"2026-11-04T01:51:30.174Z","ordinal":314,"type":"event_msg","payload":{"type":"task_started","turn_attribution":{"turn_id":"turn-163","turn_trigger":"queue","parent_turn_id":null,"initiating_agent_path":null,"root_turn_id":"turn-163"},"turn_id":"turn-163","root_turn_id":"turn-163","started_at":1793757090,"model_context_window":828400,"collaboration_mode_kind":"default"}}\n`,
+    );
+    expect(codexActiveTurnId(THREAD, e)).toBe("turn-163");
+    // 没带 turn_id 的旧格式仍是「忙但不能 steer」，且不会借用下一行的 id
+    appendFileSync(e.rollout, `{"type":"event_msg","payload":{"type":"task_started"}}\n{"type":"event_msg","payload":{"type":"item_completed","turn_id":"other"}}\n`);
+    expect(codexActiveTurnId(THREAD, e)).toBe("");
+  });
+
   test("长回合：task_started 之后超过一个读块的事件仍能找到", () => {
     const e = env();
     lifecycle(e.rollout, "task_started", "turn-long");

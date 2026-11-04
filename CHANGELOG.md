@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Codex 0.163+ writes `turn_attribution` before `turn_id` in `task_started`; ocs read that as "busy, no turn id" and silently queued every mid-turn wake for the end of the turn instead of steering it in. The running turn's id is now found on either layout, so mid-turn DMs reach the current turn again (#67)
+- In a local `dm-*` channel, `ocs send` without @ or `--reply-to` now wakes the peer (author of the latest peer message); `--no-wake` still only stores. With no peer message yet it stays stored-only, exit 2 (#67)
+- `ocs send` / `ocs dm` print a one-line `unread:` notice (seq range, sender, time — no body) when messages for you arrived before yours and are unread; `ocs dm` no longer moves your read cursor past them, so `ocs inbox` keeps showing them (#67)
+
 ## 0.9.11
 
 - Pi sessions the ocs extension is not running in (usually opened before `ocs skill install` or an ocs upgrade) are no longer "unknown": `whoami`, `dm` and friends fall back to Pi's own `PI_SESSION_ID` and warn once that the session cannot be woken — replies are parked for `ocs inbox` until `/reload` (#64)

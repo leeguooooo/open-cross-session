@@ -113,8 +113,11 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
   after 5 minutes. Do not resend: ocs sends this session one `[ocs delivery notice]`
   if it ends up not delivered, and `ocs read` shows `[wake → name: status]` under
   your own messages. The fix is on the receiving side (`ocs doctor --fix`).
-  A send that wakes nobody (no @mention, no --reply-to) says stored-only; in a
-  dm-* channel that exits 2 too. A DM does not auto-wake the peer on plain send.
+  A send that wakes nobody (no @mention, no --reply-to) says stored-only. In a
+  local dm-* channel a plain send wakes the peer (author of its latest message);
+  only when the peer has not written there yet is it stored-only with exit 2.
+  send/dm also print `unread: N earlier message(s)…` when messages for you
+  arrived before yours and you have not read them — read them before acting.
 - Codex delivery ladder depends on the host: a Desktop-hosted task goes through
   Desktop IPC first (it keeps the native cross-task provenance envelope; a queued
   message is recorded as a plain user message instead), while a terminal TUI goes

@@ -100,6 +100,29 @@ export function isInboxSelf(message: RoutedOcsMessage, context: InboxIdentityCon
     (message.from_identity !== undefined && context.identities.includes(message.from_identity));
 }
 
+/** Messages in one channel that `ocs inbox` would count as unread for this identity. */
+export function unreadInChannel(
+  channel: string,
+  messages: readonly RoutedOcsMessage[],
+  context: InboxIdentityContext,
+  env: NodeJS.ProcessEnv = process.env,
+  identities: ReadonlySet<string> = new Set(context.identities),
+  mentionNames: ReadonlySet<string> = new Set(context.mentionNames),
+): RoutedOcsMessage[] {
+  const state = inboxCursorState(channel, messages, context, env);
+  const joined = cursorExists(channel, context.primaryName, env) || state.consumers
+    .slice(1)
+    .some((consumer) => cursorExists(channel, consumer, env));
+  // lan-* 是跨机 DM（docs/lan.md），归属规则同 dm-*。
+  const dm = channel.startsWith("dm-") || channel.startsWith("lan-");
+  return messages.filter((message) => {
+    if (message.seq <= state.cursor || isInboxSelf(message, context)) return false;
+    if (message.to_identity !== undefined && identities.has(message.to_identity)) return true;
+    if (dm) return joined && message.to_identity === undefined;
+    return joined || message.mentions.some((mention) => mentionNames.has(mention));
+  });
+}
+
 /**
  * List only threads attributable to the current identity:
  * - new DMs: explicit to_identity;
@@ -116,18 +139,7 @@ export function listInboxThreads(
   for (const channel of listChannels(env)) {
     const messages = readRoutedMessages(channel, { env });
     if (messages.length === 0) continue;
-    const state = inboxCursorState(channel, messages, context, env);
-    const joined = cursorExists(channel, context.primaryName, env) || state.consumers
-      .slice(1)
-      .some((consumer) => cursorExists(channel, consumer, env));
-    // lan-* 是跨机 DM（docs/lan.md），归属规则同 dm-*。
-    const dm = channel.startsWith("dm-") || channel.startsWith("lan-");
-    const unread = messages.filter((message) => {
-      if (message.seq <= state.cursor || isInboxSelf(message, context)) return false;
-      if (message.to_identity !== undefined && identities.has(message.to_identity)) return true;
-      if (dm) return joined && message.to_identity === undefined;
-      return joined || message.mentions.some((mention) => mentionNames.has(mention));
-    });
+    const unread = unreadInChannel(channel, messages, context, env, identities, mentionNames);
     const last = unread.at(-1);
     if (last === undefined) continue;
     threads.push({

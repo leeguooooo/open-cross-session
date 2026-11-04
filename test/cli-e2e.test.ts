@@ -386,6 +386,50 @@ describe("#36：没叫醒任何人要明说；全角标点后的 @ 照样唤醒"
     }
   }, T);
 
+  test("#67: DM 频道里不带 @ 的 send 唤醒对方最近一条的作者；--no-wake 只落盘", async () => {
+    const f = fixture();
+    try {
+      expect((await run(f, ["send", "dm-peer", "question from a", "--as", "worker-a", "--no-wake"])).code).toBe(0);
+      const plain = await run(f, ["send", "dm-peer", "plain reply", "--as", "tester"]);
+      expect(plain.code).toBe(0);
+      expect(plain.stdout).toContain("waking the peer worker-a (author of seq 1)");
+      expect(plain.stdout).toContain("wake: accepted by inbox → worker-a");
+      expect(plain.stdout).not.toContain("nobody was woken");
+      expect(await f.nextFrame()).toContain("plain reply");
+      expect(readMessages("dm-peer", { env: f.env }).at(-1)).not.toHaveProperty("reply_to");
+      const quiet = await run(f, ["send", "dm-peer", "quiet", "--as", "tester", "--no-wake"]);
+      expect(quiet.code).toBe(0);
+      expect(quiet.stdout).not.toContain("waking the peer");
+      await sleep(200);
+      expect(f.frames.length).toBe(1);
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("#67: 发送时提醒本频道里更早的未读（只给 seq/发送者/时间，不带正文、不动游标）", async () => {
+    const f = fixture();
+    try {
+      for (const body of ["first", "SECRET-CORRECTION wait for me"]) {
+        expect((await run(f, ["send", "dm-unread", body, "--as", "worker-a", "--no-wake"])).code).toBe(0);
+      }
+      // tester has joined the thread before (a cursor exists), as a real participant would
+      expect((await run(f, ["read", "dm-unread", "--as", "tester"])).code).toBe(0);
+      expect((await run(f, ["send", "dm-unread", "more 1", "--as", "worker-a", "--no-wake"])).code).toBe(0);
+      expect((await run(f, ["send", "dm-unread", "more 2", "--as", "worker-a", "--no-wake"])).code).toBe(0);
+      const sent = await run(f, ["send", "dm-unread", "starting now", "--as", "tester", "--no-wake"]);
+      expect(sent.stdout).toContain("unread: 2 earlier message(s) for you in this channel you have not read (seq 3–4, latest from worker-a");
+      expect(sent.stdout).toContain("ocs read dm-unread");
+      expect(sent.stdout).not.toContain("more 2");
+      const again = await run(f, ["send", "dm-unread", "still going", "--as", "tester", "--no-wake"]);
+      expect(again.stdout).toContain("seq 3–4");
+      const clean = await run(f, ["send", "chat-clean", "hello", "--as", "tester", "--no-wake"]);
+      expect(clean.stdout).not.toContain("unread:");
+    } finally {
+      f.close();
+    }
+  }, T);
+
   test("`。@worker-a` 唤醒 worker-a", async () => {
     const f = fixture();
     try {

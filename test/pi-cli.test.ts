@@ -180,6 +180,28 @@ describe("Pi CLI routing", () => {
     }
   }, 60_000);
 
+  test("#67: ocs dm points at the peer's unread reply and leaves it unread in ocs inbox", async () => {
+    const f = await fixture();
+    try {
+      const first = await run(f, ["dm", TARGET, "please wait for my go", "--as", "lead"]);
+      expect(first.code).toBe(0);
+      const channel = /channel (dm-[^,\s)]+)/.exec(first.stdout)?.[1];
+      expect(channel).toBeDefined();
+      const reply = await run(f, ["send", channel!, "correction: hold on", "--as", TARGET, "--reply-to", "1", "--no-wake"]);
+      expect(reply.code).toBe(0);
+      const second = await run(f, ["dm", TARGET, "go ahead", "--as", "lead"]);
+      expect(second.code).toBe(0);
+      expect(second.stdout).toContain("unread: 1 earlier message(s) for you in this channel you have not read (seq 2,");
+      const inbox = await run(f, ["inbox", "--as", "lead"]);
+      expect(inbox.stdout).toContain(channel!);
+      expect((await run(f, ["read", channel!, "--as", "lead"])).stdout).toContain("correction: hold on");
+      // once read, the next dm is clean
+      expect((await run(f, ["dm", TARGET, "thanks", "--as", "lead"])).stdout).not.toContain("unread:");
+    } finally {
+      await f.close();
+    }
+  }, 60_000);
+
   test("a Pi session cannot wake itself through an @ mention", async () => {
     const f = await fixture();
     f.env.OCS_PI_SESSION_ID = SESSION_ID;
