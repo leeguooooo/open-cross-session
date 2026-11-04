@@ -407,6 +407,34 @@ describe("#36：没叫醒任何人要明说；全角标点后的 @ 照样唤醒"
     }
   }, T);
 
+  test("#67 review: 带 @、--reply-to 的 DM send 不隐式找对端", async () => {
+    const f = fixture();
+    try {
+      expect((await run(f, ["send", "dm-guard", "from a", "--as", "worker-a", "--no-wake"])).code).toBe(0);
+      const mention = await run(f, ["send", "dm-guard", "@worker-b look", "--as", "tester"]);
+      expect(mention.stdout).not.toContain("waking the peer");
+      const badReply = await run(f, ["send", "dm-guard", "re", "--as", "tester", "--reply-to", "99"]);
+      expect(badReply.stdout).not.toContain("waking the peer");
+    } finally {
+      f.close();
+    }
+  }, T);
+
+  test("#67 review: --reply-to 跳过了更早的未读时不推游标，提示里的消息还读得到", async () => {
+    const f = fixture();
+    try {
+      expect((await run(f, ["send", "dm-skip", "one", "--as", "worker-a", "--no-wake"])).code).toBe(0);
+      expect((await run(f, ["read", "dm-skip", "--as", "tester"])).code).toBe(0);
+      expect((await run(f, ["send", "dm-skip", "TWO-unread", "--as", "worker-a", "--no-wake"])).code).toBe(0);
+      expect((await run(f, ["send", "dm-skip", "three", "--as", "worker-a", "--no-wake"])).code).toBe(0);
+      const reply = await run(f, ["send", "dm-skip", "answer to 3", "--as", "tester", "--reply-to", "3", "--no-wake"]);
+      expect(reply.stdout).toContain("unread: 1 earlier message(s) for you in this channel you have not read (seq 2,");
+      expect((await run(f, ["read", "dm-skip", "--as", "tester"])).stdout).toContain("TWO-unread");
+    } finally {
+      f.close();
+    }
+  }, T);
+
   test("#67: 发送时提醒本频道里更早的未读（只给 seq/发送者/时间，不带正文、不动游标）", async () => {
     const f = fixture();
     try {

@@ -85,6 +85,7 @@ import {
   readMessages,
   readReceipts,
   readRoutedMessages,
+  extractMentions,
   NAME_RE,
   OCS_IDENTITY_RE,
   CHANNEL_RE,
@@ -214,16 +215,24 @@ const COMMAND_SPECS: Record<string, CommandSpec> = {
  * read. A correction sent mid-turn must not go unnoticed just because the sender kept talking.
  * Only seq / sender / time — bodies are peer-controlled data. Never moves a cursor.
  */
-function unreadBeforeOwn(channel: string, context: InboxIdentityContext, ownSeq: number): number {
+function unreadBeforeOwn(
+  channel: string,
+  context: InboxIdentityContext,
+  ownSeq: number,
+  answeredSeq?: number,
+): number[] | null {
   try {
     const unread = unreadInChannel(channel, readRoutedMessages(channel), context)
-      .filter((message) => message.seq < ownSeq);
+      .filter((message) => message.seq < ownSeq && message.seq !== answeredSeq);
     const last = unread.at(-1);
-    if (last === undefined) return 0;
-    console.log(M.unreadBeforeOwn(channel, unread.length, unread[0]!.seq, last.seq, last.from, last.ts));
-    return unread.length;
+    if (last !== undefined) {
+      console.log(M.unreadBeforeOwn(channel, unread.length, unread[0]!.seq, last.seq, last.from, last.ts));
+    }
+    return unread.map((message) => message.seq);
   } catch {
-    return 0; // a hint, never a reason to fail a stored send
+    // A hint, never a reason to fail a stored send — but "could not tell" is not "nothing
+    // unread": callers must not move a read cursor on it.
+    return null;
   }
 }
 
@@ -556,7 +565,13 @@ async function cmdSend(parsed: Parsed): Promise<void> {
   // the author of the peer's latest message (the way --reply-to does, minus the reply_to field).
   // No peer message yet = no address to wake: stays stored-only (exit 2).
   let dmPeer: ReturnType<typeof readRoutedMessages>[number] | undefined;
-  if (parent === undefined && channel.startsWith("dm-") && !parsed.flags.has("no-wake")) {
+  if (
+    channel.startsWith("dm-") &&
+    replyTo === undefined &&
+    codexFlag === undefined &&
+    !parsed.flags.has("no-wake") &&
+    extractMentions(body).length === 0
+  ) {
     const context = currentInboxIdentity(parsed, from);
     dmPeer = readRoutedMessages(channel).filter((candidate) => !isInboxSelf(candidate, context)).at(-1);
     if (
@@ -579,10 +594,12 @@ async function cmdSend(parsed: Parsed): Promise<void> {
   });
   console.log(M.stored(channel, message.seq));
   markStored(channel, message.seq);
-  unreadBeforeOwn(channel, currentInboxIdentity(parsed, from), message.seq);
+  const unreadEarlier = unreadBeforeOwn(channel, currentInboxIdentity(parsed, from), message.seq, parent?.seq);
   // 回复了某条就不该再把它算未读：发送方读游标推进到被回复的 seq（只进不退）。
   // 不推到自己这条的 seq——回复期间新到的消息仍要留在未读里。
-  if (parent !== undefined && parent.from !== from) {
+  // #67：被回复那条之前还有没读的（或判断不了），就不推——否则刚提示要读的消息被跳过。
+  const skipsUnread = unreadEarlier === null || unreadEarlier.some((seq) => parent !== undefined && seq < parent.seq);
+  if (parent !== undefined && parent.from !== from && !skipsUnread) {
     try {
       saveInboxCursor(
         channel,
@@ -923,7 +940,7 @@ async function cmdDm(parsed: Parsed): Promise<void> {
   try {
     // #67: jumping the cursor to our own seq would mark unread peer messages as read and hide
     // them from `ocs inbox`. Our own messages never count as unread, so only advance when clean.
-    if (unreadEarlier === 0) {
+    if (unreadEarlier !== null && unreadEarlier.length === 0) {
       saveInboxCursor(
         channel,
         [from, identityCursorConsumer(messageFromIdentity)],
