@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.13
+
 - `install.sh` / `install.ps1` resolve the latest release tag first, then download the archive and its `.sha256` from that tag and check the binary reports that version. Right after a release the two `/releases/latest/download/` redirects could point at different releases and the install failed with a sha256 mismatch. `OCS_VERSION=x.y.z` pins a version; `ocs upgrade` passes the exact release it compared against
 
 ## 0.9.12
