@@ -1416,7 +1416,7 @@ async function cmdUpgrade(parsed: Parsed): Promise<void> {
       : process.platform === "win32" ? `irm ${OCS_INSTALL_PS1_URL} | iex`
       : `curl -fsSL ${OCS_INSTALL_SCRIPT_URL} | sh`,
   ));
-  const run = runInstaller();
+  const run = runInstaller(process.env, check.latest);
   if (run.code === 0) {
     // 约定 §3：二进制换了，别处拷贝/检出/插件里的 SKILL.md 不会跟着动，逐个刷新。
     for (const line of refreshSkills(detectSkillChannels())) console.log(line);

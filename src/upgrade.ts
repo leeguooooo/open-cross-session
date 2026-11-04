@@ -157,7 +157,13 @@ export function upgradeCheckEnabled(env: NodeJS.ProcessEnv = process.env): boole
  * 改跑 `sh <path>`（测试用）。stdio 直通终端，用户能看到下载/校验/替换的每一步。
  * 返回 installer 的退出码；起不来返回 null。
  */
-export function runInstaller(env: NodeJS.ProcessEnv = process.env): { code: number | null; command: string } {
+export function runInstaller(
+  env: NodeJS.ProcessEnv = process.env,
+  tag?: string,
+): { code: number | null; command: string } {
+  // Install exactly the release we compared against (installer reads OCS_VERSION), not
+  // whatever /releases/latest resolves to a moment later.
+  if (tag !== undefined) env = { ...env, OCS_VERSION: tag.replace(/^v/, "") };
   const local = env[OCS_UPGRADE_INSTALLER_ENV];
   // Windows 没有 sh/curl 管道：走 install.ps1（同样 sha256 校验、冒烟、改名替换）。
   const argv = typeof local === "string" && local !== ""

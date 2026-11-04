@@ -16,7 +16,25 @@ case "$os-$arch" in
   *) echo "unsupported platform: $os-$arch" >&2; exit 1 ;;
 esac
 
-url="https://github.com/$REPO/releases/latest/download/$asset.tar.gz"
+# 先定版本号，再从同一个 tag 下载包和 .sha256。直接用 /releases/latest/download/ 两次请求
+# 各自跟随重定向，刚发版后 CDN 可能把包指到上一版、把校验文件指到新版（两者对不上）。
+# OCS_VERSION=0.9.12（或 v0.9.12）可以指定版本；`ocs upgrade` 会传入它检查到的那个。
+if [ -n "${OCS_VERSION:-}" ]; then
+  tag="v${OCS_VERSION#v}"
+else
+  location=$(curl -fsSI "https://github.com/$REPO/releases/latest" | tr -d '\r' |
+    awk 'tolower($1) == "location:" { print $2 }' | tail -n 1)
+  case "$location" in
+    "https://github.com/$REPO/releases/tag/"*) tag=${location#"https://github.com/$REPO/releases/tag/"} ;;
+    *) tag="" ;;
+  esac
+fi
+if ! printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+  echo "could not determine the ocs release to install (got '${tag}'); set OCS_VERSION=x.y.z to pin one" >&2
+  exit 1
+fi
+
+url="https://github.com/$REPO/releases/download/$tag/$asset.tar.gz"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -43,6 +61,11 @@ tar -xzf "$tmp/$asset.tar.gz" -C "$tmp"
 chmod +x "$tmp/ocs"
 # 冒烟通过前不动现有安装；staging 放同一目录内，rename 才是原子的。
 "$tmp/ocs" help >/dev/null || { echo "downloaded binary failed smoke test" >&2; exit 1; }
+got_version=$("$tmp/ocs" version | awk 'NR == 1 { print $2 }')
+if [ "v$got_version" != "$tag" ]; then
+  echo "downloaded binary reports version $got_version, expected ${tag#v}" >&2
+  exit 1
+fi
 mkdir -p "$INSTALL_DIR"
 # 局域网守护进程在跑的话，换完二进制要用新版重启它（旧版本没有 lan 子命令，按没在跑处理）。
 restart_lan=0

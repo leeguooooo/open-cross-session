@@ -141,6 +141,7 @@ irm https://raw.githubusercontent.com/leeguooooo/open-cross-session/main/install
 ```
 
 Single static binary, zero runtime dependencies. macOS (arm64/x64), Linux (x64), and Windows (x64).
+The installer resolves the latest release tag first and downloads the archive and its checksum from that tag; set `OCS_VERSION=0.9.12` to pin a version.
 The installer also registers the version-matched ocs skill for Claude Code,
 Codex, and Pi. It uses the pinned `skills` CLI when `npx` is available, with
 telemetry disabled, then runs the binary's embedded fallback and Pi-extension

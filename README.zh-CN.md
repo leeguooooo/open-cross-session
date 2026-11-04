@@ -131,7 +131,7 @@ Windows（PowerShell）：
 irm https://raw.githubusercontent.com/leeguooooo/open-cross-session/main/install.ps1 | iex
 ```
 
-单文件静态二进制，运行时零依赖。支持 macOS（arm64/x64）、Linux（x64）和 Windows（x64）。安装器会给
+单文件静态二进制，运行时零依赖。支持 macOS（arm64/x64）、Linux（x64）和 Windows（x64）。安装器先确定最新 release 的 tag，再从这个 tag 下载安装包和校验文件；设 `OCS_VERSION=0.9.12` 可装指定版本。安装器会给
 Claude Code、Codex、Pi 注册与二进制同版本的 ocs skill：有 `npx` 时调用固定版本的
 `skills` CLI，并关闭 telemetry；随后运行二进制内置安装，补上 Pi 直投扩展。只装二进制：
 

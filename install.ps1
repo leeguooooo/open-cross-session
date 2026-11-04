@@ -10,7 +10,24 @@ $Asset = "ocs-windows-x64"
 # ARM64 Windows runs the x64 build under emulation.
 if ($env:PROCESSOR_ARCHITECTURE -notin @("AMD64", "ARM64")) { throw "unsupported platform: $env:PROCESSOR_ARCHITECTURE" }
 
-$Url = "https://github.com/$Repo/releases/latest/download/$Asset.zip"
+# Pin the release first, then fetch the archive and its .sha256 from that same tag. Two separate
+# /releases/latest/download/ requests can land on different releases right after a publish.
+# OCS_VERSION=0.9.12 (or v0.9.12) pins a version; `ocs upgrade` passes the one it checked.
+if ($env:OCS_VERSION) {
+  $Tag = "v" + $env:OCS_VERSION.TrimStart("v")
+} else {
+  $Request = [Net.HttpWebRequest]::Create("https://github.com/$Repo/releases/latest")
+  $Request.Method = "HEAD"
+  $Request.AllowAutoRedirect = $false
+  $Request.UserAgent = "ocs-install"
+  $Response = $Request.GetResponse()
+  try { $Location = $Response.Headers["Location"] } finally { $Response.Close() }
+  $Prefix = "https://github.com/$Repo/releases/tag/"
+  $Tag = if ($Location -and $Location.StartsWith($Prefix)) { $Location.Substring($Prefix.Length) } else { "" }
+}
+if ($Tag -notmatch '^v\d+\.\d+\.\d+$') { throw "could not determine the ocs release to install (got '$Tag'); set OCS_VERSION=x.y.z to pin one" }
+
+$Url = "https://github.com/$Repo/releases/download/$Tag/$Asset.zip"
 $Tmp = Join-Path ([IO.Path]::GetTempPath()) ("ocs-install-" + [Guid]::NewGuid())
 New-Item -ItemType Directory -Path $Tmp | Out-Null
 try {
@@ -25,6 +42,8 @@ try {
   Expand-Archive -Path "$Tmp\$Asset.zip" -DestinationPath $Tmp -Force
   & "$Tmp\ocs.exe" help | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "downloaded binary failed smoke test" }
+  $GotVersion = ((& "$Tmp\ocs.exe" version | Select-Object -First 1) -split "\s+")[1]
+  if ("v$GotVersion" -ne $Tag) { throw "downloaded binary reports version $GotVersion, expected $($Tag.TrimStart('v'))" }
 
   New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
   $Target = Join-Path $InstallDir "ocs.exe"

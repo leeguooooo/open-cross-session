@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { OCS_VERSION } from "../src/cli.ts";
 import {
@@ -68,7 +68,7 @@ function fakeInstaller(exitCode = 0): { path: string; marker: string } {
   const dir = tempDir("ocs-upgrade-");
   const marker = join(dir, "installed.marker");
   const path = join(dir, "install.sh");
-  writeFileSync(path, `#!/bin/sh\necho fake-installer-ran\ntouch "${marker}"\nexit ${exitCode}\n`);
+  writeFileSync(path, `#!/bin/sh\necho fake-installer-ran\nprintf '%s' "\${OCS_VERSION:-}" > "${marker}"\nexit ${exitCode}\n`);
   chmodSync(path, 0o755);
   return { path, marker };
 }
@@ -182,6 +182,8 @@ describe("ocs upgrade（端到端，假 GitHub + 假 installer）", () => {
     });
     expect({ code: r.code, stderr: r.stderr }).toEqual({ code: 0, stderr: "" });
     expect(existsSync(inst.marker)).toBe(true);
+    // the installer is pinned to the exact release that was compared, not /releases/latest again
+    expect(readFileSync(inst.marker, "utf8")).toBe(bump(OCS_VERSION, 1));
     expect(r.stdout).toContain(`v${bump(OCS_VERSION, 1)}`);
     expect(r.stdout).toContain("`ocs lan`");
     expect(r.stdout).not.toContain("--party");
