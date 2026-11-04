@@ -56,7 +56,7 @@ import {
   piExtensionPath,
   piSkillPath,
 } from "./pi-extension.ts";
-import { listPiSessions, piSessionIdFromTarget, piTargetName, selfPiSessionIdHint, wakePiSession } from "./pi-sessions.ts";
+import { listPiSessions, piSessionIdFromTarget, piTargetName, wakePiSession } from "./pi-sessions.ts";
 import {
   hermesIdentity,
   hermesSessionKeyFromTarget,
@@ -1482,7 +1482,9 @@ async function cmdDoctor(parsed: Parsed): Promise<void> {
   if (pi.length > 0) ok(M.doctorPiSessions(pi.length));
   else warn(M.doctorNoPiSessions);
   // #64: other healthy Pi TUIs say nothing about the Pi session this command runs in.
-  const selfPi = selfPiSessionIdHint();
+  // Only when Pi is the host: a Claude/Codex launched from Pi's bash inherits the Pi ids too.
+  const selfOwner = selfNameOwner();
+  const selfPi = selfOwner?.kind === "pi" ? selfOwner.id : null;
   if (selfPi !== null) {
     if (pi.some((session) => session.session_id === selfPi)) ok(M.doctorPiSelfRegistered(piTargetName(selfPi)));
     else warn(M.doctorPiSelfUnregistered(piTargetName(selfPi)));

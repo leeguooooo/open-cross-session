@@ -485,12 +485,12 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   doctorPiSelfRegistered: (target) => `this command runs in Pi session ${target}, which is registered and wakeable`,
   doctorPiSelfUnregistered: (target) =>
     `this command runs in Pi session ${target}, but the ocs extension is not running in it — it cannot be woken. ` +
-    "Usually Pi was started before `ocs skill install` / an ocs upgrade: run /reload in that Pi (or restart it). " +
+    "Usually Pi was started before `ocs skill install` / an ocs upgrade: run /reload in that Pi (a restart starts a new session and leaves replies parked for this one). " +
     "Non-TUI modes (rpc/json/print) never register. Also look for an \"ocs Pi integration failed\" notice in that Pi",
   piSelfUnregistered: (target) =>
     `note: you are Pi session ${target}, but the ocs extension is not running in it, so it is not registered. ` +
     "Sending works; replies to you are parked, not woken — collect them with `ocs inbox`. " +
-    "Run /reload in this Pi (or restart it) to become wakeable; `ocs doctor` has details",
+    "Run /reload in this Pi to become wakeable (a restart is a new session); `ocs doctor` has details",
   doctorAccel: "Optional accelerators",
   doctorCmuxOk: "cmux is running — terminal codex/claude TUIs can be woken too (surface-addressed)",
   doctorCmuxMissing: "cmux not detected (optional; native Claude/Codex/Pi/OpenCode/Hermes/Grok discovery does not require it)",
@@ -582,7 +582,7 @@ Details: https://github.com/leeguooooo/open-cross-session/blob/main/docs/lan.md`
   dmCodexParked: (thread, channel) =>
     `Codex thread ${thread} has no live session — NOT woken. The message is parked in ${channel}; \`ocs inbox\` in that thread will find it after it resumes. Do not resend.`,
   dmPiParked: (target, channel) =>
-    `${target} is not a live registered Pi TUI — NOT woken. The message is parked in ${channel}; \`ocs inbox\` in that Pi will find it. Do not resend. To make it wakeable: \`ocs skill install\`, then /reload (or restart) that Pi.`,
+    `${target} is not a live registered Pi TUI — NOT woken. The message is parked in ${channel}. Do not resend. Run \`ocs skill install\`, then /reload that Pi: it becomes wakeable and \`ocs inbox\` there finds the message. A restarted Pi is a new session — resume this one with --continue/--resume, or read it with \`ocs read ${channel}\`.`,
   dmTargetNotFound: (target) =>
     `target not found: ${target} — run \`ocs who\` to see reachable agents`,
   dmCmuxBusy: (ref) =>
@@ -857,12 +857,12 @@ ${lanMessages("zh").help}
   doctorPiSelfRegistered: (target) => `当前命令所在的 Pi 会话 ${target} 已登记，可被唤醒`,
   doctorPiSelfUnregistered: (target) =>
     `当前命令所在的 Pi 会话 ${target} 里没有运行 ocs 扩展——它没法被唤醒。` +
-    "多半是这个 Pi 在 `ocs skill install` / 升级 ocs 之前就开着：在那个 Pi 里 /reload（或重启）。" +
+    "多半是这个 Pi 在 `ocs skill install` / 升级 ocs 之前就开着：在那个 Pi 里 /reload（重启会换成新会话，发给这个会话的回信就留在原处）。" +
     "非 TUI 模式（rpc/json/print）不登记。也看看那个 Pi 里有没有「ocs Pi integration failed」提示",
   piSelfUnregistered: (target) =>
     `注意：你是 Pi 会话 ${target}，但它里面没有运行 ocs 扩展，所以没登记。` +
     "能发消息；发给你的回信只会停进收件箱、不会唤醒你——用 `ocs inbox` 取。" +
-    "在这个 Pi 里 /reload（或重启）后才能被唤醒；详情看 `ocs doctor`",
+    "在这个 Pi 里 /reload 后才能被唤醒（重启是新会话）；详情看 `ocs doctor`",
   doctorAccel: "可选加速器",
   doctorCmuxOk: "cmux 在运行——终端里的 codex/claude TUI 也能被唤醒（按 surface 寻址）",
   doctorCmuxMissing: "cmux 未检测到（可选；Claude/Codex/Pi/OpenCode/Hermes/Grok 原生会话发现不依赖它）",
@@ -950,7 +950,7 @@ ${lanMessages("zh").help}
   dmCodexParked: (thread, channel) =>
     `Codex 线程 ${thread} 当前没有活会话——**没有被唤醒**。消息停靠在 ${channel}；该线程恢复后用 \`ocs inbox\` 能找到。请勿重发。`,
   dmPiParked: (target, channel) =>
-    `${target} 不是已登记的活 Pi TUI——**没有被唤醒**。消息停靠在 ${channel}；那个 Pi 里用 \`ocs inbox\` 能找到。请勿重发。要让它能被唤醒：\`ocs skill install\` 后在那个 Pi 里 /reload（或重启）。`,
+    `${target} 不是已登记的活 Pi TUI——**没有被唤醒**。消息停靠在 ${channel}。请勿重发。\`ocs skill install\` 后在那个 Pi 里 /reload：它就能被唤醒，\`ocs inbox\` 也能找到这条。重启 Pi 是新会话——要用 --continue/--resume 恢复这个会话，或直接 \`ocs read ${channel}\`。`,
   dmTargetNotFound: (target) => `找不到目标: ${target}——跑 \`ocs who\` 看可达的 agent`,
   dmCmuxBusy: (ref) => `${ref} 正在跑一轮，不打断。消息已在频道里，它下轮会读到；也可稍后重试`,
   dmCmuxWoken: (ref) => `已经由 cmux 唤醒终端 ${ref}`,

@@ -16,7 +16,7 @@ import {
   wakePiSession,
   type PiSessionRegistration,
 } from "../src/pi-sessions.ts";
-import { resolveDmTarget, resolveSelfName, selfIdentity, selfNameOwner } from "../src/roster.ts";
+import { nativePiSessionId, nearestPiOrHermesHost, resolveDmTarget, resolveSelfName, selfIdentity, selfNameOwner } from "../src/roster.ts";
 import { splitWakeMentions } from "../src/wake.ts";
 
 const SESSION_ID = "11111111-2222-4333-8444-555555555555";
@@ -154,6 +154,26 @@ describe("Pi native PI_SESSION_ID fallback (#64)", () => {
     expect(resolveSelfName({ ...base(), OCS_PI_SESSION_ID: SESSION_ID, PI_SESSION_ID: OTHER_ID }))
       .toBe(piTargetName(SESSION_ID));
     expect(resolveSelfName({ ...base(), PI_SESSION_ID: "not-a-uuid" })).toBeNull();
+  });
+
+  test("Pi and Hermes nested in each other: the nearer host ancestor wins", () => {
+    const HERMES = { HERMES_SESSION_ID: "20261104_120000_abcdef", HERMES_SESSION_SOURCE: "tui" };
+    const table = (rows: Array<[number, number, string]>) => {
+      const map = new Map(rows.map(([pid, ppid, comm]) => [pid, { ppid, comm }]));
+      return (pid: number) => map.get(pid);
+    };
+    // ocs(100) <- sh(90) <- hermes(80) <- sh(70) <- pi(60): Hermes launched from Pi's bash.
+    const hermesInPi = table([[90, 80, "/bin/sh"], [80, 70, "/usr/local/bin/hermes"], [70, 60, "zsh"], [60, 1, "pi"]]);
+    // ocs(100) <- sh(90) <- pi(80) <- hermes(70): Pi launched from Hermes' terminal.
+    const piInHermes = table([[90, 80, "/bin/sh"], [80, 70, "pi"], [70, 1, "hermes"]]);
+    expect(nearestPiOrHermesHost(hermesInPi, 90)).toBe("hermes");
+    expect(nearestPiOrHermesHost(piInHermes, 90)).toBe("pi");
+    expect(nearestPiOrHermesHost(table([[90, 1, "node"]]), 90)).toBeNull();
+    const env = { ...base(), ...HERMES, PI_SESSION_ID: SESSION_ID };
+    expect(nativePiSessionId(env, (pid) => hermesInPi(pid === process.ppid ? 90 : pid))).toBeNull();
+    expect(nativePiSessionId(env, (pid) => piInHermes(pid === process.ppid ? 90 : pid))).toBe(SESSION_ID);
+    // Without Hermes there is nothing to disambiguate.
+    expect(nativePiSessionId({ PI_SESSION_ID: SESSION_ID }, () => undefined)).toBe(SESSION_ID);
   });
 
   test("agents launched from Pi's bash tool keep their own identity", () => {

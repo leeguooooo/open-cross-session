@@ -57,15 +57,6 @@ export function piTargetName(sessionId: string): string {
   return `pi-${sessionId.toLowerCase()}`;
 }
 
-/** The Pi session id the current process runs under, from our extension's env or Pi's own. */
-export function selfPiSessionIdHint(env: NodeJS.ProcessEnv = process.env): string | null {
-  for (const key of [OCS_PI_SESSION_ID_ENV, PI_NATIVE_SESSION_ID_ENV]) {
-    const value = env[key];
-    if (typeof value === "string" && isPiSessionId(value)) return value.toLowerCase();
-  }
-  return null;
-}
-
 export function piSessionIdFromTarget(target: string): string | null {
   if (!target.startsWith("pi-")) return null;
   const value = target.slice(3);

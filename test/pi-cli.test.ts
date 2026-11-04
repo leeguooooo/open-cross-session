@@ -154,6 +154,18 @@ describe("Pi CLI routing", () => {
     }
   }, 60_000);
 
+  test("#64: doctor does not diagnose an enclosing Pi for a Codex launched from it", async () => {
+    const f = await fixture();
+    f.env.PI_SESSION_ID = "cccccccc-dddd-4eee-8fff-000000000000";
+    f.env.CODEX_THREAD_ID = "019a0000-0000-7000-8000-000000000001";
+    try {
+      const doctor = await run(f, ["doctor"]);
+      expect(doctor.stdout + doctor.stderr).not.toContain("this command runs in Pi session");
+    } finally {
+      await f.close();
+    }
+  }, 60_000);
+
   test("#64: a registered Pi session gets no warning, and doctor says it is wakeable", async () => {
     const f = await fixture();
     f.env.PI_SESSION_ID = SESSION_ID;
