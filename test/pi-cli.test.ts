@@ -59,6 +59,11 @@ async function fixture(): Promise<Fixture> {
   delete env.CLAUDE_CODE_MESSAGING_SOCKET;
   delete env.OCS_NAME;
   delete env.OCS_PI_SESSION_ID;
+  delete env.PI_SESSION_ID;
+  delete env.CODEX_THREAD_ID;
+  env.OCS_CLAUDE_NATIVE_SESSIONS_DIR = join(home, "no-claude");
+  mkdirSync(env.OCS_CLAUDE_NATIVE_SESSIONS_DIR, { mode: 0o700 });
+  env.OCS_UPGRADE_CHECK = "0";
   return {
     env,
     frames,
@@ -106,6 +111,74 @@ describe("Pi CLI routing", () => {
       await f.close();
     }
   }, 30_000);
+
+  test("#64: a Pi without the running extension can send, and is told it cannot be woken", async () => {
+    const f = await fixture();
+    const unregistered = "cccccccc-dddd-4eee-8fff-000000000000";
+    f.env.PI_SESSION_ID = unregistered;
+    try {
+      const whoami = await run(f, ["whoami"]);
+      expect(whoami.code).toBe(0);
+      expect(whoami.stdout.trim()).toBe(piTargetName(unregistered));
+      expect(whoami.stderr).toContain("extension is not running in it");
+
+      const json = await run(f, ["whoami", "--json"]);
+      expect(json.code).toBe(0);
+      expect(JSON.parse(json.stdout)).toMatchObject({ host: "pi", id: "pi-cccccccc" });
+      expect(json.stderr).toContain("extension is not running in it");
+
+      const dm = await run(f, ["dm", TARGET, "hello from an old Pi"]);
+      expect(dm.code).toBe(0);
+      expect(dm.stdout).toContain(`wake(pi): queued → ${TARGET}`);
+      expect(dm.stderr.split("extension is not running in it").length - 1).toBe(1);
+
+      const doctor = await run(f, ["doctor"]);
+      expect(doctor.stdout + doctor.stderr).toContain(
+        `this command runs in Pi session ${piTargetName(unregistered)}, but the ocs extension is not running in it`,
+      );
+
+      // The promise in the warning: a reply to this Pi parks where its own `ocs inbox` finds it.
+      const reply = await run({ ...f, env: { ...f.env, PI_SESSION_ID: "" } }, [
+        "dm", piTargetName(unregistered), "reply for the old Pi", "--as", "sender",
+      ]);
+      expect(reply.code).toBe(0);
+      expect(reply.stdout + reply.stderr).toContain("NOT woken");
+      const inbox = await run(f, ["inbox"]);
+      expect(inbox.code).toBe(0);
+      expect(inbox.stdout).toContain("1 unread · last from sender");
+      const channel = /ocs read (\S+)/.exec(inbox.stdout)?.[1];
+      expect(channel).toBeDefined();
+      expect((await run(f, ["read", channel!])).stdout).toContain("reply for the old Pi");
+    } finally {
+      await f.close();
+    }
+  }, 60_000);
+
+  test("#64: doctor does not diagnose an enclosing Pi for a Codex launched from it", async () => {
+    const f = await fixture();
+    f.env.PI_SESSION_ID = "cccccccc-dddd-4eee-8fff-000000000000";
+    f.env.CODEX_THREAD_ID = "019a0000-0000-7000-8000-000000000001";
+    try {
+      const doctor = await run(f, ["doctor"]);
+      expect(doctor.stdout + doctor.stderr).not.toContain("this command runs in Pi session");
+    } finally {
+      await f.close();
+    }
+  }, 60_000);
+
+  test("#64: a registered Pi session gets no warning, and doctor says it is wakeable", async () => {
+    const f = await fixture();
+    f.env.PI_SESSION_ID = SESSION_ID;
+    try {
+      const whoami = await run(f, ["whoami"]);
+      expect(whoami.stdout.trim()).toBe(TARGET);
+      expect(whoami.stderr).toBe("");
+      const doctor = await run(f, ["doctor"]);
+      expect(doctor.stdout + doctor.stderr).toContain(`Pi session ${TARGET}, which is registered and wakeable`);
+    } finally {
+      await f.close();
+    }
+  }, 60_000);
 
   test("a Pi session cannot wake itself through an @ mention", async () => {
     const f = await fixture();

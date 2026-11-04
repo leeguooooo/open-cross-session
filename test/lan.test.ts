@@ -45,7 +45,7 @@ const T = 30_000;
 
 function cleanEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
   const env = { ...process.env } as Record<string, string>;
-  for (const key of ["CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CODEX_THREAD_ID", "OCS_NAME", "OCS_PI_SESSION_ID"]) {
+  for (const key of ["CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CODEX_THREAD_ID", "OCS_NAME", "OCS_PI_SESSION_ID", "PI_SESSION_ID"]) {
     delete env[key];
   }
   return { ...env, OCS_LANG: "en", ...extra };

@@ -239,6 +239,7 @@ async function runCli(
   delete env.CLAUDE_CODE_SESSION_ID;
   delete env.CLAUDE_CODE_MESSAGING_SOCKET;
   delete env.OCS_PI_SESSION_ID;
+  delete env.PI_SESSION_ID;
   const proc = Bun.spawn([process.execPath, CLI, ...args], { env, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),

@@ -112,7 +112,7 @@ test.skipIf(process.platform === "win32")("real CLI discovers, renames, routes D
   const socket=join(dir,"leader.sock"),log=join(dir,"prompts.jsonl");
   const server=Bun.spawn([binary,socket,ID,log],{stdout:"pipe",stderr:"pipe"});
   const env={...process.env,OCS_HOME:join(dir,"ocs"),CODEX_HOME:join(dir,"codex"),OCS_CLAUDE_NATIVE_SESSIONS_DIR:join(dir,"claude"),GROK_HOME:dir,GROK_LEADER_SOCKET:socket,
-    CODEX_THREAD_ID:"",GROK_SESSION_ID:"",OCS_NAME:"",OCS_PI_SESSION_ID:"",HERMES_SESSION_ID:"",OCS_UPGRADE_CHECK:"0",OCS_LANG:"en"};
+    CODEX_THREAD_ID:"",GROK_SESSION_ID:"",OCS_NAME:"",OCS_PI_SESSION_ID:"",PI_SESSION_ID:"",HERMES_SESSION_ID:"",OCS_UPGRADE_CHECK:"0",OCS_LANG:"en"};
   const run=async(args:string[],self=false)=>{
     const p=Bun.spawn([process.execPath,join(import.meta.dir,"../src/cli.ts"),...args],{env:{...env,...(self?{GROK_SESSION_ID:ID}:{})},stdout:"pipe",stderr:"pipe"});
     const [out,err]=await Promise.all([new Response(p.stdout).text(),new Response(p.stderr).text()]);

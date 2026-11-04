@@ -11,7 +11,7 @@ import { findAgyWorker } from "./agy.ts";
 import { grokSessionIdFromTarget, grokTargetName, selfGrokSessionId, type GrokSession } from "./grok.ts";
 import { createHash } from "node:crypto";
 import { readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   claudeWorkspaceAlias,
   claudeWorkspaceTargetMatches,
@@ -31,6 +31,7 @@ import {
   isPiSessionId,
   listPiSessions,
   OCS_PI_SESSION_ID_ENV,
+  PI_NATIVE_SESSION_ID_ENV,
   piSessionIdFromTarget,
   piTargetName,
   type PiSessionRegistration,
@@ -99,6 +100,43 @@ export function claudeSenderName(session: Pick<NativeClaudeSession, "name" | "se
   if (session.name !== null && NAME_RE.test(session.name)) return session.name;
   return claudeShortId(session.sessionId);
 }
+type PsLookup = (pid: number) => { ppid: number; comm: string } | undefined;
+
+/**
+ * Pi and Hermes both stamp a per-command session id, and each leaks into agents launched from
+ * the other's terminal tool. When both are present, the nearer host ancestor owns this process.
+ * Pi sets its process title to `pi` (`pi-rpc` in rpc mode). null = no host found.
+ */
+export function nearestPiOrHermesHost(
+  lookup: PsLookup,
+  start: number = process.ppid,
+): "pi" | "hermes" | null {
+  let pid = start;
+  for (let depth = 0; depth < 64; depth++) {
+    const entry = lookup(pid);
+    if (entry === undefined) return null;
+    const name = basename(entry.comm).replace(/\.exe$/i, "");
+    if (name === "pi" || name === "pi-rpc") return "pi";
+    if (name === "hermes") return "hermes";
+    if (entry.ppid === pid || entry.ppid <= 1) return null;
+    pid = entry.ppid;
+  }
+  return null;
+}
+
+/** #64: Pi's own PI_SESSION_ID, unless a Hermes command inherited it from an enclosing Pi. */
+export function nativePiSessionId(
+  env: NodeJS.ProcessEnv = process.env,
+  lookup?: PsLookup,
+): string | null {
+  const id = env[PI_NATIVE_SESSION_ID_ENV];
+  if (typeof id !== "string" || !isPiSessionId(id)) return null;
+  if (selfHermesSessionKey(env) === null) return id.toLowerCase();
+  // Undecidable stays as before this fallback existed: Hermes resolves it.
+  const find = lookup ?? ((table) => (pid: number) => table.get(pid))(psTable(env));
+  return nearestPiOrHermesHost(find) === "pi" ? id.toLowerCase() : null;
+}
+
 export function resolveSelfName(env: NodeJS.ProcessEnv = process.env): string | null {
   const explicit = env[OCS_NAME_ENV];
   if (typeof explicit === "string" && NAME_RE.test(explicit)) return explicit;
@@ -117,6 +155,10 @@ export function resolveSelfName(env: NodeJS.ProcessEnv = process.env): string | 
   if (typeof codexThreadId === "string" && isCodexThreadId(codexThreadId)) return codexThreadId.toLowerCase();
   const ocId = selfOpenCodeSessionId(env);
   if (ocId !== null) return opencodeTargetName(ocId);
+  // #64: Pi's own per-command id, for a Pi process our extension is not running in. Ranked after
+  // Claude/Codex/OpenCode because agents launched from Pi's bash tool inherit it.
+  const piNativeId = nativePiSessionId(env);
+  if (piNativeId !== null) return piTargetName(piNativeId);
   const hermesKey = selfHermesSessionKey(env);
   return hermesKey === null ? null : hermesTargetName(hermesKey);
 }
@@ -647,6 +689,8 @@ export function selfNameOwner(env: NodeJS.ProcessEnv = process.env): NameOwner |
   }
   const ocId = selfOpenCodeSessionId(env);
   if (ocId !== null) return { kind: "opencode", id: ocId };
+  const piNativeId = nativePiSessionId(env);
+  if (piNativeId !== null) return { kind: "pi", id: piNativeId };
   const hermesKey = selfHermesSessionKey(env);
   return hermesKey === null ? null : { kind: "hermes", id: hermesKey };
 }
