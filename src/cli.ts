@@ -45,6 +45,7 @@ import { cmdLan, doctorLanSection, lanDm, lanPeerCount, lanWhoJson, printLanWho,
 import {
   identityCursorConsumer,
   inboxCursorState,
+  unreadInChannel,
   isInboxSelf,
   listInboxThreads,
   saveInboxCursor,
@@ -84,6 +85,7 @@ import {
   readMessages,
   readReceipts,
   readRoutedMessages,
+  extractMentions,
   NAME_RE,
   OCS_IDENTITY_RE,
   CHANNEL_RE,
@@ -207,6 +209,32 @@ const COMMAND_SPECS: Record<string, CommandSpec> = {
   "--help": NO_ARGS,
   help: NO_ARGS,
 };
+
+/**
+ * #67: messages for the sender that arrived before the one it just stored and that it has not
+ * read. A correction sent mid-turn must not go unnoticed just because the sender kept talking.
+ * Only seq / sender / time — bodies are peer-controlled data. Never moves a cursor.
+ */
+function unreadBeforeOwn(
+  channel: string,
+  context: InboxIdentityContext,
+  ownSeq: number,
+  answeredSeq?: number,
+): number[] | null {
+  try {
+    const unread = unreadInChannel(channel, readRoutedMessages(channel), context)
+      .filter((message) => message.seq < ownSeq && message.seq !== answeredSeq);
+    const last = unread.at(-1);
+    if (last !== undefined) {
+      console.log(M.unreadBeforeOwn(channel, unread.length, unread[0]!.seq, last.seq, last.from, last.ts));
+    }
+    return unread.map((message) => message.seq);
+  } catch {
+    // A hint, never a reason to fail a stored send — but "could not tell" is not "nothing
+    // unread": callers must not move a read cursor on it.
+    return null;
+  }
+}
 
 let warnedUnregisteredPi = false;
 /**
@@ -533,6 +561,28 @@ async function cmdSend(parsed: Parsed): Promise<void> {
       };
     }
   }
+  // #67: in a local DM channel a plain send is meant for the peer. Without @ or --reply-to, wake
+  // the author of the peer's latest message (the way --reply-to does, minus the reply_to field).
+  // No peer message yet = no address to wake: stays stored-only (exit 2).
+  let dmPeer: ReturnType<typeof readRoutedMessages>[number] | undefined;
+  if (
+    channel.startsWith("dm-") &&
+    replyTo === undefined &&
+    codexFlag === undefined &&
+    !parsed.flags.has("no-wake") &&
+    extractMentions(body).length === 0
+  ) {
+    const context = currentInboxIdentity(parsed, from);
+    dmPeer = readRoutedMessages(channel).filter((candidate) => !isInboxSelf(candidate, context)).at(-1);
+    if (
+      replyRoute === undefined &&
+      dmPeer?.from_identity !== undefined &&
+      dmPeer.to_identity !== undefined &&
+      context.identities.includes(dmPeer.to_identity)
+    ) {
+      replyRoute = { from_identity: dmPeer.to_identity, to_identity: dmPeer.from_identity };
+    }
+  }
   // 订阅方在发送前就要确定：消息发出去之后才报「不在 Claude 会话里」是最坏的失败方式。
   const idleSubscriber = parsed.flags.has("notify-when-idle") ? requireIdleSubscriber() : null;
   const message = appendMessage({
@@ -544,9 +594,12 @@ async function cmdSend(parsed: Parsed): Promise<void> {
   });
   console.log(M.stored(channel, message.seq));
   markStored(channel, message.seq);
+  const unreadEarlier = unreadBeforeOwn(channel, currentInboxIdentity(parsed, from), message.seq, parent?.seq);
   // 回复了某条就不该再把它算未读：发送方读游标推进到被回复的 seq（只进不退）。
   // 不推到自己这条的 seq——回复期间新到的消息仍要留在未读里。
-  if (parent !== undefined && parent.from !== from) {
+  // #67：被回复那条之前还有没读的（或判断不了），就不推——否则刚提示要读的消息被跳过。
+  const skipsUnread = unreadEarlier === null || unreadEarlier.some((seq) => parent !== undefined && seq < parent.seq);
+  if (parent !== undefined && parent.from !== from && !skipsUnread) {
     try {
       saveInboxCursor(
         channel,
@@ -571,6 +624,10 @@ async function cmdSend(parsed: Parsed): Promise<void> {
   if (parent !== undefined && parent.from !== from) {
     const parentAddress = canonicalWakeAddress(parent.from);
     if (!wakeAddresses.includes(parentAddress)) wakeAddresses.push(parentAddress);
+  }
+  if (wakeAddresses.length === 0 && codexFlag === undefined && dmPeer !== undefined && dmPeer.from !== from) {
+    wakeAddresses.push(canonicalWakeAddress(dmPeer.from));
+    console.log(M.dmPeerImplicitWake(dmPeer.from, dmPeer.seq));
   }
 
   // @ 分流：裸 uuid → Codex，pi-<uuid> → Pi，其余 → Claude 会话名。
@@ -874,12 +931,22 @@ async function cmdDm(parsed: Parsed): Promise<void> {
   }
   const { channel, message } = appended;
   markStored(channel, message.seq);
+  const dmContext = currentInboxIdentity(parsed, from);
+  const unreadEarlier = unreadBeforeOwn(
+    channel,
+    { ...dmContext, identities: [...new Set([...dmContext.identities, messageFromIdentity])] },
+    message.seq,
+  );
   try {
-    saveInboxCursor(
-      channel,
-      [from, identityCursorConsumer(messageFromIdentity)],
-      message.seq,
-    );
+    // #67: jumping the cursor to our own seq would mark unread peer messages as read and hide
+    // them from `ocs inbox`. Our own messages never count as unread, so only advance when clean.
+    if (unreadEarlier !== null && unreadEarlier.length === 0) {
+      saveInboxCursor(
+        channel,
+        [from, identityCursorConsumer(messageFromIdentity)],
+        message.seq,
+      );
+    }
   } catch (error) {
     // Message commit is authoritative. A cursor failure must not turn a stored
     // send into an apparent failure that invites a duplicate retry.
@@ -1668,8 +1735,11 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
   after 5 minutes. Do not resend: ocs sends this session one \`[ocs delivery notice]\`
   if it ends up not delivered, and \`ocs read\` shows \`[wake → name: status]\` under
   your own messages. The fix is on the receiving side (\`ocs doctor --fix\`).
-  A send that wakes nobody (no @mention, no --reply-to) says stored-only; in a
-  dm-* channel that exits 2 too. A DM does not auto-wake the peer on plain send.
+  A send that wakes nobody (no @mention, no --reply-to) says stored-only. In a
+  local dm-* channel a plain send wakes the peer (author of its latest message);
+  only when the peer has not written there yet is it stored-only with exit 2.
+  send/dm also print \`unread: N earlier message(s)…\` when messages for you
+  arrived before yours and you have not read them — read them before acting.
 - Codex delivery ladder depends on the host: a Desktop-hosted task goes through
   Desktop IPC first (it keeps the native cross-task provenance envelope; a queued
   message is recorded as a plain user message instead), while a terminal TUI goes

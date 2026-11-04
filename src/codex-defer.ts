@@ -162,7 +162,16 @@ function watcherAlive(threadId: string, channel: string, env: NodeJS.ProcessEnv,
 
 /** rollout 尾部往前找回合生命周期事件时，每次多读这么多字节。 */
 const TAIL_CHUNK_BYTES = 256 * 1024;
-const LIFECYCLE_RE = /"type":"event_msg","payload":\{"type":"(task_started|task_complete|turn_aborted)"(?:,"turn_id":"([^"]+)")?/g;
+const LIFECYCLE_RE = /"type":"event_msg","payload":\{"type":"(task_started|task_complete|turn_aborted)"/g;
+// The id is not always the next key: codex 0.163 writes `"turn_attribution":{"turn_id":…}` first
+// (#67 — the old adjacent-key pattern read "" and silently disabled steering). Take the first
+// turn_id on the same line; both places carry the same id.
+const TURN_ID_RE = /"turn_id":"([^"]+)"/;
+
+function turnIdAfter(text: string, index: number): string {
+  const lineEnd = text.indexOf("\n", index);
+  return TURN_ID_RE.exec(text.slice(index, lineEnd === -1 ? undefined : lineEnd))?.[1] ?? "";
+}
 
 /**
  * 目标此刻正在跑的回合 id；空闲返回 null。证据取 rollout 里最后一个回合生命周期事件：
@@ -192,7 +201,7 @@ export function codexActiveTurnId(threadId: string, env: NodeJS.ProcessEnv = pro
       const text = buf.toString("utf8") + carry;
       let last: RegExpMatchArray | null = null;
       for (const match of text.matchAll(LIFECYCLE_RE)) last = match;
-      if (last !== null) return last[1] === "task_started" ? (last[2] ?? "") : null;
+      if (last !== null) return last[1] === "task_started" ? turnIdAfter(text, last.index!) : null;
       const firstNewline = text.indexOf("\n");
       carry = firstNewline === -1 ? text : text.slice(0, firstNewline);
       end = start;

@@ -4,6 +4,7 @@ import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { piTargetName, type PiSessionRegistration } from "../src/pi-sessions.ts";
+import { readRoutedMessages } from "../src/store.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 const SESSION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -175,6 +176,48 @@ describe("Pi CLI routing", () => {
       expect(whoami.stderr).toBe("");
       const doctor = await run(f, ["doctor"]);
       expect(doctor.stdout + doctor.stderr).toContain(`Pi session ${TARGET}, which is registered and wakeable`);
+    } finally {
+      await f.close();
+    }
+  }, 60_000);
+
+  test("#67: ocs dm points at the peer's unread reply and leaves it unread in ocs inbox", async () => {
+    const f = await fixture();
+    try {
+      const first = await run(f, ["dm", TARGET, "please wait for my go", "--as", "lead"]);
+      expect(first.code).toBe(0);
+      const channel = /channel (dm-[^,\s)]+)/.exec(first.stdout)?.[1];
+      expect(channel).toBeDefined();
+      const reply = await run(f, ["send", channel!, "correction: hold on", "--as", TARGET, "--reply-to", "1", "--no-wake"]);
+      expect(reply.code).toBe(0);
+      const second = await run(f, ["dm", TARGET, "go ahead", "--as", "lead"]);
+      expect(second.code).toBe(0);
+      expect(second.stdout).toContain("unread: 1 earlier message(s) for you in this channel you have not read (seq 2,");
+      const inbox = await run(f, ["inbox", "--as", "lead"]);
+      expect(inbox.stdout).toContain(channel!);
+      expect((await run(f, ["read", channel!, "--as", "lead"])).stdout).toContain("correction: hold on");
+      // once read, the next dm is clean
+      expect((await run(f, ["dm", TARGET, "thanks", "--as", "lead"])).stdout).not.toContain("unread:");
+    } finally {
+      await f.close();
+    }
+  }, 60_000);
+
+  test("#67 review: a DM send that @mentions someone else is not routed to the peer", async () => {
+    const f = await fixture();
+    try {
+      const first = await run(f, ["dm", TARGET, "hi", "--as", "lead"]);
+      const channel = /channel (dm-[^,\s)]+)/.exec(first.stdout)![1]!;
+      expect((await run(f, ["send", channel, "reply", "--as", TARGET, "--reply-to", "1", "--no-wake"])).code).toBe(0);
+      // plain send: routed to the Pi and wakes it
+      const plain = await run(f, ["send", channel, "plain", "--as", "lead"]);
+      expect(plain.stdout).toContain(`waking the peer ${TARGET}`);
+      expect(readRoutedMessages(channel, { env: f.env }).at(-1)?.to_identity).toBe(`pi:${SESSION_ID}`);
+      // @someone-else: not routed to the Pi
+      await run(f, ["send", channel, "@someone-else fyi", "--as", "lead"]);
+      const last = readRoutedMessages(channel, { env: f.env }).at(-1)!;
+      expect(last.body).toBe("@someone-else fyi");
+      expect(last.to_identity).toBeUndefined();
     } finally {
       await f.close();
     }

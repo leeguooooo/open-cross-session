@@ -210,6 +210,8 @@ interface Catalog {
   dmCmuxWoken: (ref: string) => string;
   dmCmuxFailed: (ref: string, detail: string) => string;
   whoamiUnknown: string;
+  dmPeerImplicitWake: (peer: string, seq: number) => string;
+  unreadBeforeOwn: (channel: string, count: number, firstSeq: number, lastSeq: number, lastFrom: string, lastAt: string) => string;
   whoamiSessionNotFound: (sessionId: string) => string;
   failInboxSessionWithAs: string;
   whoRenameHint: string;
@@ -305,7 +307,7 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   stored: (channel, seq) => `stored #${channel} seq ${seq}`,
   wakeNoMatch: (names) => `wake: no live Claude session matches @${names}`,
   sendNoWakeTarget: (dm) =>
-    `wake: stored-only — no @mention or --reply-to, nobody was woken${dm ? " (DM channels do not auto-wake the peer)" : ""}. Do not resend; add @<address> (e.g. claude-<8hex> from \`ocs who\`) or --reply-to <seq> next time.`,
+    `wake: stored-only — no @mention or --reply-to, nobody was woken${dm ? " (the peer has not written in this DM channel yet, so there is no address to wake)" : ""}. Do not resend; add @<address> (e.g. claude-<8hex> from \`ocs who\`) or --reply-to <seq> next time.`,
   wakeSelfSkipped: " (you mentioned yourself; skipped)",
   wakeDelivered: (target) => `wake: delivered to inbox → ${target}`,
   wakeFailed: (target, reason) =>
@@ -589,6 +591,9 @@ Details: https://github.com/leeguooooo/open-cross-session/blob/main/docs/lan.md`
     `${ref} is mid-turn; not interrupting. The message is in the channel — it will be read on the next turn, or retry later`,
   dmCmuxWoken: (ref) => `woke terminal ${ref} via cmux`,
   dmCmuxFailed: (ref, detail) => `cmux wake failed for ${ref}: ${detail}`,
+  dmPeerImplicitWake: (peer, seq) => `wake: DM channel — waking the peer ${peer} (author of seq ${seq}); use --no-wake to only store`,
+  unreadBeforeOwn: (channel, count, firstSeq, lastSeq, lastFrom, lastAt) =>
+    `unread: ${count} earlier message(s) for you in this channel you have not read (seq ${firstSeq === lastSeq ? firstSeq : `${firstSeq}–${lastSeq}`}, latest from ${lastFrom} at ${lastAt}) — they may change what you just said. Read them now: \`ocs read ${channel}\``,
   whoamiUnknown:
     "cannot tell who you are: not inside a registered Claude/Codex/Pi/OpenCode/Hermes/Grok session, and OCS_NAME is unset. Pass --as <name> or export OCS_NAME",
   whoamiSessionNotFound: (sessionId) => `no live Claude session has sessionId ${sessionId}`,
@@ -690,7 +695,7 @@ ${lanMessages("zh").help}
   stored: (channel, seq) => `已落盘 #${channel} seq ${seq}`,
   wakeNoMatch: (names) => `wake: 没有匹配 @${names} 的活 Claude 会话`,
   sendNoWakeTarget: (dm) =>
-    `wake: 仅落盘——正文没有 @点名、也没带 --reply-to，没有唤醒任何人${dm ? "（DM 频道不会自动叫醒对端）" : ""}。别重发；下次加 @<地址>（如 \`ocs who\` 里的 claude-<8hex>）或 --reply-to <seq>。`,
+    `wake: 仅落盘——正文没有 @点名、也没带 --reply-to，没有唤醒任何人${dm ? "（这个 DM 频道里对方还没发过消息，没有可唤醒的地址）" : ""}。别重发；下次加 @<地址>（如 \`ocs who\` 里的 claude-<8hex>）或 --reply-to <seq>。`,
   wakeSelfSkipped: "（@ 到了自己，已跳过）",
   wakeDelivered: (target) => `wake: 已投递收件箱 → ${target}`,
   wakeFailed: (target, reason) => `wake: 仅落盘 → ${target}: ${reason}（消息已经落盘，请勿重发）`,
@@ -955,6 +960,9 @@ ${lanMessages("zh").help}
   dmCmuxBusy: (ref) => `${ref} 正在跑一轮，不打断。消息已在频道里，它下轮会读到；也可稍后重试`,
   dmCmuxWoken: (ref) => `已经由 cmux 唤醒终端 ${ref}`,
   dmCmuxFailed: (ref, detail) => `cmux 唤醒 ${ref} 失败: ${detail}`,
+  dmPeerImplicitWake: (peer, seq) => `wake：DM 频道——唤醒对方 ${peer}（seq ${seq} 的作者）；只想落盘不唤醒用 --no-wake`,
+  unreadBeforeOwn: (channel, count, firstSeq, lastSeq, lastFrom, lastAt) =>
+    `未读：这个频道里有 ${count} 条发给你、你还没读的更早消息（seq ${firstSeq === lastSeq ? firstSeq : `${firstSeq}–${lastSeq}`}，最新一条来自 ${lastFrom}，${lastAt}）——可能会改变你刚说的事。现在就读：\`ocs read ${channel}\``,
   whoamiUnknown: "认不出你是谁：不在已登记的 Claude/Codex/Pi/OpenCode/Hermes/Grok 会话里，OCS_NAME 也没设。用 --as <name> 或 export OCS_NAME",
   whoamiSessionNotFound: (sessionId) => `没有 sessionId 为 ${sessionId} 的活 Claude 会话`,
   failInboxSessionWithAs: "--session 和 --as 是两种指定身份的方式，只能用一个",
