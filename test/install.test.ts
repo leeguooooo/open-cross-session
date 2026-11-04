@@ -17,6 +17,7 @@ function executable(path: string, source: string): void {
 
 function fixture(npxExit = 0): {
   root: string;
+  curlLog: string;
   env: Record<string, string>;
   npxLog: string;
   binaryLog: string;
@@ -34,9 +35,21 @@ if [ "\${1:-}" = "-s" ]; then echo Darwin; else echo arm64; fi
 `);
   executable(join(bin, "curl"), `#!/bin/sh
 out=""
+head=0
+url=""
 while [ "$#" -gt 0 ]; do
-  if [ "$1" = "-o" ]; then out="$2"; shift 2; else shift; fi
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -fsSI) head=1; shift ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
 done
+printf '%s\\n' "$url" >> "$INSTALL_TEST_CURL_LOG"
+if [ "$head" = 1 ]; then
+  printf 'HTTP/2 302\\r\\nLocation: %s\\r\\ncontent-length: 0\\r\\n\\r\\n' "$INSTALL_TEST_LATEST_LOCATION"
+  exit 0
+fi
 case "$out" in
   *.sha256) printf '%s\\n' 'deadbeef  archive' > "$out" ;;
   *) printf '%s\\n' 'archive' > "$out" ;;
@@ -64,6 +77,7 @@ exit "\${INSTALL_TEST_NPX_EXIT:-0}"
 `);
   return {
     root,
+    curlLog: join(root, "curl.log"),
     npxLog,
     binaryLog,
     installDir,
@@ -76,6 +90,8 @@ exit "\${INSTALL_TEST_NPX_EXIT:-0}"
       INSTALL_TEST_NPX_LOG: npxLog,
       INSTALL_TEST_BINARY_LOG: binaryLog,
       INSTALL_TEST_NPX_EXIT: String(npxExit),
+      INSTALL_TEST_CURL_LOG: join(root, "curl.log"),
+      INSTALL_TEST_LATEST_LOCATION: "https://github.com/leeguooooo/open-cross-session/releases/tag/v0.4.2",
     } as Record<string, string>,
   };
 }
@@ -120,5 +136,57 @@ describe("curl installer skill setup", () => {
     expect(existsSync(f.npxLog)).toBe(false);
     expect(existsSync(f.binaryLog)).toBe(false);
     expect(result.stdout).toContain("skill installation skipped (OCS_INSTALL_SKILLS=0)");
+  });
+});
+
+describe("curl installer release pinning", () => {
+  const DL = "https://github.com/leeguooooo/open-cross-session/releases/download";
+
+  test("resolves the latest tag once, then fetches archive and checksum from that tag", async () => {
+    const f = fixture();
+    f.env.OCS_INSTALL_SKILLS = "0";
+    const result = await run(f.env);
+    expect(result.code).toBe(0);
+    expect(readFileSync(f.curlLog, "utf8").trim().split("\n")).toEqual([
+      "https://github.com/leeguooooo/open-cross-session/releases/latest",
+      `${DL}/v0.4.2/ocs-darwin-arm64.tar.gz`,
+      `${DL}/v0.4.2/ocs-darwin-arm64.tar.gz.sha256`,
+    ]);
+  });
+
+  test("OCS_VERSION pins the release without asking for latest", async () => {
+    const f = fixture();
+    f.env.OCS_INSTALL_SKILLS = "0";
+    f.env.OCS_VERSION = "0.4.2";
+    expect((await run(f.env)).code).toBe(0);
+    expect(readFileSync(f.curlLog, "utf8").trim().split("\n")).toEqual([
+      `${DL}/v0.4.2/ocs-darwin-arm64.tar.gz`,
+      `${DL}/v0.4.2/ocs-darwin-arm64.tar.gz.sha256`,
+    ]);
+  });
+
+  test("a redirect to another project or a non-version tag fails before downloading", async () => {
+    for (const location of [
+      "https://github.com/someone-else/open-cross-session/releases/tag/v0.4.2",
+      "https://github.com/leeguooooo/open-cross-session/releases/tag/v0.4.2-rc.1",
+      "",
+    ]) {
+      const f = fixture();
+      f.env.INSTALL_TEST_LATEST_LOCATION = location;
+      const result = await run(f.env);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("could not determine the ocs release to install");
+      expect(readFileSync(f.curlLog, "utf8").trim().split("\n")).toHaveLength(1);
+      expect(existsSync(join(f.installDir, "ocs"))).toBe(false);
+    }
+  });
+
+  test("a binary whose version differs from the pinned tag is not installed", async () => {
+    const f = fixture();
+    f.env.OCS_VERSION = "0.4.3";
+    const result = await run(f.env);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("downloaded binary reports version 0.4.2, expected 0.4.3");
+    expect(existsSync(join(f.installDir, "ocs"))).toBe(false);
   });
 });

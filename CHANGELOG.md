@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `install.sh` / `install.ps1` resolve the latest release tag first, then download the archive and its `.sha256` from that tag and check the binary reports that version. Right after a release the two `/releases/latest/download/` redirects could point at different releases and the install failed with a sha256 mismatch. `OCS_VERSION=x.y.z` pins a version; `ocs upgrade` passes the exact release it compared against
+
 ## 0.9.12
 
 - Codex 0.163+ writes `turn_attribution` before `turn_id` in `task_started`; ocs read that as "busy, no turn id" and silently queued every mid-turn wake for the end of the turn instead of steering it in. The running turn's id is now found on either layout, so mid-turn DMs reach the current turn again (#67)
