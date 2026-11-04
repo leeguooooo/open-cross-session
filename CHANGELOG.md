@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.11
+
 - Pi sessions the ocs extension is not running in (usually opened before `ocs skill install` or an ocs upgrade) are no longer "unknown": `whoami`, `dm` and friends fall back to Pi's own `PI_SESSION_ID` and warn once that the session cannot be woken — replies are parked for `ocs inbox` until `/reload` (#64)
 - `ocs doctor` now checks the Pi session it runs in, separately from other registered Pi TUIs, and names the fix (`/reload`) when it is not registered (#64)
 - A DM parked for an unregistered Pi now says where it waits (`ocs inbox` in that Pi), not to resend, and to `/reload` rather than restart
