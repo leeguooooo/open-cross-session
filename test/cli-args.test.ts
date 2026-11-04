@@ -24,7 +24,7 @@ function runCli(args: string[]): { code: number; stderr: string; stdout: string 
   const proc = Bun.spawnSync(["bun", join(import.meta.dir, "..", "src", "cli.ts"), ...args], {
     env: {
       ...process.env, CODEX_HOME: join(home, "codex"), OCS_HOME: home, OCS_LANG: "en", OCS_UPGRADE_CHECK: "0",
-      CODEX_THREAD_ID: "", OCS_NAME: "", OCS_PI_SESSION_ID: "", HERMES_SESSION_ID: "",
+      CODEX_THREAD_ID: "", OCS_NAME: "", OCS_PI_SESSION_ID: "", PI_SESSION_ID: "", HERMES_SESSION_ID: "",
       OCS_CLAUDE_NATIVE_SESSIONS_DIR: join(home, "claude-sessions"),
     },
   });

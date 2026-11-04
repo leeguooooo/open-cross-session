@@ -70,7 +70,7 @@ function fixture(options: { policy?: InboundPolicy; prefix?: string; env?: Recor
   session(peer.pid, "peer-sess", "worker-a", "/work/worker");
   const home = join(dir, "home");
   const inherited = { ...process.env } as Record<string, string>;
-  for (const key of ["CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CODEX_THREAD_ID", "OCS_NAME", "OCS_PI_SESSION_ID"]) {
+  for (const key of ["CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CODEX_THREAD_ID", "OCS_NAME", "OCS_PI_SESSION_ID", "PI_SESSION_ID"]) {
     delete inherited[key];
   }
   return {

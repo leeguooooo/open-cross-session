@@ -31,6 +31,7 @@ import {
   isPiSessionId,
   listPiSessions,
   OCS_PI_SESSION_ID_ENV,
+  PI_NATIVE_SESSION_ID_ENV,
   piSessionIdFromTarget,
   piTargetName,
   type PiSessionRegistration,
@@ -117,6 +118,10 @@ export function resolveSelfName(env: NodeJS.ProcessEnv = process.env): string | 
   if (typeof codexThreadId === "string" && isCodexThreadId(codexThreadId)) return codexThreadId.toLowerCase();
   const ocId = selfOpenCodeSessionId(env);
   if (ocId !== null) return opencodeTargetName(ocId);
+  // #64: Pi's own per-command id, for a Pi process our extension is not running in. Ranked after
+  // Claude/Codex/OpenCode because agents launched from Pi's bash tool inherit it.
+  const piNativeId = env[PI_NATIVE_SESSION_ID_ENV];
+  if (typeof piNativeId === "string" && isPiSessionId(piNativeId)) return piTargetName(piNativeId);
   const hermesKey = selfHermesSessionKey(env);
   return hermesKey === null ? null : hermesTargetName(hermesKey);
 }
@@ -647,6 +652,10 @@ export function selfNameOwner(env: NodeJS.ProcessEnv = process.env): NameOwner |
   }
   const ocId = selfOpenCodeSessionId(env);
   if (ocId !== null) return { kind: "opencode", id: ocId };
+  const piNativeId = env[PI_NATIVE_SESSION_ID_ENV];
+  if (typeof piNativeId === "string" && isPiSessionId(piNativeId)) {
+    return { kind: "pi", id: piNativeId.toLowerCase() };
+  }
   const hermesKey = selfHermesSessionKey(env);
   return hermesKey === null ? null : { kind: "hermes", id: hermesKey };
 }

@@ -56,7 +56,7 @@ import {
   piExtensionPath,
   piSkillPath,
 } from "./pi-extension.ts";
-import { listPiSessions, wakePiSession } from "./pi-sessions.ts";
+import { listPiSessions, piSessionIdFromTarget, piTargetName, selfPiSessionIdHint, wakePiSession } from "./pi-sessions.ts";
 import {
   hermesIdentity,
   hermesSessionKeyFromTarget,
@@ -208,12 +208,28 @@ const COMMAND_SPECS: Record<string, CommandSpec> = {
   help: NO_ARGS,
 };
 
+let warnedUnregisteredPi = false;
+/**
+ * #64: the inferred identity is a Pi session our extension never registered (Pi started before
+ * `ocs skill install`, or a non-TUI mode). Sending works, but nothing can wake it — say so once.
+ */
+function warnIfUnregisteredPi(name: string): void {
+  if (warnedUnregisteredPi) return;
+  const id = piSessionIdFromTarget(name);
+  if (id === null || listPiSessions().some((session) => session.session_id === id)) return;
+  warnedUnregisteredPi = true;
+  console.error(M.piSelfUnregistered(name));
+}
+
 /** 发送者身份：--as > $OCS_NAME > 当前 Pi/Claude/Codex 宿主身份。 */
 function senderName(parsed: Parsed): string {
   const explicit = parsed.flags.get("as");
   if (typeof explicit === "string" && explicit !== "") return explicit;
   const inferred = resolveSelfName();
-  if (inferred !== null) return inferred;
+  if (inferred !== null) {
+    warnIfUnregisteredPi(inferred);
+    return inferred;
+  }
   fail(M.failNoSelfName);
 }
 
@@ -1159,10 +1175,12 @@ function cmdWhoami(parsed: Parsed): void {
     }
     const name = resolveSelfName();
     if (name === null) fail(M.whoamiUnknown);
+    warnIfUnregisteredPi(name);
     console.log(name);
     return;
   }
   if (owner === null) fail(M.whoamiUnknown);
+  if (owner.kind === "pi") warnIfUnregisteredPi(piTargetName(owner.id));
   const name = ocsNameFor(owner, listOcsNames())?.name ?? null;
   const id = owner.kind === "claude" ? claudeShortId(owner.session.sessionId) : ownerShortId(owner);
   const session = owner.kind === "claude" ? owner.session.name : null;
@@ -1463,6 +1481,12 @@ async function cmdDoctor(parsed: Parsed): Promise<void> {
   const pi = listPiSessions();
   if (pi.length > 0) ok(M.doctorPiSessions(pi.length));
   else warn(M.doctorNoPiSessions);
+  // #64: other healthy Pi TUIs say nothing about the Pi session this command runs in.
+  const selfPi = selfPiSessionIdHint();
+  if (selfPi !== null) {
+    if (pi.some((session) => session.session_id === selfPi)) ok(M.doctorPiSelfRegistered(piTargetName(selfPi)));
+    else warn(M.doctorPiSelfUnregistered(piTargetName(selfPi)));
+  }
 
   console.log(A.doctor);
   const agyWorker = findAgyWorker();

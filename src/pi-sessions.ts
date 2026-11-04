@@ -16,6 +16,13 @@ import { isAbsolute, join, resolve, sep } from "node:path";
 import { ocsHome } from "./store.ts";
 
 export const OCS_PI_SESSION_ID_ENV = "OCS_PI_SESSION_ID";
+/**
+ * Pi's own bash tool stamps this on every agent command (and drops any inherited copy first).
+ * It is only a fallback identity: it is present even when our extension is not running in that
+ * Pi process (Pi started before `ocs skill install`, or a non-TUI mode), so the session may have
+ * no registration and cannot be woken directly (#64).
+ */
+export const PI_NATIVE_SESSION_ID_ENV = "PI_SESSION_ID";
 export const PI_WAKE_TIMEOUT_MS = 2_000;
 export const PI_WAKE_MAX_BYTES = 16 * 1024;
 
@@ -48,6 +55,15 @@ export function isPiSessionId(value: string): boolean {
 export function piTargetName(sessionId: string): string {
   if (!isPiSessionId(sessionId)) throw new Error(`invalid Pi session id: ${sessionId}`);
   return `pi-${sessionId.toLowerCase()}`;
+}
+
+/** The Pi session id the current process runs under, from our extension's env or Pi's own. */
+export function selfPiSessionIdHint(env: NodeJS.ProcessEnv = process.env): string | null {
+  for (const key of [OCS_PI_SESSION_ID_ENV, PI_NATIVE_SESSION_ID_ENV]) {
+    const value = env[key];
+    if (typeof value === "string" && isPiSessionId(value)) return value.toLowerCase();
+  }
+  return null;
 }
 
 export function piSessionIdFromTarget(target: string): string | null {

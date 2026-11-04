@@ -44,7 +44,7 @@ function box(name: string, sessionName: string, sessionId: string, discoveryPort
     { mode: 0o600 },
   );
   const inherited = { ...process.env } as Record<string, string>;
-  for (const key of ["CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CODEX_THREAD_ID", "OCS_NAME", "OCS_PI_SESSION_ID"]) {
+  for (const key of ["CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CODEX_THREAD_ID", "OCS_NAME", "OCS_PI_SESSION_ID", "PI_SESSION_ID"]) {
     delete inherited[key];
   }
   return {
