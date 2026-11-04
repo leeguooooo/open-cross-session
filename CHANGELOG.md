@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.12
+
 - Codex 0.163+ writes `turn_attribution` before `turn_id` in `task_started`; ocs read that as "busy, no turn id" and silently queued every mid-turn wake for the end of the turn instead of steering it in. The running turn's id is now found on either layout, so mid-turn DMs reach the current turn again (#67)
 - In a local `dm-*` channel, `ocs send` without @ or `--reply-to` now wakes the peer (author of the latest peer message); `--no-wake` still only stores. With no peer message yet it stays stored-only, exit 2 (#67)
 - `ocs send` / `ocs dm` print a one-line `unread:` notice (seq range, sender, time — no body) when messages for you arrived before yours and are unread; `ocs dm` no longer moves your read cursor past them, so `ocs inbox` keeps showing them (#67)
