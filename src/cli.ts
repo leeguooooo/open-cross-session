@@ -17,7 +17,7 @@ import {
   runClaudeChannelServer,
   stripSessionEnv,
 } from "./claude-channel.ts";
-import { trafficStats, writeTraffic, startDeliveryObservation, type TrafficEvent, type TrafficOutcome } from "./traffic.ts";
+import { trafficStats, writeTraffic, type TrafficEvent, type TrafficOutcome } from "./traffic.ts";
 import { entryCapabilities } from "./capabilities.ts";
 import { findAgyWorker, stopAgyWorker } from "./agy.ts";
 import { grokSessionIdFromTarget, listGrokSessions } from "./grok.ts";
@@ -39,10 +39,13 @@ import {
   listCodexSessions,
 } from "./codex-sessions.ts";
 import {
+  bufferedSink,
   collectingSink,
   deliverDm,
+  deliverToClaude,
   deliverToCodexTask,
-  reportTrackedWake,
+  deliverToHermes,
+  deliverToPi,
   trackDelivery,
   type DeliverySink,
   type StoredDeliveryFailure,
@@ -66,14 +69,13 @@ import {
   piExtensionPath,
   piSkillPath,
 } from "./pi-extension.ts";
-import { listPiSessions, piSessionIdFromTarget, piTargetName, wakePiSession } from "./pi-sessions.ts";
+import { listPiSessions, piSessionIdFromTarget, piTargetName } from "./pi-sessions.ts";
 import {
   hermesIdentity,
   hermesSessionKeyFromTarget,
   hermesTargetName,
   listHermesSessions,
   selfHermesSessionKey,
-  wakeHermesSession,
 } from "./hermes.ts";
 import {
   createIdleSubscription,
@@ -134,11 +136,10 @@ import {
   parentPidOf,
   selectWakeTargets,
   splitWakeMentions,
-  wakeNote,
 } from "./wake.ts";
 import { runWakeHelper } from "./wake-helper.ts";
 import { CODEX_WAKE_WATCH_COMMAND, runCodexWakeWatch, setCodexWakeWatcherCommand } from "./codex-defer.ts";
-import { setWakeHelperCommand, WAKE_HELPER_COMMAND, wakeClaudeTracked, type NoticeSender } from "./wake-receipt.ts";
+import { setWakeHelperCommand, WAKE_HELPER_COMMAND, type NoticeSender } from "./wake-receipt.ts";
 import {
   checkUpgrade,
   OCS_INSTALL_PS1_URL,
@@ -694,20 +695,9 @@ async function cmdSend(parsed: Parsed): Promise<void> {
       markStoredDeliveryFailure("failed");
       continue;
     }
-    const finishDelivery = startDeliveryObservation(channel, message.seq);
-    const result = await wakePiSession(
-      resolved.piSession,
-      wakeNote({ ...wakeInput, receiver: resolved.name, implicitReceiver: true }),
-    );
-    finishDelivery(result.ok ? "accepted" : result.reason === "unknown-outcome" ? "unknown" : "failed");
-    if (result.ok) console.log(M.piWakeAccepted(target));
-    else if (result.reason === "unknown-outcome") {
-      console.log(M.piWakeUnknownOutcome(target, result.detail ?? ""));
-      markStoredDeliveryFailure("unknown");
-    } else {
-      console.log(M.piWakeFailed(target, result.reason, result.detail ?? ""));
-      markStoredDeliveryFailure("failed");
-    }
+    const piSession = resolved.piSession;
+    await trackDelivery(channel, message.seq, CLI_SINK, (sink) =>
+      deliverToPi(piSession, { receiver: resolved.name, label: target }, wakeInput, M, sink));
   }
 
   // Hermes 侧：连宿主 WebSocket，排在对方当前这一轮后面（queued），不打断。
@@ -717,17 +707,8 @@ async function cmdSend(parsed: Parsed): Promise<void> {
       continue;
     }
     const key = hermesSessionKeyFromTarget(target)!;
-    const finishDelivery = startDeliveryObservation(channel, message.seq);
-    const result = await wakeHermesSession(key, wakeNote({ ...wakeInput, receiver: target, implicitReceiver: true }));
-    finishDelivery(result.ok ? "accepted" : result.reason === "unknown-outcome" ? "unknown" : "failed");
-    if (result.ok) console.log(result.delivery === "started" ? M.hermesWakeStarted(target) : M.hermesWakeQueued(target));
-    else if (result.reason === "unknown-outcome") {
-      console.log(M.hermesWakeUnknownOutcome(target, result.detail ?? ""));
-      markStoredDeliveryFailure("unknown");
-    } else {
-      console.log(M.hermesWakeFailed(target, result.reason, result.detail ?? ""));
-      markStoredDeliveryFailure("failed");
-    }
+    await trackDelivery(channel, message.seq, CLI_SINK, (sink) =>
+      deliverToHermes(key, { receiver: target, label: target }, wakeInput, M, sink));
   }
 
   const openCodeMentions = claudeNames.filter((name) => opencodeSessionIdFromTarget(name) !== null);
@@ -782,16 +763,10 @@ async function cmdSend(parsed: Parsed): Promise<void> {
   // 铁律 4：帧进了收件箱 ≠ 进了对话；回执能把「被扣 / 被拒」说出来，说不出「已读」。
   const sender = noticeSender();
   const claudeWokeAt = Date.now();
-  const wakes = await Promise.all(
-    selection.targets.map((session) => trackDelivery(channel, message.seq, collectingSink(), async (sink) => {
-      const wake = await wakeClaudeTracked(session, wakeInput, { sender });
-      reportTrackedWake(`${session.name ?? "?"}(pid ${session.pid})`, wake, M, sink, { followUp: sender !== null });
-      return wake;
-    })),
-  );
-  selection.targets.forEach((session, index) => {
-    reportTrackedWake(`${session.name ?? "?"}(pid ${session.pid})`, wakes[index]!, M, CLI_SINK, { followUp: sender !== null });
-  });
+  const buffers = selection.targets.map(() => bufferedSink());
+  await Promise.all(selection.targets.map((session, index) => trackDelivery(channel, message.seq, buffers[index]!, (sink) =>
+    deliverToClaude(session, wakeInput, M, sink, { receipts: { sender, followUp: sender !== null } }))));
+  for (const buffer of buffers) buffer.flush(CLI_SINK);
   if (idleSubscriber !== null) subscribeIdle(idleSubscriber, selection.targets, claudeWokeAt);
 }
 
