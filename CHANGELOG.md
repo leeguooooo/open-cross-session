@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.14
+
 - Experimental `ocs claude`: starts Claude Code with an ocs channel (Claude Code Channels research preview). Messages to that session arrive as `<channel source="ocs">` events, are not held by `crossSessionInbound`, and the session gets `ocs_dm` / `ocs_send` tools. Senders report `handed to the session's ocs channel`, which is not a read receipt; an unanswered channel write is unknown (exit 3) and is never re-sent through the inbox. `ocs who` tags such sessions `[channel]`. macOS/Linux only. See [docs/claude-channel.md](docs/claude-channel.md)
 - Wake bodies now also neutralize `<channel` / `</channel` tags
 - `ocs send` / `ocs dm` accept `--` to end options, so a body may start with `--`
