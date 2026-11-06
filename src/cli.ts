@@ -8,6 +8,7 @@ import { installOpenCodeIntegration, openCodePluginCurrent, openCodePluginPath, 
 
 import { chmodSync, mkdirSync, statSync, writeSync } from "node:fs";
 import { batchBody } from "./batch.ts";
+import { seenWakes, type SeenSource } from "./seen-wakes.ts";
 import {
   CLAUDE_BIN_ENV,
   CLAUDE_CHANNEL_COMMAND,
@@ -283,6 +284,9 @@ function currentInboxIdentity(
   // #62: DMs sent to `codex-<uuid>` by older versions are routed to this name identity.
   if (isCodexThreadId(primaryName)) identities.add(`name:codex-${primaryName.toLowerCase()}`);
   const mentionNames = new Set([primaryName]);
+  // 宿主自己的会话记录能证明哪些唤醒已经进了对话（src/seen-wakes.ts）。显式 --as / OCS_NAME
+  // 时身份是个名字，不一定是这个会话，不用它的记录。
+  let seenSource: SeenSource | null = null;
   const pinnedName = process.env[OCS_NAME_ENV];
   const explicit = pinned === undefined && (parsed.flags.has("as") ||
     (typeof pinnedName === "string" && NAME_RE.test(pinnedName)));
@@ -299,7 +303,10 @@ function currentInboxIdentity(
       const selfPid = findSelfClaudePid();
       session = selfPid === null ? undefined : sessions.find((candidate) => candidate.pid === selfPid);
     }
+    if (owner?.kind === "codex") seenSource = { kind: "codex", threadId: owner.id };
+    else if (owner?.kind === "pi") seenSource = { kind: "pi", sessionId: owner.id };
     if (session !== undefined && claudeSenderName(session) === primaryName) {
+      if (session.sessionId !== null) seenSource = { kind: "claude", sessionId: session.sessionId };
       identities.add(claudeSessionIdentity(session));
       const alias = shadowFreeWorkspaceAlias(session, sessions, names);
       if (alias !== null) mentionNames.add(alias);
@@ -315,6 +322,7 @@ function currentInboxIdentity(
     primaryName,
     identities: [...identities],
     mentionNames: [...mentionNames],
+    ...(seenSource === null ? {} : { seen: seenWakes(seenSource) }),
   };
 }
 

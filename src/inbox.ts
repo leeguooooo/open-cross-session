@@ -4,6 +4,7 @@
 
 import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
+import { seenKey } from "./seen-wakes.ts";
 import {
   cursorPath,
   listChannels,
@@ -20,6 +21,12 @@ export interface InboxIdentityContext {
   identities: readonly string[];
   /** Human addresses that count as a directed mention in ordinary channels. */
   mentionNames: readonly string[];
+  /**
+   * Wakes the host's own session record proves entered this conversation (src/seen-wakes.ts,
+   * keys from seenKey). The note carried the full body, so they are read. Never derived from
+   * delivery success (iron rule 4).
+   */
+  seen?: ReadonlySet<string>;
 }
 
 export interface InboxThread {
@@ -115,12 +122,33 @@ export function unreadInChannel(
     .some((consumer) => cursorExists(channel, consumer, env));
   // lan-* 是跨机 DM（docs/lan.md），归属规则同 dm-*。
   const dm = channel.startsWith("dm-") || channel.startsWith("lan-");
-  return messages.filter((message) => {
+  const candidate = (message: RoutedOcsMessage) => {
     if (message.seq <= state.cursor || isInboxSelf(message, context)) return false;
     if (message.to_identity !== undefined && identities.has(message.to_identity)) return true;
     if (dm) return joined && message.to_identity === undefined;
     return joined || message.mentions.some((mention) => mentionNames.has(mention));
-  });
+  };
+  const seen = context.seen;
+  if (seen === undefined || seen.size === 0) return messages.filter(candidate);
+  const isSeen = (message: RoutedOcsMessage) => seen.has(seenKey(channel, message.seq));
+  // 把游标推过「已经在对话里看过」的连续前缀并落盘：会话记录只读尾部，老的证据会滚出窗口，
+  // 推过去之后就不再依赖它。中间夹着一条没看过的就停，后面的不跳。
+  let advanced = state.cursor;
+  let sawAny = false;
+  for (const message of [...messages].sort((a, b) => a.seq - b.seq)) {
+    if (message.seq <= state.cursor) continue;
+    if (candidate(message) && !isSeen(message)) break;
+    if (isSeen(message)) sawAny = true;
+    advanced = message.seq;
+  }
+  if (sawAny && advanced > state.cursor) {
+    try {
+      saveInboxCursor(channel, state.consumers, advanced, env);
+    } catch {
+      // 只是省一次重复提示，写不了就下次再算
+    }
+  }
+  return messages.filter((message) => candidate(message) && !isSeen(message));
 }
 
 /**

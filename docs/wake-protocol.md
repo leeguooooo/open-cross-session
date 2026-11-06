@@ -358,3 +358,25 @@ remain unknown; no fallback, automatic replay or session creation is allowed.
 The durable OCS channel remains available through inbox/read. Queue acceptance
 proves neither model consumption nor task completion. V1 is outside this adapter's
 supported API contract.
+
+## 7. 已读证据：唤醒 note 已进对话（v0.9.16）
+
+唤醒 note 把正文（≤4096 字节）逐字带进收件方会话，收件方其实已经读到了；但读游标只有
+`ocs read` 推进，`ocs dm/send` 的 `unread:` 提示和 `ocs inbox`（状态栏）会一直把它算作未读。
+
+收件方自己的 ocs 进程读**本会话**的宿主记录，找到「这条 note 已经进了对话」的条目，就不再
+把那条消息算未读，并把读游标推过连续看过的那一段（中间夹着没看过的就停）。证据只认这些：
+
+| 宿主 | 记录文件 | 算数的条目 |
+|---|---|---|
+| Claude Code | `~/.claude/projects/*/<session-id>.jsonl` | `attachment.type == "queued_command"`；`type == "user"` 的字符串内容（空闲开新一轮、channel 事件） |
+| Codex（queue / steer） | rollout 文件 | `response_item` / `message` / `role: "user"` |
+| Pi | `~/.pi/agent/sessions/*/*_<session-id>.jsonl` | `type: "message"`、`role: "user"` |
+
+- 文本必须**以唤醒首行开头**（Claude 允许先有 ocs 的包装标签，以及包装前宿主加的一行引导语）。
+  工具输出、模型回复、developer 说明里引用的首行都不算。
+- 正文超过 4096 字节、只带了 512 字节预览的 note 不算已读。合并唤醒只证明它自己那条 seq。
+- 投递结果（inbox accepted、交给 channel、queue 写入）**一律不算**已读（铁律 4）。被扣留的
+  Claude 消息在记录里只有 `enqueue`，不会被认成已读。
+- 只读本会话自己的、同 uid、非符号链接的记录文件，只读尾部 8 MiB；显式 `--as` / `OCS_NAME`
+  时不用。Codex Desktop 委托信封、OpenCode、Hermes、Grok、agy 暂无证据来源，照旧按游标算。
