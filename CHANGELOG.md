@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Experimental `ocs claude`: starts Claude Code with an ocs channel (Claude Code Channels research preview). Messages to that session arrive as `<channel source="ocs">` events, are not held by `crossSessionInbound`, and the session gets `ocs_dm` / `ocs_send` tools. Senders report `handed to the session's ocs channel`, which is not a read receipt; an unanswered channel write is unknown (exit 3) and is never re-sent through the inbox. `ocs who` tags such sessions `[channel]`. macOS/Linux only. See [docs/claude-channel.md](docs/claude-channel.md)
+- Wake bodies now also neutralize `<channel` / `</channel` tags
+- `ocs send` / `ocs dm` accept `--` to end options, so a body may start with `--`
+
 ## 0.9.13
 
 - `install.sh` / `install.ps1` resolve the latest release tag first, then download the archive and its `.sha256` from that tag and check the binary reports that version. Right after a release the two `/releases/latest/download/` redirects could point at different releases and the install failed with a sha256 mismatch. `OCS_VERSION=x.y.z` pins a version; `ocs upgrade` passes the exact release it compared against

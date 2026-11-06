@@ -17,7 +17,7 @@ import type { NativeClaudeSession } from "./claude-inject.ts";
 import type { PeerReceiptStatus } from "./claude-receipt.ts";
 import type { Lang } from "./i18n.ts";
 import { ocsHome } from "./store.ts";
-import { wakeNote, wakeSessions, type WakeInput } from "./wake.ts";
+import { wakeNote, wakeSessions, wakeViaClaudeChannel, type WakeInput } from "./wake.ts";
 
 export const WAKE_HELPER_COMMAND = "_claude-wake";
 /** 设为 1 关掉回执（回到 0.6 的行为与措辞）。 */
@@ -65,7 +65,11 @@ export type FirstPhase =
   /** accepted = 窗口内没有任何回执。 */
   | { kind: "receipt"; status: "accepted" | PeerReceiptStatus; reason?: string };
 
-export type TrackedWake = FirstPhase | { kind: "unknown"; detail: string };
+export type TrackedWake =
+  | FirstPhase
+  | { kind: "unknown"; detail: string }
+  /** 经 Claude channel 投递（docs/claude-channel.md）：宿主不回执，最多算 accepted。 */
+  | { kind: "channel" };
 
 const ID_RE = /^[0-9a-f-]{36}$/;
 const FIRST_STATUSES: ReadonlySet<string> = new Set([
@@ -248,7 +252,8 @@ export interface TrackedWakeOptions {
 async function plainWake(session: NativeClaudeSession, input: WakeInput): Promise<TrackedWake> {
   const [outcome] = await wakeSessions([session], input);
   const result = outcome!.result;
-  if (result.ok) return { kind: "plain" };
+  if (result.ok) return result.carrier === "channel" ? { kind: "channel" } : { kind: "plain" };
+  if (result.reason === "unknown-outcome") return { kind: "unknown", detail: result.detail ?? "channel outcome unknown" };
   return { kind: "failed", reason: result.reason, ...(result.detail === undefined ? {} : { detail: result.detail }) };
 }
 
@@ -262,6 +267,10 @@ export async function wakeClaudeTracked(
   options: TrackedWakeOptions,
 ): Promise<TrackedWake> {
   const env = options.env ?? input.env ?? process.env;
+  // 目标带着 ocs channel：先走 channel（它不经过 crossSessionInbound，也就没有回执可订阅）。
+  const receiverName = session.name ?? `pid-${session.pid}`;
+  const viaChannel = await wakeViaClaudeChannel(session, wakeNote({ ...input, receiver: receiverName, implicitReceiver: true }), { ...input, env });
+  if (viaChannel !== null) return viaChannel.kind === "accepted" ? { kind: "channel" } : viaChannel;
   const command = options.command ?? helperCommand;
   if (command === null || command.length === 0 || !receiptsAvailable(env, options.platform)) {
     return plainWake(session, { ...input, env });

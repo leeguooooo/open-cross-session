@@ -425,7 +425,9 @@ export type InjectFailureReason =
   | "probe-failed"
   | "socket-untrusted"
   | "body-too-large"
-  | "write-failed";
+  | "write-failed"
+  /** 只由 Claude channel 载体产生（src/claude-channel.ts）：请求已写出、结果未知，绝不重投。 */
+  | "unknown-outcome";
 
 /**
  * 目标 socket 属主校验（#867 ②）。本模块另外三处 `lstatSync`（会话目录、`<pid>.json`、
@@ -474,7 +476,7 @@ export type InjectResult =
    * 5 分钟无人处理后被 drop；refuse 直接丢。接收端不回错，我们无从区分。
    * **调用方绝不可据此清频道侧的 @ 欠账/wake 记账**——真正送达以对方回话/ack 为准。
    */
-  | { ok: true; socketPath: string; usedAuth: boolean; target: string }
+  | { ok: true; socketPath: string; usedAuth: boolean; target: string; carrier?: "channel" }
   | { ok: false; reason: InjectFailureReason; detail?: string };
 
 export interface InjectChannelMessageInput {

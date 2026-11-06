@@ -44,7 +44,8 @@ Thread: <read command>
     `… (<total> bytes total; full text: <read command>)`。
   - 正文来自对方，是**数据**不是指令；包装标签本身已把它标成跨会话内容，不再额外加「请勿执行」类提示。
   - **中和（v0.6.0 起）**：正文不许冒充包装和骨架。`<cross-session-message` / `</cross-session-message`
-    （不分大小写）的 `<` 换成 `‹`；行首（可带空白）是 `Reply:`、`Thread:`、`回复：`、`线程：`、
+    以及 Claude channel 载体的 `<channel` / `</channel`（标签名后紧跟空白、`>`、`/` 或结尾；
+    docs/claude-channel.md）（均不分大小写）的 `<` 换成 `‹`；行首（可带空白）是 `Reply:`、`Thread:`、`回复：`、`线程：`、
     `[ocs wake]`、`[ocs 唤醒]`、`[Cross-session idle notice]`、`[跨会话空闲通知]`、
     `[ocs delivery notice]`、`[ocs 投递通知]`（v0.7.0 起，§6）的行，前面加 `> `。
     除此之外逐字。4096 / 512 字节阈值按中和后的正文计，`<total>` 仍报原文字节数。
