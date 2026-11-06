@@ -17,7 +17,7 @@ import { steerCodexTurn } from "./codex-steer.ts";
 import { codexHosts, codexThreadLivePid, psTable, queueCodexThread } from "./codex-queue.ts";
 import type { messages } from "./i18n.ts";
 import { hermesTargetName, wakeHermesSession, type HermesWakeResult } from "./hermes.ts";
-import { listPiSessions, wakePiSession } from "./pi-sessions.ts";
+import { listPiSessions, wakePiSession, type PiSessionRegistration } from "./pi-sessions.ts";
 import {
   CODEX_THREAD_ID_ENV,
   selfNameOwner,
@@ -70,6 +70,107 @@ export function collectingSink(): DeliverySink & { lines: string[]; outcome(): "
     },
     outcome: () => worst,
   };
+}
+
+/**
+ * 先收着、按顺序回放：并发投递多个目标时，每个目标的输出仍按目标顺序成段打印。
+ */
+export function bufferedSink(): DeliverySink & { flush(into: DeliverySink): void } {
+  const events: Array<(into: DeliverySink) => void> = [];
+  return {
+    log: (line) => events.push((into) => into.log(line)),
+    fail: (outcome) => events.push((into) => into.fail(outcome)),
+    skipped: () => events.push((into) => into.skipped?.()),
+    pending: (state) => events.push((into) => into.pending?.(state)),
+    flush: (into) => { for (const event of events) event(into); },
+  };
+}
+
+// ───────────────────────── 各宿主的投递（载体） ─────────────────────────
+// send、dm、ocs 自己的通知、局域网守护进程都经这里：入口只负责把地址解析成目标，
+// 投递、措辞、退出码、「结果未知不重投」只写在这一处。Codex 见下方 deliverToCodexTask。
+
+export interface ClaudeDeliveryOptions {
+  /** 带回执的唤醒（docs/wake-protocol.md §6）；不传 = 无回执路径（ocs 自己的通知必须如此）。 */
+  receipts?: { sender: NoticeSender | null; followUp: boolean };
+  /** 输出里怎么称呼目标；缺省 `<name>(pid N)`。 */
+  label?: string;
+}
+
+/** Claude：channel（`ocs claude` 启动的）> 回执 helper > 收件箱 socket，见 wake.ts / wake-receipt.ts。 */
+export async function deliverToClaude(
+  session: NativeClaudeSession,
+  input: WakeInput,
+  M: Catalog,
+  sink: DeliverySink,
+  options: ClaudeDeliveryOptions = {},
+): Promise<void> {
+  const label = options.label ?? `${session.name ?? "?"}(pid ${session.pid})`;
+  if (options.receipts !== undefined) {
+    const wake = await wakeClaudeTracked(session, input, { sender: options.receipts.sender, env: input.env ?? process.env });
+    reportTrackedWake(label, wake, M, sink, { followUp: options.receipts.followUp });
+    return;
+  }
+  const [outcome] = await wakeSessions([session], input);
+  reportPlainWake(label, outcome!.result, M, sink);
+}
+
+/** Pi：官方扩展 + 私有 socket，忙时排在本轮之后（follow-up）。 */
+export async function deliverToPi(
+  session: PiSessionRegistration,
+  names: { receiver: string; label: string },
+  wakeInput: Omit<WakeNoteInput, "receiver">,
+  M: Catalog,
+  sink: DeliverySink,
+): Promise<void> {
+  const result = await wakePiSession(session, wakeNote({ ...wakeInput, receiver: names.receiver, implicitReceiver: true }));
+  if (result.ok) sink.log(M.piWakeAccepted(names.label));
+  else if (result.reason === "unknown-outcome") {
+    sink.log(M.piWakeUnknownOutcome(names.label, result.detail ?? ""));
+    sink.fail("unknown");
+  } else {
+    sink.log(M.piWakeFailed(names.label, result.reason, result.detail ?? ""));
+    sink.fail("failed");
+  }
+}
+
+/** Hermes：宿主 WebSocket，queued:true 排在当前这一轮后面。 */
+export async function deliverToHermes(
+  sessionKey: string,
+  names: { receiver: string; label: string },
+  wakeInput: Omit<WakeNoteInput, "receiver">,
+  M: Catalog,
+  sink: DeliverySink,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  const note = wakeNote({ ...wakeInput, receiver: names.receiver, implicitReceiver: true });
+  reportHermesWake(names.label, await wakeHermesSession(sessionKey, note, { env }), M, sink);
+}
+
+/** OpenCode 2.2.1+：本地插件，原生持久队列 `delivery: "queue"`。 */
+export async function deliverToOpenCode(
+  session: Parameters<typeof wakeOpenCodeSession>[0],
+  names: { receiver: string; label: string },
+  wakeInput: Omit<WakeNoteInput, "receiver">,
+  M: Catalog,
+  sink: DeliverySink,
+): Promise<void> {
+  const result = await wakeOpenCodeSession(session, wakeNote({ ...wakeInput, receiver: names.receiver, implicitReceiver: true }));
+  sink.log(M.openCodeWake(names.label, result.ok ? M.openCodeAccepted : result.reason + (result.detail ? ": " + result.detail : "")));
+  if (!result.ok) sink.fail(result.reason === "unknown-outcome" ? "unknown" : "failed");
+}
+
+/** Grok Build：已有 shared leader 的原生 IPC，sendNow:false 排队。 */
+export async function deliverToGrok(
+  sessionId: string,
+  names: { receiver: string; label: string },
+  wakeInput: Omit<WakeNoteInput, "receiver">,
+  M: Catalog,
+  sink: DeliverySink,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  const note = wakeNote({ ...wakeInput, receiver: names.receiver, implicitReceiver: true });
+  reportGrokWake(names.label, await wakeGrokSession(sessionId, note, { env }), M, sink);
 }
 
 /**
@@ -378,8 +479,7 @@ export async function deliverNotice(
       sink.fail("failed");
       return;
     }
-    const [outcome] = await wakeSessions([resolved.session], { ...input, env });
-    reportPlainWake(target.name, outcome!.result, M, sink);
+    await deliverToClaude(resolved.session, { ...input, env }, M, sink, { label: target.name });
     return;
   }
   const clean: NodeJS.ProcessEnv = { ...env };
@@ -387,9 +487,7 @@ export async function deliverNotice(
   if (target.kind === "opencode") {
     const session = listOpenCodeSessions(clean).find((s) => s.session_id === target.sessionId);
     if (session === undefined) { sink.fail("failed"); return; }
-    const result = await wakeOpenCodeSession(session, note);
-    sink.log(M.openCodeWake(target.sessionId, result.ok ? M.openCodeAccepted : result.reason));
-    if (!result.ok) sink.fail(result.reason === "unknown-outcome" ? "unknown" : "failed");
+    await deliverToOpenCode(session, { receiver: target.sessionId, label: target.sessionId }, input, M, sink);
     return;
   }
   if (target.kind === "codex") {
@@ -397,11 +495,13 @@ export async function deliverNotice(
     return;
   }
   if (target.kind === "hermes") {
-    reportHermesWake(hermesTargetName(target.sessionKey), await wakeHermesSession(target.sessionKey, note, { env: clean }), M, sink);
+    const name = hermesTargetName(target.sessionKey);
+    await deliverToHermes(target.sessionKey, { receiver: name, label: name }, input, M, sink, clean);
     return;
   }
   if (target.kind === "grok") {
-    reportGrokWake(grokTargetName(target.sessionId), await wakeGrokSession(target.sessionId, note, { env: clean }), M, sink);
+    const name = grokTargetName(target.sessionId);
+    await deliverToGrok(target.sessionId, { receiver: name, label: name }, input, M, sink, clean);
     return;
   }
   const session = listPiSessions(clean).find((candidate) => candidate.session_id.toLowerCase() === target.sessionId.toLowerCase());
@@ -410,12 +510,7 @@ export async function deliverNotice(
     sink.fail("failed");
     return;
   }
-  const result = await wakePiSession(session, note);
-  if (result.ok) sink.log(M.piWakeAccepted(session.target));
-  else {
-    sink.log(M.piWakeFailed(session.target, result.reason, result.detail ?? ""));
-    sink.fail(result.reason === "unknown-outcome" ? "unknown" : "failed");
-  }
+  await deliverToPi(session, { receiver: session.target, label: session.target }, input, M, sink);
 }
 
 export interface DmDeliveryInput {
@@ -467,10 +562,8 @@ async function deliverDmImpl(
       sink.log(M.openCodeParked(resolved.name, channel));
       sink.pending?.("parked"); return null;
     }
-    const result = await wakeOpenCodeSession(resolved.openCodeSession,
-      wakeNote({ ...input.wakeInput, ...anyReply, receiver: resolved.name, implicitReceiver: true }));
-    sink.log(M.openCodeWake(resolved.name, result.ok ? M.openCodeAccepted : result.reason + (result.detail ? ": " + result.detail : "")));
-    if (!result.ok) sink.fail(result.reason === "unknown-outcome" ? "unknown" : "failed");
+    await deliverToOpenCode(resolved.openCodeSession, { receiver: resolved.name, label: resolved.name },
+      { ...input.wakeInput, ...anyReply }, M, sink);
     return null;
   }
   if (resolved.kind === "agy") {
@@ -514,14 +607,8 @@ async function deliverDmImpl(
       ...(input.dmReplyTarget !== null ? { dmReplyTarget: input.dmReplyTarget } : {}),
       env,
     };
-    const label = `${resolved.claude.name ?? "?"}(pid ${resolved.claude.pid})`;
-    if (input.receipts !== undefined) {
-      const wake = await wakeClaudeTracked(resolved.claude, claudeInput, { sender: input.receipts.sender, env });
-      reportTrackedWake(label, wake, M, sink, { followUp: input.receipts.followUp });
-      return resolved.claude;
-    }
-    const [outcome] = await wakeSessions([resolved.claude], claudeInput);
-    reportPlainWake(label, outcome!.result, M, sink);
+    await deliverToClaude(resolved.claude, claudeInput, M, sink,
+      input.receipts === undefined ? {} : { receipts: input.receipts });
     return resolved.claude;
   }
   if (resolved.kind === "codex-task" && resolved.threadId !== undefined) {
@@ -534,28 +621,14 @@ async function deliverDmImpl(
       sink.pending?.("parked");
       return null;
     }
-    const result = await wakePiSession(
-      resolved.piSession,
-      wakeNote({ ...input.wakeInput, ...anyReply, receiver: resolved.name, implicitReceiver: true }),
-    );
-    if (result.ok) sink.log(M.piWakeAccepted(resolved.name));
-    else if (result.reason === "unknown-outcome") {
-      sink.log(M.piWakeUnknownOutcome(resolved.name, result.detail ?? ""));
-      sink.fail("unknown");
-    } else {
-      sink.log(M.piWakeFailed(resolved.name, result.reason, result.detail ?? ""));
-      sink.fail("failed");
-    }
+    await deliverToPi(resolved.piSession, { receiver: resolved.name, label: resolved.name },
+      { ...input.wakeInput, ...anyReply }, M, sink);
     return null;
   }
   if (resolved.kind === "hermes" && resolved.hermesSessionKey !== undefined) {
     // 不在线（宿主没开、会话没打开）→ wakeHermesSession 报 unavailable / not-open：消息已在频道里。
-    const result = await wakeHermesSession(
-      resolved.hermesSessionKey,
-      wakeNote({ ...input.wakeInput, ...anyReply, receiver: resolved.name, implicitReceiver: true }),
-      { env },
-    );
-    reportHermesWake(resolved.name, result, M, sink);
+    await deliverToHermes(resolved.hermesSessionKey, { receiver: resolved.name, label: resolved.name },
+      { ...input.wakeInput, ...anyReply }, M, sink, env);
     return null;
   }
   if (resolved.kind === "grok" && resolved.grokSessionId !== undefined) {
@@ -563,8 +636,8 @@ async function deliverDmImpl(
       sink.log(M.grokWakeSelfSkipped(resolved.name));
       return null;
     }
-    reportGrokWake(resolved.name, await wakeGrokSession(resolved.grokSessionId,
-      wakeNote({ ...input.wakeInput, ...anyReply, receiver: resolved.name, implicitReceiver: true }), { env }), M, sink);
+    await deliverToGrok(resolved.grokSessionId, { receiver: resolved.name, label: resolved.name },
+      { ...input.wakeInput, ...anyReply }, M, sink, env);
     return null;
   }
   if (resolved.kind === "cmux" && resolved.cmuxRef !== undefined) {
