@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.17
+
 - Reading the session record for read evidence (0.9.16) now opens the file once with no symlink following and non-blocking, and checks the opened file itself; before, the path was checked and then reopened, so it could be swapped for a link to another record between the two (found by two independent reviewers during an `ocs claude` trial)
 
 ## 0.9.16
