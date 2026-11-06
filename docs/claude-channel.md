@@ -12,6 +12,7 @@ ocs who                    # channel sessions are tagged [channel]
 
 - No `crossSessionInbound` hold. Channel events are not gated by that setting, so the 5-minute hold/drop does not apply.
 - The host shows the message as channel data from `ocs`, not as something the user typed. The server's instructions tell the model to treat the text as another agent's data.
+- Each event carries reply attributes: `reply_tool="ocs_dm" reply_to="<target>"` for a DM, or `reply_tool="ocs_send" reply_channel=… reply_seq=…` for a channel message. The server's instructions tell the model to use them instead of running the `Reply:` line in a shell.
 - The session gets two MCP tools, `ocs_dm` and `ocs_send`. They run `ocs dm` and `ocs send` as a child of that Claude session, so identity resolves through the process tree and replies need no Bash prompt. Exit 3 is reported as "unknown, do not resend".
 - Events that arrive during a busy turn are queued by Claude and handed over together on the next turn.
 - `notify-when-idle` notices to such a session go through the channel too.

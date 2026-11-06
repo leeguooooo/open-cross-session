@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `send` / `dm --notify-when-idle` no longer reports a target as idle right after waking it, before it has had a chance to start; the notice waits for the target's status to change, and still fires after 30s if it never starts (held, refused, or done between polls). Standalone `ocs notify-when-idle` is unchanged
+- `ocs claude` channel events carry `reply_tool` / `reply_to` (or `reply_channel` / `reply_seq`) attributes, and the channel instructions ask the model to answer with the `ocs_dm` / `ocs_send` tools instead of running the `Reply:` line in a shell (which needs a Bash permission in non-auto modes)
+
 ## 0.9.14
 
 - Experimental `ocs claude`: starts Claude Code with an ocs channel (Claude Code Channels research preview). Messages to that session arrive as `<channel source="ocs">` events, are not held by `crossSessionInbound`, and the session gets `ocs_dm` / `ocs_send` tools. Senders report `handed to the session's ocs channel`, which is not a read receipt; an unanswered channel write is unknown (exit 3) and is never re-sent through the inbox. `ocs who` tags such sessions `[channel]`. macOS/Linux only. See [docs/claude-channel.md](docs/claude-channel.md)

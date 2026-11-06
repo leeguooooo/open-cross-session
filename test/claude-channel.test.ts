@@ -268,10 +268,17 @@ describe.skipIf(!POSIX)("routing through the channel", () => {
     expect(tracked).toEqual({ kind: "channel" });
     const events = h.lines.filter((l) => l.method === "notifications/claude/channel");
     expect(events.length).toBe(2);
+    expect(h.lines.find((l) => l.id === 1)?.result).toMatchObject({ instructions: expect.stringContaining("reply_tool") });
     const first = (events[0]!.params as { content: string }).content;
     expect(first).not.toContain("</channel>");
     expect(first).not.toContain("<channel ");
-    expect((events[0]!.params as { meta: Record<string, string> }).meta).toEqual({ from: "alice", channel: "dm-x", seq: "3" });
+    expect((events[0]!.params as { meta: Record<string, string> }).meta).toEqual({
+      from: "alice", channel: "dm-x", seq: "3", reply_tool: "ocs_send", reply_channel: "dm-x", reply_seq: "3",
+    });
+    // DM：回复工具与目标写进标签属性，模型不用从 Reply: 行抠命令跑 Bash
+    await wakeSessions([target], { channel: "dm-x", seq: 5, from: "alice", body: "dm", dmReplyTarget: "alice", env: h.env });
+    const dmEvent = h.lines.filter((l) => l.method === "notifications/claude/channel")[2]!;
+    expect((dmEvent.params as { meta: Record<string, string> }).meta).toMatchObject({ reply_tool: "ocs_dm", reply_to: "alice" });
     expect(inbox.connections()).toBe(0);
     inbox.server.close();
     h.input.end();

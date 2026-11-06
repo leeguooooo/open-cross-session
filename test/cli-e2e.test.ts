@@ -680,18 +680,25 @@ describe("notify-when-idle（#5）端到端：真脱离终端的 watcher", () =>
     }
   }, T);
 
-  test("send --notify-when-idle：先发消息+唤醒，再订阅；对端已 idle 时立即通知", async () => {
+  test("send --notify-when-idle：先发消息+唤醒，再订阅；对端还没开始处理时不误报，忙完才通知", async () => {
     const f = fixture();
     try {
       f.setPeer("idle");
+      f.env.OCS_IDLE_WAKE_GRACE_MS = "60000";
       const r = await run(f, ["send", "chat", "do it @worker-a", "--as", "tester", "--notify-when-idle"]);
       expect(r.code).toBe(0);
       expect(r.stdout).toContain("stored #chat seq 1");
       expect(r.stdout).toContain("wake: accepted by inbox → worker-a");
       expect(r.stdout).toContain("notify-when-idle: subscribed → worker-a");
-      expect(r.stdout).toContain("already idle");
+      expect(r.stdout).not.toContain("already idle");
       const first = content(await f.nextFrame());
       expect(first).toContain("[ocs wake] tester mentioned you in #chat (seq 1)");
+      // 唤醒刚到、对方状态还是 idle：这不是「忙完了」，不许发通知
+      await sleep(400);
+      expect(f.frames.length).toBe(1);
+      f.setPeer("busy");
+      await sleep(300);
+      f.setPeer("idle");
       const second = content(await f.nextFrame());
       expect(second).toContain("[Cross-session idle notice] worker-a is now idle.");
       await sleep(200);

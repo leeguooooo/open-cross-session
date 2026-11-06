@@ -521,7 +521,11 @@ function requireIdleSubscriber(): NativeClaudeSession {
 }
 
 /** 对每个目标落一份一次性订阅并派 watcher；同一对已订阅则去重。 */
-function subscribeIdle(subscriber: NativeClaudeSession, targets: readonly NativeClaudeSession[]): void {
+/**
+ * wokeAt：本命令刚唤醒这些目标的时刻（send/dm --notify-when-idle）。目标还没来得及把状态翻成
+ * busy 时它看起来仍是 idle，不能据此立刻发通知（docs/wake-protocol.md §2）。
+ */
+function subscribeIdle(subscriber: NativeClaudeSession, targets: readonly NativeClaudeSession[], wokeAt?: number): void {
   const others = targets.filter((t) => t.pid !== subscriber.pid);
   if (others.length === 0) {
     console.log(M.idleNoTarget);
@@ -529,14 +533,14 @@ function subscribeIdle(subscriber: NativeClaudeSession, targets: readonly Native
   }
   for (const target of others) {
     const label = target.name ?? `pid-${target.pid}`;
-    const { sub, deduped } = createIdleSubscription({ target, subscriber, lang: LANG });
+    const { sub, deduped } = createIdleSubscription({ target, subscriber, lang: LANG, ...(wokeAt === undefined ? {} : { wokeAt }) });
     if (deduped) {
       console.log(M.idleAlreadySubscribed(label, sub.id.slice(0, 8)));
       continue;
     }
     spawnIdleWatcher(sub);
     console.log(M.idleSubscribed(label, sub.id.slice(0, 8)));
-    if (target.status === "idle") console.log(M.idleTargetAlreadyIdle(label));
+    if (target.status === "idle" && wokeAt === undefined) console.log(M.idleTargetAlreadyIdle(label));
   }
 }
 
@@ -768,6 +772,7 @@ async function cmdSend(parsed: Parsed): Promise<void> {
   // 每个目标一个 helper（写帧的进程必须就是收回执的进程），并发派出、按目标顺序报告。
   // 铁律 4：帧进了收件箱 ≠ 进了对话；回执能把「被扣 / 被拒」说出来，说不出「已读」。
   const sender = noticeSender();
+  const claudeWokeAt = Date.now();
   const wakes = await Promise.all(
     selection.targets.map((session) => trackDelivery(channel, message.seq, collectingSink(), async (sink) => {
       const wake = await wakeClaudeTracked(session, wakeInput, { sender });
@@ -778,7 +783,7 @@ async function cmdSend(parsed: Parsed): Promise<void> {
   selection.targets.forEach((session, index) => {
     reportTrackedWake(`${session.name ?? "?"}(pid ${session.pid})`, wakes[index]!, M, CLI_SINK, { followUp: sender !== null });
   });
-  if (idleSubscriber !== null) subscribeIdle(idleSubscriber, selection.targets);
+  if (idleSubscriber !== null) subscribeIdle(idleSubscriber, selection.targets, claudeWokeAt);
 }
 
 function lanContext(parsed: Parsed): LanCliContext {
@@ -979,6 +984,7 @@ async function cmdDm(parsed: Parsed): Promise<void> {
   const wakeInput = { channel, seq: message.seq, from, body: message.body, lang: LANG };
 
   const dmNoticeSender = noticeSender();
+  const dmWokeAt = Date.now();
   const woken = await deliverDm({
     resolved,
     target,
@@ -989,7 +995,7 @@ async function cmdDm(parsed: Parsed): Promise<void> {
     dmReplyTarget: replyTarget,
     receipts: { sender: dmNoticeSender, followUp: dmNoticeSender !== null },
   }, M, CLI_SINK);
-  if (idleSubscriber !== null) subscribeIdle(idleSubscriber, woken === null ? [] : [woken]);
+  if (idleSubscriber !== null) subscribeIdle(idleSubscriber, woken === null ? [] : [woken], dmWokeAt);
 }
 
 async function cmdNotifyWhenIdle(parsed: Parsed): Promise<void> {
