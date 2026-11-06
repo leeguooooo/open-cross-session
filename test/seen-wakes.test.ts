@@ -134,6 +134,16 @@ describe("inbox with seen evidence", () => {
     expect(inboxCursorState("dm-ab", readRoutedMessages("dm-ab", { env }), bob, env).cursor).toBe(0);
   });
 
+  test("a seen @mention in an ordinary channel is not unread but does not join the channel", () => {
+    const { env, bob } = base();
+    appendMessage({ channel: "dev", from: "carol", body: "@bob look", env });
+    appendMessage({ channel: "dev", from: "carol", body: "unrelated chatter", env });
+    expect(listInboxThreads({ ...bob, seen: new Set([seenKey("dev", 1)]) }, env)).toEqual([]);
+    // 守着：没加入的普通频道不落游标，否则之后每条闲聊都算 bob 的未读
+    expect(inboxCursorState("dev", readRoutedMessages("dev", { env }), bob, env).cursor).toBe(0);
+    expect(listInboxThreads(bob, env)).toEqual([expect.objectContaining({ channel: "dev", unread: 1 })]);
+  });
+
   test("evidence for another channel never writes a cursor here (a cursor would mean joining it)", () => {
     const { env, bob } = base();
     appendMessage({ channel: "general", from: "carol", body: "not for bob", env });

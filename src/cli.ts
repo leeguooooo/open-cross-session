@@ -223,7 +223,8 @@ const COMMAND_SPECS: Record<string, CommandSpec> = {
 /**
  * #67: messages for the sender that arrived before the one it just stored and that it has not
  * read. A correction sent mid-turn must not go unnoticed just because the sender kept talking.
- * Only seq / sender / time — bodies are peer-controlled data. Never moves a cursor.
+ * Only seq / sender / time — bodies are peer-controlled data. Moves the cursor only over wakes the
+ * session's own record proves it has seen (src/seen-wakes.ts), never past an unseen message.
  */
 function unreadBeforeOwn(
   channel: string,

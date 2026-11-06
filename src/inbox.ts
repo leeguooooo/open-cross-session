@@ -107,7 +107,12 @@ export function isInboxSelf(message: RoutedOcsMessage, context: InboxIdentityCon
     (message.from_identity !== undefined && context.identities.includes(message.from_identity));
 }
 
-/** Messages in one channel that `ocs inbox` would count as unread for this identity. */
+/**
+ * Messages in one channel that `ocs inbox` would count as unread for this identity.
+ * Side effect: with `context.seen` evidence it persists the read cursor over the seen prefix
+ * (only for DMs or channels this identity already joined). Keep it out of paths that must not
+ * write.
+ */
 export function unreadInChannel(
   channel: string,
   messages: readonly RoutedOcsMessage[],
@@ -141,7 +146,9 @@ export function unreadInChannel(
     if (isSeen(message)) sawAny = true;
     advanced = message.seq;
   }
-  if (sawAny && advanced > state.cursor) {
+  // 普通频道里，游标文件本身就意味着「加入了这个频道」（之后每条都算未读）：只被 @ 过一次、
+  // 看过那条的会话不能因此被拉进频道。没加入就只在内存里排除，不落盘。
+  if (sawAny && advanced > state.cursor && (dm || joined)) {
     try {
       saveInboxCursor(channel, state.consumers, advanced, env);
     } catch {
