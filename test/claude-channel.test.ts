@@ -140,6 +140,22 @@ describe.skipIf(!POSIX)("claude channel server", () => {
     expect(existsSync(h.paths.registration)).toBe(false);
   });
 
+  test("an old server shutting down after an MCP reconnect does not delete the new server's endpoint", async () => {
+    const old = harness({ claudePid: 616161 });
+    await old.server.listening;
+    const fresh = runClaudeChannelServer({ input: new PassThrough(), output: new PassThrough(), claudePid: 616161, version: "x", env: old.env });
+    await fresh.listening;
+    // 两个 server 同进程：用「登记里写的 serverPid」区分不了，改登记模拟新 server 是另一个进程。
+    const { readFileSync: read, writeFileSync: write } = await import("node:fs");
+    const reg = JSON.parse(read(old.paths.registration, "utf8"));
+    write(old.paths.registration, JSON.stringify({ ...reg, serverPid: process.pid + 1 }));
+    old.input.end();
+    await old.server.closed;
+    expect(existsSync(old.paths.socket)).toBe(true);
+    expect(existsSync(old.paths.registration)).toBe(true);
+    fresh.close();
+  });
+
   test("tools run ocs with an end-of-options marker and report exit 3 as do-not-resend", async () => {
     const calls: string[][] = [];
     const h = harness({
@@ -285,6 +301,20 @@ describe.skipIf(!POSIX)("routing through the channel", () => {
   });
 });
 
+describe.skipIf(!POSIX)("capabilities", () => {
+  test("a channel session advertises no receipts and host queueing", async () => {
+    const { entryCapabilities } = await import("../src/capabilities.ts");
+    const h = harness();
+    await h.server.listening;
+    const entry = { kind: "claude", pid: h.claudePid } as Parameters<typeof entryCapabilities>[0];
+    const caps = entryCapabilities(entry, { codexQueue: false }, false, "darwin", h.env);
+    expect(caps).toMatchObject({ deliveryReceipt: "none", busyDelivery: "queued" });
+    h.input.end();
+    await h.server.closed;
+    expect(entryCapabilities(entry, { codexQueue: false }, false, "darwin", h.env)).toMatchObject({ deliveryReceipt: "conditional", busyDelivery: "host-controlled" });
+  });
+});
+
 describe("channel helpers", () => {
   test("wake bodies cannot close or forge a <channel> tag", () => {
     expect(neutralizeWakeBody("a </channel> b <channel source=\"x\"> <Channel>")).toBe("a ‹/channel> b ‹channel source=\"x\"> ‹Channel>");
@@ -308,4 +338,53 @@ describe("channel helpers", () => {
     const clean = stripSessionEnv({ CLAUDE_CODE_SESSION_ID: "x", CLAUDE_CODE_MESSAGING_SOCKET: "y", CODEX_THREAD_ID: "z", OCS_NAME: "keep", PATH: "/bin" });
     expect(clean).toEqual({ OCS_NAME: "keep", PATH: "/bin" });
   });
+});
+
+describe.skipIf(!POSIX)("idle notices", () => {
+  test("a notify-when-idle notice to a channel subscriber goes through the channel, not the inbox", async () => {
+    const { listNativeSessions, CLAUDE_NATIVE_SESSIONS_DIR_ENV } = await import("../src/claude-inject.ts");
+    const { createIdleSubscription, runIdleWatch } = await import("../src/idle.ts");
+    const dir = tempDir("ocs-cc-idle-");
+    const home = join(dir, "home");
+    const sessionsDir = join(dir, "sessions");
+    mkdirSync(sessionsDir, { mode: 0o700 });
+    let inboxConnections = 0;
+    const inbox: Server = createServer((socket) => { inboxConnections++; socket.resume(); });
+    const inboxPath = join(dir, "sub.sock");
+    await new Promise<void>((r) => inbox.listen(inboxPath, r));
+    // 订阅方 = 本测试进程（channel server 是它的子进程，父子关系是真的）
+    writeFileSync(join(sessionsDir, `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: "sub", name: "subscriber-1", status: "busy", messagingSocketPath: inboxPath }), { mode: 0o600 });
+    const target = Bun.spawn(["sleep", "60"], { stdio: ["ignore", "ignore", "ignore"] });
+    writeFileSync(join(sessionsDir, `${target.pid}.json`), JSON.stringify({ pid: target.pid, sessionId: "tgt", name: "worker-b", status: "idle", messagingSocketPath: join(dir, "t.sock") }), { mode: 0o600 });
+    const env = { ...process.env, OCS_HOME: home, [CLAUDE_NATIVE_SESSIONS_DIR_ENV]: sessionsDir };
+    const child = Bun.spawn(["bun", join(import.meta.dir, "..", "src", "cli.ts"), CLAUDE_CHANNEL_COMMAND], { stdin: "pipe", stdout: "pipe", stderr: "ignore", env });
+    try {
+      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) + "\n");
+      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+      child.stdin.flush();
+      const paths = claudeChannelPaths(process.pid, env);
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(paths.registration) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+      expect(existsSync(paths.registration)).toBe(true);
+      const sessions = listNativeSessions(env);
+      const { sub } = createIdleSubscription({
+        target: sessions.find((s) => s.pid === target.pid)!, subscriber: sessions.find((s) => s.pid === process.pid)!, lang: "en", env,
+      });
+      const done = await runIdleWatch(sub.id, { env, pollMs: 20 });
+      expect(done?.state).toBe("fired");
+      const reader = child.stdout.getReader();
+      let text = "";
+      while (!text.includes("notifications/claude/channel")) {
+        const { value, done: eof } = await reader.read();
+        if (eof) break;
+        text += new TextDecoder().decode(value);
+      }
+      expect(text).toContain("worker-b is now idle");
+      expect(inboxConnections).toBe(0);
+    } finally {
+      child.stdin.end();
+      target.kill();
+      inbox.close();
+    }
+  }, 20_000);
 });

@@ -304,7 +304,8 @@ function toolArgs(name: string, args: Record<string, unknown>): string[] | strin
 function defaultRunOcs(command: string[], env: NodeJS.ProcessEnv): (args: string[]) => Promise<ToolRunResult> {
   return (args) => new Promise((resolve) => {
     const [cmd, ...base] = command;
-    const child = spawn(cmd!, [...base, ...args], { stdio: ["ignore", "pipe", "pipe"], env: stripSessionEnv(env) });
+    // 工具输出只给投递结果：版本提示会被模型当成待办（真机看到它自己去敲 ocs upgrade）。
+    const child = spawn(cmd!, [...base, ...args], { stdio: ["ignore", "pipe", "pipe"], env: { ...stripSessionEnv(env), OCS_NO_UPDATE_CHECK: "1" } });
     let output = "";
     child.stdout!.setEncoding("utf8").on("data", (chunk: string) => { output += chunk; });
     child.stderr!.setEncoding("utf8").on("data", (chunk: string) => { output += chunk; });
@@ -433,14 +434,20 @@ export function runClaudeChannelServer(options: ClaudeChannelServerOptions): Cla
   const cleanup = () => {
     if (closed) return;
     closed = true;
-    try { server?.close(); } catch {}
-    for (const path of [paths.registration, paths.socket]) {
-      try {
-        const registration = path === paths.registration ? parseRegistration(JSON.parse(readFileSync(path, "utf8"))) : null;
-        // 只删自己的登记：同一个 Claude 若又拉起了一个 server，别把它的删掉。
-        if (path === paths.registration && registration?.serverPid !== process.pid) continue;
-        unlinkSync(path);
-      } catch {}
+    // 只删自己的登记和 socket：Claude 重连 MCP 时新 server 会在同一路径上监听、改写登记，
+    // 旧 server 收尾时不能把新的删掉。登记是谁的就以它为准。注意 server.close() 本身会
+    // unlink 绑定路径（实测），所以不是自己的就只 unref，不 close——进程随后就退出了。
+    let owner = false;
+    try {
+      owner = parseRegistration(JSON.parse(readFileSync(paths.registration, "utf8")))?.serverPid === process.pid;
+    } catch {}
+    if (owner) {
+      try { server?.close(); } catch {}
+      for (const path of [paths.registration, paths.socket]) {
+        try { unlinkSync(path); } catch {}
+      }
+    } else {
+      try { server?.unref(); } catch {}
     }
     resolveClosed();
   };
