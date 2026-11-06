@@ -43,6 +43,9 @@ export const IDLE_POLL_DEFAULT_MS = 2000;
  */
 export const IDLE_GONE_CONFIRMATIONS = 3;
 export const IDLE_WATCH_COMMAND = "_idle-watch";
+/** 唤醒后等目标开始处理的宽限期：过了仍没翻成 busy（被扣、被拒、或很快处理完没被采到）就照常通知。 */
+export const IDLE_WAKE_GRACE_MS = 30_000;
+export const IDLE_WAKE_GRACE_MS_ENV = "OCS_IDLE_WAKE_GRACE_MS";
 
 export type IdleSubState = "pending" | "fired" | "exited" | "expired" | "failed";
 
@@ -59,6 +62,11 @@ export interface IdleSubscription {
   watcherPid?: number;
   /** 首次观测到 busy 的起点（ms epoch），算 "busy for" 用。 */
   busySince?: number;
+  /**
+   * send/dm --notify-when-idle 刚唤醒目标的时刻（ms epoch）。目标在此之后翻过状态、或宽限期
+   * 过了仍没动，idle 才算数；否则「还没开始处理」会被当成「已经忙完」（真机 0.9.14 观察到）。
+   */
+  wokeAt?: number;
   detail?: string;
 }
 
@@ -157,6 +165,7 @@ export interface CreateIdleSubscriptionInput {
   lang: Lang;
   env?: NodeJS.ProcessEnv;
   now?: number;
+  wokeAt?: number;
 }
 
 /**
@@ -191,6 +200,7 @@ export function createIdleSubscription(
     expires: new Date(now + IDLE_SUB_TTL_MS).toISOString(),
     state: "pending",
     lang: input.lang,
+    ...(input.wokeAt === undefined ? {} : { wokeAt: input.wokeAt }),
   };
   saveIdleSubscription(sub, input.env);
   return { sub, deduped: false };
@@ -329,6 +339,12 @@ export async function runIdleWatch(
       continue;
     }
     targetGone = 0;
+    if (seen.kind === "idle" && sub.wokeAt !== undefined && sub.busySince === undefined &&
+        (seen.statusUpdatedAt === null || seen.statusUpdatedAt < sub.wokeAt) && now - sub.wokeAt < wakeGraceMs(env)) {
+      // 刚被唤醒、状态还没翻过：对方还没开始处理，不是忙完了。
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+      continue;
+    }
     if (seen.kind === "idle") {
       const busyFor = sub.busySince === undefined ? 0 : now - sub.busySince;
       return finish(M.idleNoticeIdle(sub.target.name, formatDuration(busyFor)), "fired");
@@ -339,4 +355,9 @@ export async function runIdleWatch(
     }
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
+}
+
+function wakeGraceMs(env: NodeJS.ProcessEnv): number {
+  const raw = Number(env[IDLE_WAKE_GRACE_MS_ENV]);
+  return Number.isInteger(raw) && raw >= 0 ? raw : IDLE_WAKE_GRACE_MS;
 }

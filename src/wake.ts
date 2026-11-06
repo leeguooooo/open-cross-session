@@ -14,7 +14,7 @@ import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { claudeWorkspaceTargetMatches } from "./claude-address.ts";
-import { findClaudeChannel, sendViaClaudeChannel } from "./claude-channel.ts";
+import { claudeChannelReplyMeta, findClaudeChannel, sendViaClaudeChannel } from "./claude-channel.ts";
 import {
   injectChannelMessage,
   listNativeSessions,
@@ -368,7 +368,7 @@ export interface WakeInput {
 export async function wakeViaClaudeChannel(
   session: NativeClaudeSession,
   note: string,
-  input: Pick<WakeInput, "channel" | "seq" | "from" | "env">,
+  input: Pick<WakeInput, "channel" | "seq" | "from" | "env" | "dmReplyTarget">,
 ): Promise<{ kind: "accepted" } | { kind: "unknown"; detail: string } | null> {
   const env = input.env ?? process.env;
   const registration = findClaudeChannel(session.pid, env, { parentPid: parentPidOf });
@@ -377,6 +377,8 @@ export async function wakeViaClaudeChannel(
     from: input.from,
     channel: input.channel,
     seq: String(input.seq),
+    // 回复用哪个工具、发给谁：放进标签属性，模型不用从 Reply: 行里抠，也就不走 Bash。
+    ...claudeChannelReplyMeta(input),
   });
   if (result.kind === "unavailable") return null;
   return result;

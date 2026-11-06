@@ -113,6 +113,62 @@ const content = (frame: string) =>
   (JSON.parse(frame.trim()) as { message: { content: string } }).message.content;
 
 describe("notify-when-idle watcher", () => {
+  // send/dm --notify-when-idle：刚唤醒、对方还没把状态翻成 busy 时不许当成「已忙完」。
+  function subscribeAfterWake(f: Fixture, wokeAt: number) {
+    const sessions = listNativeSessions(f.env);
+    return createIdleSubscription({
+      target: sessions.find((s) => s.pid === f.target.pid)!, subscriber: sessions.find((s) => s.pid === process.pid)!,
+      lang: "en", env: f.env, wokeAt,
+    });
+  }
+
+  test("after a wake, a still-idle target is not reported until it has gone busy and back", async () => {
+    const f = fixture();
+    try {
+      f.setTarget("idle", Date.now() - 5000);
+      const { sub } = subscribeAfterWake(f, Date.now());
+      const watcher = runIdleWatch(sub.id, { env: f.env, pollMs: 20 });
+      await sleep(150);
+      expect(f.frames.length).toBe(0);
+      f.setTarget("busy");
+      await sleep(80);
+      f.setTarget("idle");
+      expect(content(await f.nextFrame())).toContain("worker-b is now idle");
+      expect((await watcher)?.state).toBe("fired");
+    } finally {
+      f.close();
+    }
+  });
+
+  test("after a wake, an idle flip that happened between polls still counts", async () => {
+    const f = fixture();
+    try {
+      const wokeAt = Date.now() - 1000;
+      f.setTarget("idle", Date.now());
+      const { sub } = subscribeAfterWake(f, wokeAt);
+      const done = await runIdleWatch(sub.id, { env: f.env, pollMs: 20 });
+      expect(done?.state).toBe("fired");
+      expect(content(await f.nextFrame())).toContain("worker-b is now idle");
+    } finally {
+      f.close();
+    }
+  });
+
+  test("after a wake, a target that never starts is reported once the grace period ends", async () => {
+    const f = fixture();
+    try {
+      f.setTarget("idle", Date.now() - 5000);
+      const env = { ...f.env, OCS_IDLE_WAKE_GRACE_MS: "200" };
+      const { sub } = subscribeAfterWake({ ...f, env }, Date.now());
+      const started = Date.now();
+      const done = await runIdleWatch(sub.id, { env, pollMs: 20 });
+      expect(done?.state).toBe("fired");
+      expect(Date.now() - started).toBeGreaterThanOrEqual(180);
+    } finally {
+      f.close();
+    }
+  });
+
   test("busy→idle 触发恰好一条通知；后续再翻转不再触发（一次性）", async () => {
     const f = fixture();
     try {
