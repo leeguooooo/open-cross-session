@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.15
+
 - `send` / `dm --notify-when-idle` no longer reports a target as idle right after waking it, before it has had a chance to start; the notice waits for the target's status to change, and still fires after 30s if it never starts (held, refused, or done between polls). Standalone `ocs notify-when-idle` is unchanged
 - `ocs claude` channel events carry `reply_tool` / `reply_to` (or `reply_channel` / `reply_seq`) attributes, and the channel instructions ask the model to answer with the `ocs_dm` / `ocs_send` tools instead of running the `Reply:` line in a shell (which needs a Bash permission in non-auto modes)
 
