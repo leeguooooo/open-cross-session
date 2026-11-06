@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.16
+
 - Messages whose wake note already entered your conversation are no longer reported as unread by `ocs inbox`, the status bar, or the `unread:` line of `send` / `dm`. ocs checks your own session record (Claude transcript, Codex rollout, Pi session file) for the note and advances the read cursor past them. Delivery success still never counts as read; held messages, truncated previews and other hosts stay unread. See docs/wake-protocol.md §7
 
 ## 0.9.15
