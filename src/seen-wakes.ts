@@ -14,7 +14,7 @@
 // 文本必须以唤醒首行开头（Claude 允许先有 ocs 自己的包装标签）；工具输出、模型回复里引用的首行
 // 都不算。正文超过 4096B 被截成预览的 note 不算已读（对方只看到了前 512B）。合并唤醒只认它
 // 自己那条 seq，「前面还有 N 条」不算。
-import { lstatSync, openSync, readdirSync, readSync, closeSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { codexSessionsRoot, listCodexRolloutFiles } from "./codex-sessions.ts";
@@ -63,15 +63,22 @@ function trustedFile(path: string): boolean {
   }
 }
 
-function readTail(path: string, maxBytes = SEEN_TAIL_BYTES): string[] {
+/**
+ * 只打开一次、不跟随符号链接，校验和取大小都对这个 fd 做：先按路径 lstat 再按路径打开，中间
+ * 可以被换成指向别人记录的链接（检查与使用分离）。sessionRecordPath 里的 trustedFile 只是预筛。
+ */
+export function readRecordTail(path: string, maxBytes = SEEN_TAIL_BYTES): string[] {
   let fd: number;
   try {
-    fd = openSync(path, "r");
+    // O_NONBLOCK：路径若被换成命名管道，阻塞式 open 会一直等写端，fstat 校验根本轮不到。
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch {
     return [];
   }
   try {
-    const size = lstatSync(path).size;
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || (typeof process.getuid === "function" && stat.uid !== process.getuid())) return [];
+    const size = stat.size;
     const start = Math.max(0, size - maxBytes);
     const buffer = Buffer.alloc(size - start);
     let read = 0;
@@ -193,5 +200,5 @@ export function sessionRecordPath(source: SeenSource, env: NodeJS.ProcessEnv = p
 export function seenWakes(source: SeenSource | null, env: NodeJS.ProcessEnv = process.env): Set<string> {
   if (source === null) return new Set();
   const path = sessionRecordPath(source, env);
-  return path === null ? new Set() : seenWakesInLines(source.kind, readTail(path));
+  return path === null ? new Set() : seenWakesInLines(source.kind, readRecordTail(path));
 }

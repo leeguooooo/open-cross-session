@@ -11,6 +11,7 @@ import {
   seenKey,
   seenWakes,
   seenWakesInLines,
+  readRecordTail,
   sessionRecordPath,
 } from "../src/seen-wakes.ts";
 import { appendMessage, readRoutedMessages } from "../src/store.ts";
@@ -100,6 +101,26 @@ describe("session record lookup", () => {
     writeFileSync(piFile, "");
     expect(sessionRecordPath({ kind: "pi", sessionId: SESSION.toUpperCase() }, env)).toBe(piFile);
     expect(seenWakes(null, env).size).toBe(0);
+  });
+});
+
+describe("readRecordTail", () => {
+  test("opens without following symlinks and checks the opened file itself", () => {
+    const root = tempDir("ocs-seen-tail-");
+    const real = join(root, "real.jsonl");
+    writeFileSync(real, "a\nb\n");
+    expect(readRecordTail(real)).toEqual(["a", "b", ""]);
+    // 守着：预筛之后路径被换成符号链接（检查与使用之间），打开时也不能跟过去
+    const link = join(root, "link.jsonl");
+    symlinkSync(real, link);
+    expect(readRecordTail(link)).toEqual([]);
+    expect(readRecordTail(root)).toEqual([]);
+    // 守着：换成命名管道时不能卡住（阻塞 open 会一直等写端）
+    const fifo = join(root, "fifo.jsonl");
+    expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+    expect(readRecordTail(fifo)).toEqual([]);
+    // 只读尾部：第一行可能被截断，丢掉
+    expect(readRecordTail(real, 3)).toEqual(["b", ""]);
   });
 });
 
