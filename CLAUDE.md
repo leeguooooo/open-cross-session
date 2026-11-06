@@ -36,6 +36,8 @@ bun src/cli.ts <cmd>   # 本地跑 CLI（who/dm/send/read/notify-when-idle/sessi
 
 15. **OpenCode（2.2.1+）**：本地 V2 插件登记实际观察到的会话，完整 `ses_…` ID 大小写不可折叠；短地址对完整 ID 做哈希，不截时间前缀。工具 shell 身份只从执行上下文传入，不往共享 `process.env` 写“当前会话”。原生投递必须 `delivery: "queue"`，核对目标 session 和 queue 接纳后才确认；提交后异常是 unknown，不重放，不启动服务器、不创建目标会话。私有 socket / 随机 Windows 管道和 token 约束见 `src/opencode.ts`；测试在 `test/opencode.test.ts`。V1 不在此适配器支持范围，真实宿主验收与 fixture 分开报告。
 
+16. **Claude channel（`src/claude-channel.ts`，实验性，docs/claude-channel.md）**：只在目标会话由 `ocs claude` 启动、登记有效（同 uid 非符号链接、server 活着且父进程就是目标 Claude）时走。channel 无确认：成功只叫「已交给 channel」，不许清欠账；请求写出后无应答 = unknown，绝不回落收件箱重投，只有「什么都没写出」才回落。`initialize` 必须回旧协议号（modern 连接宿主不注册 channel）；`notifications/initialized` 之前拒收。启动器只传 dev flag，并剥掉外层会话身份环境变量。权限转发（`claude/channel/permission`）不做给 agent。`test/claude-channel.test.ts` 守着，改之前先跑变异自检。
+
 ## 路线（owner 已拍板）
 
 2026-10：AgentParty 停止维护，原定「主仓抽 MIT 的 `packages/cross-session-core`、本仓转为单向 sync 镜像」的路线作废。本仓是唯一正本；跨网络靠虚拟局域网 + `ocs lan`。

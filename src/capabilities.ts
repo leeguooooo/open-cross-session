@@ -1,15 +1,19 @@
+import { findClaudeChannel } from "./claude-channel.ts";
 import { resolveSessionSocketByPid } from "./claude-inject.ts";
+import { parentPidOf } from "./wake.ts";
 import type { RosterEntry, Roster } from "./roster.ts";
 
 export function entryCapabilities(entry: RosterEntry, roster: Pick<Roster, "codexQueue">,
   desktopClaimed = false, platform: string = process.platform, env: NodeJS.ProcessEnv = process.env) {
   const kind = entry.kind;
+  // `ocs claude` 启动的会话走 channel：宿主排队、没有回执（docs/claude-channel.md）。
+  const channel = kind === "claude" && findClaudeChannel(entry.pid, env, { parentPid: parentPidOf, platform: platform as NodeJS.Platform }) !== null;
   const canWake = kind === "claude" && resolveSessionSocketByPid(entry.pid, { env }) === null ? "unverified" : kind === "cmux" ? "unverified" : kind === "codex-task"
     ? (desktopClaimed || (entry.livePid !== null && roster.codexQueue) ? "available" : "unverified") : "available";
   return { v: 1, wake: canWake, noWake: kind !== "cmux",
     busyDelivery: kind === "agy" ? "serial" : kind === "opencode" || kind === "pi" || kind === "hermes" || kind === "grok" ? "queued"
-      : kind === "codex-task" ? "steer-or-coalesce" : "host-controlled",
-    deliveryReceipt: kind === "claude" && platform !== "win32" ? "conditional" : "none",
+      : kind === "codex-task" ? "steer-or-coalesce" : channel ? "queued" : "host-controlled",
+    deliveryReceipt: kind === "claude" && platform !== "win32" && !channel ? "conditional" : "none",
     completionReceipt: false, batch: kind !== "cmux" };
 }
 

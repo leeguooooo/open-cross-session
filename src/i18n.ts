@@ -29,6 +29,9 @@ interface Catalog {
   wakeConfirmed: (target: string) => string;
   wakeNotDelivered: (target: string, status: string, reason: string) => string;
   wakeHelperUnknown: (target: string, detail: string) => string;
+  /** Claude channel 载体（docs/claude-channel.md）：宿主不回执，最多算 accepted。 */
+  wakeChannelAccepted: (target: string) => string;
+  wakeChannelUnknown: (target: string, detail: string) => string;
   deliveryNotice: (n: { seq: number; target: string; channel: string; status: string; reason: string }) => string;
   readDelivery: (target: string, status: string) => string;
   /** 唤醒 note 首行（docs/wake-protocol.md §1）。sender=null 是骨架超预算时的降级档。 */
@@ -186,6 +189,11 @@ interface Catalog {
   grokWakeSelfSkipped: (target: string) => string;
   whoCmuxHeader: string;
   whoSelfTag: string;
+  /** `ocs claude` 启动、带 ocs channel 的 Claude 会话（docs/claude-channel.md）。 */
+  whoChannelTag: string;
+  claudeLaunchHelp: string;
+  claudeChannelUnsupported: string;
+  claudeLaunchFailed: (bin: string, detail: string) => string;
   whoDataHome: (path: string) => string;
   whoCurrentProject: string;
   whoEmpty: string;
@@ -291,6 +299,9 @@ Usage:
       Live Claude sessions or local Codex rollout history; ocs who shows renderer-open Codex tasks.
   ocs watch <channel> [--interval-ms <n>]
       Tail a channel (Ctrl+C to stop).
+  ocs claude [--] [<claude args…>]
+      Experimental: start Claude Code with the ocs channel (messages arrive as <channel> events,
+      no inbox hold, ocs_dm / ocs_send tools). See ocs claude --help.
   ocs doctor [--fix]
       Health-check all wake paths; --fix safely repairs agent skills, the Pi extension,
       data-directory permissions, and crossSessionInbound (backing up settings first).
@@ -325,6 +336,10 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
     `wake: NOT delivered → ${target}: ${status}${reason ? ` (${reason})` : ""}. Message is stored and shows up in the peer's \`ocs inbox\`; do not resend.`,
   wakeHelperUnknown: (target, detail) =>
     `wake: outcome unknown → ${target}: ${detail}. The frame may have been written; do not resend (\`ocs read\` shows the delivery state once known).`,
+  wakeChannelAccepted: (target) =>
+    `wake: handed to the session's ocs channel → ${target} (Claude sends no receipt for channels; this is not a read receipt)`,
+  wakeChannelUnknown: (target, detail) =>
+    `wake: outcome unknown → ${target} (ocs channel): ${detail}. The event may already be queued in that session; do not resend.`,
   deliveryNotice: ({ seq, target, channel, status, reason }) =>
     `[ocs delivery notice] seq ${seq} to ${target} in #${channel} was held for approval and NOT delivered: ${status}${reason ? ` (${reason})` : ""}.\n` +
     `The message is still in the channel log; ${target} will see it on \`ocs inbox\` / \`ocs read ${channel}\`. Do not resend.\n` +
@@ -558,6 +573,17 @@ Details: https://github.com/leeguooooo/open-cross-session/blob/main/docs/lan.md`
   grokWakeSelfSkipped: (target) => `wake(grok): self-wake skipped → ${target}`,
   whoCmuxHeader: "cmux terminal surfaces (wake: ocs dm surface:N)",
   whoSelfTag: "  ← you",
+  whoChannelTag: "  [channel]",
+  claudeLaunchHelp: `usage: ocs claude [--] [<claude args…>]
+
+Start Claude Code with the ocs channel (experimental, Claude Code Channels research preview).
+Messages from other agents then arrive as <channel source="ocs"> events instead of going
+through the inbox socket: no crossSessionInbound hold, and the session gets ocs_dm / ocs_send tools.
+Claude asks once at startup to confirm loading a development channel. Channels have no
+receipts: a wake through the channel is reported as handed over, never as read.
+Other sessions are unaffected; set OCS_NO_CLAUDE_CHANNEL=1 on the sender to skip channels.`,
+  claudeChannelUnsupported: "ocs claude (Claude channel) is not supported on Windows yet; plain `claude` sessions are still reachable through the inbox.",
+  claudeLaunchFailed: (bin, detail) => `could not start ${bin}: ${detail} (set OCS_CLAUDE_BIN to the claude executable)`,
   whoDataHome: (path) => `OCS data home: ${path} (sessions must share this directory for DM continuity)`,
   whoCurrentProject: "  [this project]",
   whoEmpty: "no reachable agents found — open a supported session (Grok Build: grok --leader, then submit a prompt)",
@@ -679,6 +705,9 @@ const zh: Catalog = {
       活 Claude 会话或本地 Codex rollout 历史；ocs who 才显示 renderer 已打开的 Codex task
   ocs watch <channel> [--interval-ms <n>]
       跟踪频道新消息（Ctrl+C 退出）
+  ocs claude [--] [<claude 参数…>]
+      实验性：带 ocs channel 启动 Claude Code（消息以 <channel> 事件送达，不受收件箱扣留，
+      带 ocs_dm / ocs_send 工具）。详见 ocs claude --help
   ocs doctor [--fix]
       体检全部唤醒链；--fix 安全修复三端 skill、Pi 扩展、数据目录权限，
       并在备份后把 crossSessionInbound 设为 accept
@@ -709,6 +738,8 @@ ${lanMessages("zh").help}
     `wake: 未送达 → ${target}: ${status}${reason ? `（${reason}）` : ""}。消息已经落盘，对方跑 \`ocs inbox\` 能看到；请勿重发。`,
   wakeHelperUnknown: (target, detail) =>
     `wake: 结果未知 → ${target}: ${detail}。帧可能已经写出，请勿重发（结果出来后 \`ocs read\` 会显示投递状态）。`,
+  wakeChannelAccepted: (target) => `wake: 已交给该会话的 ocs channel → ${target}（Claude 对 channel 不发回执；这不是已读回执）`,
+  wakeChannelUnknown: (target, detail) => `wake: 结果未知 → ${target}（ocs channel）: ${detail}。事件可能已经进了对方队列，请勿重发。`,
   deliveryNotice: ({ seq, target, channel, status, reason }) =>
     `[ocs 投递通知] 发给 ${target} 的 #${channel} seq ${seq} 被扣留待审，最终没有送达：${status}${reason ? `（${reason}）` : ""}。\n` +
     `消息还在频道日志里，${target} 跑 \`ocs inbox\` / \`ocs read ${channel}\` 能看到。请勿重发。\n` +
@@ -930,6 +961,16 @@ ${lanMessages("zh").help}
   grokWakeSelfSkipped: (target) => `唤醒(grok)：已跳过自我唤醒 → ${target}`,
   whoCmuxHeader: "cmux 终端 surface（唤醒: ocs dm surface:N）",
   whoSelfTag: "  ← 你自己",
+  whoChannelTag: "  [channel]",
+  claudeLaunchHelp: `用法：ocs claude [--] [<claude 参数…>]
+
+带 ocs channel 启动 Claude Code（实验性，基于 Claude Code Channels research preview）。
+其它 agent 的消息改为以 <channel source="ocs"> 事件送进会话，不再经过收件箱 socket：
+不受 crossSessionInbound 扣留，会话里还多了 ocs_dm / ocs_send 两个工具。
+启动时 Claude 会弹一次「加载开发 channel」确认框。channel 没有回执：经 channel 的唤醒
+只报「已交给会话」，永远不算已读。其它会话不受影响；发送端设 OCS_NO_CLAUDE_CHANNEL=1 可跳过 channel。`,
+  claudeChannelUnsupported: "ocs claude（Claude channel）暂不支持 Windows；普通 claude 会话仍可经收件箱唤醒。",
+  claudeLaunchFailed: (bin, detail) => `启动 ${bin} 失败：${detail}（可用 OCS_CLAUDE_BIN 指定 claude 可执行文件）`,
   whoDataHome: (path) => `OCS 数据目录：${path}（要继续同一 DM 历史，各会话必须共用此目录）`,
   whoCurrentProject: "  [当前项目]",
   whoEmpty: "没发现可达的 agent：请打开已支持的会话（Grok Build 用 grok --leader 启动并提交首条提示）",

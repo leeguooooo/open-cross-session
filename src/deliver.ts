@@ -7,7 +7,7 @@ import { startDeliveryObservation, type TrafficOutcome } from "./traffic.ts";
 // sink：CLI 的 sink 打印并设退出码，守护进程的 sink 收集行、算出总体结果回传。
 // 分支和措辞与原来逐字一致——两个入口共用一份，免得一边修了另一边漂。
 
-import { resolveSessionSocketByPid, type NativeClaudeSession } from "./claude-inject.ts";
+import { resolveSessionSocketByPid, type InjectResult, type NativeClaudeSession } from "./claude-inject.ts";
 import { wakeAgy } from "./agy.ts";
 import { grokTargetName, selfGrokSessionId, wakeGrokSession, type GrokWakeResult } from "./grok.ts";
 import { agyMessages } from "./i18n-agy.ts";
@@ -268,6 +268,21 @@ async function deliverToCodexTaskImpl(
  * - held / refused / dropped / denied / expired：消息已落盘但没进对话 → 退出码 2。
  * - unknown：helper 没给结果，帧可能已写出 → 退出码 3，绝不重放。
  */
+/** 无回执路径（wakeSessions）的结果上报；channel 写出后结果未知按 unknown 报，绝不重投。 */
+export function reportPlainWake(label: string, result: InjectResult, M: Catalog, sink: DeliverySink): void {
+  if (result.ok) {
+    sink.log(result.carrier === "channel" ? M.wakeChannelAccepted(label) : M.wakeDelivered(label));
+    return;
+  }
+  if (result.reason === "unknown-outcome") {
+    sink.log(M.wakeChannelUnknown(label, result.detail ?? ""));
+    sink.fail("unknown");
+    return;
+  }
+  sink.log(M.wakeFailed(label, result.detail === undefined ? result.reason : `${result.reason} (${result.detail})`));
+  sink.fail("failed");
+}
+
 export function reportTrackedWake(
   label: string,
   wake: TrackedWake,
@@ -277,6 +292,10 @@ export function reportTrackedWake(
 ): void {
   if (wake.kind === "plain") {
     sink.log(M.wakeDelivered(label));
+    return;
+  }
+  if (wake.kind === "channel") {
+    sink.log(M.wakeChannelAccepted(label));
     return;
   }
   if (wake.kind === "failed") {
@@ -360,11 +379,7 @@ export async function deliverNotice(
       return;
     }
     const [outcome] = await wakeSessions([resolved.session], { ...input, env });
-    if (outcome!.result.ok) sink.log(M.wakeDelivered(target.name));
-    else {
-      sink.log(M.wakeFailed(target.name, outcome!.result.reason));
-      sink.fail("failed");
-    }
+    reportPlainWake(target.name, outcome!.result, M, sink);
     return;
   }
   const clean: NodeJS.ProcessEnv = { ...env };
@@ -506,12 +521,7 @@ async function deliverDmImpl(
       return resolved.claude;
     }
     const [outcome] = await wakeSessions([resolved.claude], claudeInput);
-    if (outcome!.result.ok) sink.log(M.wakeDelivered(label));
-    else {
-      const failure = outcome!.result;
-      sink.log(M.wakeFailed(label, failure.detail === undefined ? failure.reason : `${failure.reason} (${failure.detail})`));
-      sink.fail("failed");
-    }
+    reportPlainWake(label, outcome!.result, M, sink);
     return resolved.claude;
   }
   if (resolved.kind === "codex-task" && resolved.threadId !== undefined) {

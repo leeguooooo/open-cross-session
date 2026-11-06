@@ -21,7 +21,8 @@ import {
 } from "./claude-inject.ts";
 import { messages, type Lang } from "./i18n.ts";
 import { ocsHome } from "./store.ts";
-import { findSelfClaudePid } from "./wake.ts";
+import { findSelfClaudePid, parentPidOf } from "./wake.ts";
+import { findClaudeChannel, sendViaClaudeChannel } from "./claude-channel.ts";
 
 /** 订阅有效期（协议 §2：6 小时）。 */
 export const IDLE_SUB_TTL_MS = 6 * 60 * 60 * 1000;
@@ -269,6 +270,19 @@ export async function runIdleWatch(
   const M = messages(sub.lang);
 
   const finish = async (body: string, state: IdleSubState): Promise<IdleSubscription> => {
+    // 订阅方由 `ocs claude` 启动：通知也走它的 channel（docs/claude-channel.md）。写出无应答是
+    // unknown，不回落收件箱重投；什么都没写出才回落。
+    const channel = findClaudeChannel(sub!.subscriber.pid, env, { parentPid: parentPidOf });
+    if (channel !== null) {
+      const sent = await sendViaClaudeChannel(channel.socket, body, { from: "ocs" });
+      if (sent.kind !== "unavailable") {
+        sub = sent.kind === "accepted"
+          ? { ...sub!, state }
+          : { ...sub!, state: "failed", detail: `${state}: unknown-outcome (${sent.detail})` };
+        saveIdleSubscription(sub, env);
+        return sub;
+      }
+    }
     const result = await injectChannelMessage({
       name: sub!.subscriber.name,
       pid: sub!.subscriber.pid,

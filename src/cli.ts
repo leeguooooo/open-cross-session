@@ -8,6 +8,14 @@ import { installOpenCodeIntegration, openCodePluginCurrent, openCodePluginPath, 
 
 import { chmodSync, mkdirSync, statSync, writeSync } from "node:fs";
 import { batchBody } from "./batch.ts";
+import {
+  CLAUDE_BIN_ENV,
+  CLAUDE_CHANNEL_COMMAND,
+  claudeLaunchArgs,
+  findClaudeChannel,
+  runClaudeChannelServer,
+  stripSessionEnv,
+} from "./claude-channel.ts";
 import { trafficStats, writeTraffic, startDeliveryObservation, type TrafficEvent, type TrafficOutcome } from "./traffic.ts";
 import { entryCapabilities } from "./capabilities.ts";
 import { findAgyWorker, stopAgyWorker } from "./agy.ts";
@@ -122,6 +130,7 @@ import {
 } from "./codex-queue.ts";
 import {
   findSelfClaudePid,
+  parentPidOf,
   selectWakeTargets,
   splitWakeMentions,
   wakeNote,
@@ -314,6 +323,11 @@ function parseArgs(argv: string[], spec: CommandSpec): Parsed {
   const flags = new Map<string, string | true>();
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
+    if (arg === "--") {
+      // 选项结束：之后全是位置参数（正文以 -- 开头时用；channel 的 ocs_dm/ocs_send 工具总带它）。
+      positional.push(...argv.slice(i + 1));
+      break;
+    }
     if (["-as", "–as", "—as"].includes(arg)) fail(M.failAsSpelling);
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
@@ -1096,6 +1110,7 @@ async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lan
       ...roster,
       entries: [...claude, ...codex, ...pi, ...openCodeEntries, ...hermesEntries, ...grokEntries, ...agyEntries, ...cmux].map((entry) => ({
         ...entry, capabilities: entryCapabilities(entry, roster, entry.kind === "codex-task" && codexOwners[entry.threadId] !== undefined),
+        ...(entry.kind === "claude" && hasClaudeChannel(entry.pid) ? { carrier: "channel" } : {}),
       })),
       hermes: hermes.available,
       grok: grok.sessions.length > 0,
@@ -1111,8 +1126,8 @@ async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lan
       // 名字 + 不变短 id 并排：两个都能 dm / @。
       const address = `${e.ocsName ?? e.workspaceAlias ?? e.name}${e.id === undefined ? "" : `  ${e.id}`}`;
       console.log(verbose
-        ? `  ${address}  session=${e.name}  pid=${e.pid}  cwd=${e.cwd ?? "?"}  ${e.status ?? "?"}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`
-        : `  ${address}  ${e.status ?? "unknown"}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`);
+        ? `  ${address}  session=${e.name}  pid=${e.pid}  cwd=${e.cwd ?? "?"}  ${e.status ?? "?"}${hasClaudeChannel(e.pid) ? M.whoChannelTag : ""}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`
+        : `  ${address}  ${e.status ?? "unknown"}${hasClaudeChannel(e.pid) ? M.whoChannelTag : ""}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`);
       if (e.workspaceWarning !== undefined) console.log(`    ${M.dmWorkspaceWarning(e.workspaceWarning)}`);
     }
   }
@@ -1952,12 +1967,80 @@ async function cmdAgy(parsed: Parsed): Promise<void> {
   } catch (error) { fail(error instanceof Error ? error.message : String(error)); }
 }
 
+/** Claude 以 stdio 子进程拉起的 channel server（docs/claude-channel.md）；父进程就是那个 Claude。 */
+async function runClaudeChannelCommand(): Promise<void> {
+  const server = runClaudeChannelServer({
+    input: process.stdin,
+    output: process.stdout,
+    claudePid: process.ppid,
+    version: OCS_VERSION,
+    selfCommand: selfCommand(),
+    lang: LANG,
+  });
+  // 本地 socket 起不来时 MCP 那一半（工具）照常可用，只是没人能投递：发送端找不到登记，走收件箱。
+  server.listening.catch((error) => {
+    process.stderr.write(`ocs channel: local endpoint unavailable: ${error instanceof Error ? error.message : String(error)}\n`);
+  });
+  // Claude 退出时多半直接发信号而不是先关 stdin（真机 2.1.319 观察到）：信号与进程退出都要清登记。
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
+    process.on(signal, () => { server.close(); process.exit(0); });
+  }
+  process.on("exit", () => server.close());
+  await server.closed;
+  process.exit(0);
+}
+
+function hasClaudeChannel(pid: number): boolean {
+  return findClaudeChannel(pid, process.env, { parentPid: parentPidOf }) !== null;
+}
+
+/** `ocs claude`：带 ocs channel 启动 Claude Code。 */
+async function cmdClaude(args: string[]): Promise<void> {
+  if (args[0] === "--help" || args[0] === "-h") {
+    console.log(M.claudeLaunchHelp);
+    return;
+  }
+  if (process.platform === "win32") fail(M.claudeChannelUnsupported);
+  const passthrough = args[0] === "--" ? args.slice(1) : args;
+  const bin = process.env[CLAUDE_BIN_ENV] || "claude";
+  const { spawn } = await import("node:child_process");
+  // 外层会话的身份环境变量不能漏进新 Claude（它和它的 channel server 都会被认成外层会话）。
+  const child = spawn(bin, claudeLaunchArgs(selfCommand(), passthrough), { stdio: "inherit", env: stripSessionEnv(process.env) });
+  // Ctrl-C 归前台的 claude 处理；启动器只等它退出。
+  const ignore = () => {};
+  process.on("SIGINT", ignore);
+  process.on("SIGTERM", () => child.kill("SIGTERM"));
+  const code = await new Promise<number>((resolve) => {
+    child.once("error", (error) => {
+      console.error(`ocs: ${M.claudeLaunchFailed(bin, error.message)}`);
+      resolve(127);
+    });
+    child.once("exit", (exitCode, signal) => resolve(exitCode ?? (signal === null ? 1 : 128 + (signalNumber(signal) ?? 0))));
+  });
+  process.exit(code);
+}
+
+function signalNumber(signal: NodeJS.Signals): number | null {
+  const { constants } = require("node:os") as typeof import("node:os");
+  return constants.signals[signal] ?? null;
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   // 人在 shell 中常把身份覆盖写在子命令前；仍由目标命令的 schema 校验，
   // 不把 --as 静默应用到 who/doctor 等不接受它的命令。
   const leadingAs = argv[0] === "--as" ? argv.splice(0, 2) : [];
   const [command, ...rest] = argv;
+  // channel server 的 stdout 是 Claude 的 MCP 管道：任何人读文本都不许写到那里，最先分流。
+  if (command === CLAUDE_CHANNEL_COMMAND && leadingAs.length === 0) {
+    await runClaudeChannelCommand();
+    return;
+  }
+  // `ocs claude [--] <claude 参数…>`：参数原样交给 claude，不走 ocs 的参数解析。
+  if (command === "claude" && leadingAs.length === 0) {
+    await cmdClaude(rest);
+    return;
+  }
   // 参数错误也要走 JSON：看到 --json 就先接管 stdout，再解析。
   if ((command === "send" || command === "dm") && rest.includes("--json")) startJsonRun(command);
   if (leadingAs.length > 0 && (leadingAs[1] === undefined || leadingAs[1].startsWith("--"))) {

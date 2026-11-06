@@ -14,6 +14,7 @@ import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { claudeWorkspaceTargetMatches } from "./claude-address.ts";
+import { findClaudeChannel, sendViaClaudeChannel } from "./claude-channel.ts";
 import {
   injectChannelMessage,
   listNativeSessions,
@@ -88,12 +89,13 @@ const PROTOCOL_LINE_RE = /^(\s*)(Reply:|Thread:|回复：|线程：|\[ocs wake\]
  * 正文是对方可控的数据（跨机 DM 之后更是网络另一端可控），不能让它冒充包装与骨架：
  * - `<cross-session-message` / `</cross-session-message` 的 `<` 换成 `‹`，正文闭合不了包装标签，
  *   也开不出一个伪造 from-name 的新标签（Codex queue / Pi / cmux 没有包装，同样适用）；
+ *   Claude channel 载体的 `<channel …>` / `</channel>` 同样处理（docs/claude-channel.md）；
  * - 行首形似 `Reply:` / `Thread:` / 唤醒首行 / 空闲通知 / 投递通知的行前加 `> `，伪造不了回复命令。
  * 其余字节原样保留（协议 §1「逐字」在这两处例外，见 docs/wake-protocol.md）。
  */
 export function neutralizeWakeBody(body: string): string {
   return body
-    .replace(/<(\/?)(cross-session-message)/gi, "‹$1$2")
+    .replace(/<(\/?)(cross-session-message|channel(?=[\s>/]|$))/gi, "‹$1$2")
     .replace(PROTOCOL_LINE_RE, "$1> $2");
 }
 
@@ -358,6 +360,28 @@ export interface WakeInput {
   env?: NodeJS.ProcessEnv;
 }
 
+/**
+ * 目标会话带着 ocs channel（`ocs claude` 启动的）就先走 channel（docs/claude-channel.md）。
+ * 返回 null = 没有可用 channel 或什么都没发出去，调用方照旧走收件箱 socket；
+ * 返回 unknown 时请求可能已进宿主，调用方绝不能再回落重投。
+ */
+export async function wakeViaClaudeChannel(
+  session: NativeClaudeSession,
+  note: string,
+  input: Pick<WakeInput, "channel" | "seq" | "from" | "env">,
+): Promise<{ kind: "accepted" } | { kind: "unknown"; detail: string } | null> {
+  const env = input.env ?? process.env;
+  const registration = findClaudeChannel(session.pid, env, { parentPid: parentPidOf });
+  if (registration === null) return null;
+  const result = await sendViaClaudeChannel(registration.socket, note, {
+    from: input.from,
+    channel: input.channel,
+    seq: String(input.seq),
+  });
+  if (result.kind === "unavailable") return null;
+  return result;
+}
+
 export async function wakeSessions(
   targets: readonly NativeClaudeSession[],
   input: WakeInput,
@@ -365,6 +389,16 @@ export async function wakeSessions(
   const outcomes: WakeOutcome[] = [];
   for (const session of targets) {
     const receiver = session.name ?? `pid-${session.pid}`;
+    const viaChannel = await wakeViaClaudeChannel(session, wakeNote({ ...input, receiver, implicitReceiver: true }), input);
+    if (viaChannel !== null) {
+      outcomes.push({
+        session,
+        result: viaChannel.kind === "accepted"
+          ? { ok: true, socketPath: "", usedAuth: false, target: receiver, carrier: "channel" }
+          : { ok: false, reason: "unknown-outcome", detail: viaChannel.detail },
+      });
+      continue;
+    }
     const result = await injectChannelMessage({
       name: receiver,
       pid: session.pid,

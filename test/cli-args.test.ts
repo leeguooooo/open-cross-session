@@ -47,6 +47,21 @@ describe("命令级参数 schema", () => {
     expect(prefix.stderr).toBe("");
   }, T);
 
+  test("-- ends options: a body may start with --, flags after it are body text", () => {
+    const home = tempDir("ocs-cli-");
+    const proc = Bun.spawnSync(["bun", join(import.meta.dir, "..", "src", "cli.ts"),
+      "dm", "offline-peer", "--as", "human", "--no-wake", "--json", "--", "--as", "x"], {
+      env: { ...process.env, OCS_HOME: home, OCS_LANG: "en", CODEX_HOME: join(home, "codex"), CODEX_THREAD_ID: "", OCS_NAME: "",
+        OCS_CLAUDE_NATIVE_SESSIONS_DIR: join(home, "claude-sessions") },
+    });
+    expect(proc.exitCode).toBe(0);
+    const result = JSON.parse(proc.stdout.toString());
+    expect(result).toMatchObject({ stored: true, seq: 1, wake: "skipped" });
+    const log = readFileSync(join(home, "channels", `${result.channel}.jsonl`), "utf8");
+    expect(log).toContain('"body":"--as x"');
+    expect(runCli(["dm", "offline-peer", "--as", "human", "--no-wake", "--looks-like-flag"]).stderr).toContain("unknown flag: --looks-like-flag");
+  }, T);
+
   test("前置 --as 不绕过命令 schema，缺值与缺命令均报清楚", () => {
     expect(runCli(["--as", "human", "who"]).stderr).toContain("unknown flag: --as");
     expect(runCli(["--as"]).stderr).toContain("--as requires a value");
