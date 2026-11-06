@@ -985,3 +985,32 @@ describe("explicit batch and private traffic observations", () => {
     } finally { f.close(); }
   }, T);
 });
+
+describe("已读证据（docs/wake-protocol.md §7）：CLI 用的是本会话自己的 transcript", () => {
+  test("inbox / inbox --session stop counting a DM whose wake entered this session's transcript", async () => {
+    const f = fixture();
+    try {
+      const sessionId = "5f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f";
+      const sessionsDir = f.env[CLAUDE_NATIVE_SESSIONS_DIR_ENV]!;
+      const selfFile = join(sessionsDir, `${process.pid}.json`);
+      writeFileSync(selfFile, JSON.stringify({ ...JSON.parse(readFileSync(selfFile, "utf8")), sessionId }), { mode: 0o600 });
+      const projects = join(f.home, "claude-projects");
+      mkdirSync(join(projects, "-work-tester"), { recursive: true });
+      f.env.OCS_CLAUDE_PROJECTS_DIR = projects;
+      const sent = await run(f, ["dm", "tester", "please check", "--as", "worker-a", "--no-wake", "--json"]);
+      const { channel, seq } = JSON.parse(sent.stdout) as { channel: string; seq: number };
+      expect(seq).toBe(1);
+      // 对照：transcript 里还没有这条 → 未读
+      expect((await run(f, ["inbox"])).stdout).toContain(channel);
+      // 收件箱注入出队进了对话（Claude 2.1.319 的 queued_command 附件）
+      const prompt = `<cross-session-message from-name="worker-a" from-mode="prompting">\n[ocs wake] worker-a mentioned you in #${channel} (seq 1)\n\nplease check\n\nReply: ocs dm worker-a "<your reply>"\n</cross-session-message>`;
+      writeFileSync(join(projects, "-work-tester", `${sessionId}.jsonl`),
+        JSON.stringify({ type: "queue-operation", operation: "enqueue", content: prompt }) + "\n" +
+        JSON.stringify({ type: "attachment", attachment: { type: "queued_command", prompt } }) + "\n");
+      expect((await run(f, ["inbox", "--session", sessionId])).stdout).not.toContain(channel);
+      expect((await run(f, ["inbox"])).stdout).not.toContain(channel);
+    } finally {
+      f.close();
+    }
+  }, T);
+});
