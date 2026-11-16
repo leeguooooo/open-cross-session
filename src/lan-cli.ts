@@ -309,6 +309,8 @@ function lanStatus(ctx: LanCliContext): void {
     : L.statusRunning({ pid: state.pid, name: state.name, bind: state.bind, port: state.port, discover: state.discover, version: state.version, started: state.started_at }));
   console.log(L.statusIdentity(id.fingerprint));
   console.log(L.statusPeers(peers.length));
+  const inactive = guarded(ctx, () => listPeers()).length - peers.length;
+  if (inactive > 0) console.log(L.statusInactivePeers(inactive));
   if (offers.length > 0) console.log(L.statusOffers(offers.length));
   const plan = autostartPlan(process.platform, ctx.selfCommand);
   if (plan !== null) console.log(L.statusAutostart(autostartState(plan)));
@@ -725,8 +727,11 @@ export function doctorLanSection(
   const L = lanMessages(lang);
   console.log(L.doctorHeader);
   let peers: number;
+  let inactive: number;
   try {
-    peers = activePeers().length;
+    const all = listPeers();
+    peers = all.filter((peer) => peerActive(peer)).length;
+    inactive = all.length - peers;
   } catch (error) {
     report.bad(L.stateError(error instanceof Error ? error.message : String(error)));
     return;
@@ -737,7 +742,8 @@ export function doctorLanSection(
     return;
   }
   report.ok(L.doctorRunning(state.name, state.port, peers));
-  if (peers === 0) report.info(L.doctorNoPeers);
+  if (inactive > 0) report.info(L.doctorInactivePeers(inactive));
+  else if (peers === 0) report.info(L.doctorNoPeers);
   const plan = autostartPlan(process.platform, selfCommand);
   if (plan !== null && autostartState(plan) !== "on") report.warn(L.doctorAutostartOff);
 }

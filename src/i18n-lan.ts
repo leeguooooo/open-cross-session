@@ -21,6 +21,7 @@ export interface LanCatalog {
   statusStopped: string;
   statusIdentity: (fp: string) => string;
   statusPeers: (count: number) => string;
+  statusInactivePeers: (count: number) => string;
   statusOffers: (count: number) => string;
   peersNone: string;
   peerLine: (label: string, name: string, fp: string, addr: string, lastSeen: string, terms: string) => string;
@@ -101,6 +102,7 @@ export interface LanCatalog {
   doctorOff: string;
   doctorRunning: (name: string, port: number, peers: number) => string;
   doctorNoPeers: string;
+  doctorInactivePeers: (count: number) => string;
   doctorAutostartOff: string;
 }
 
@@ -134,6 +136,7 @@ const en: LanCatalog = {
   statusStopped: "lan: not running (start with `ocs lan up`)",
   statusIdentity: (fp) => `  this machine's key: ${fp}`,
   statusPeers: (count) => `  paired peers: ${count}`,
+  statusInactivePeers: (count) => `  expired / used-up peers: ${count} (\`ocs lan peers\` shows how to renew them)`,
   statusOffers: (count) => `  open pairing codes: ${count}`,
   peersNone: "lan: no paired peers — run `ocs lan pair` and send the printed text to the other person",
   peerLine: (label, name, fp, addr, lastSeen, terms) => `  ${label}  (${name})  key ${fp}  ${addr}  last seen ${lastSeen}  trust: ${terms}`,
@@ -145,7 +148,7 @@ const en: LanCatalog = {
   peerExpiringSoon: (label, span, at) =>
     `lan: note: this machine's trust for ${label} ends in ${span} (at ${at}). Extend it: \`ocs lan trust ${label} --for 8h\`. ${label} has its own limit for this machine — if you paired with the default, extend it there too.`,
   rejectedByPeer: (label, me) =>
-    `${label} no longer accepts this machine: its trust for this machine expired, was used up, or was removed (the reply does not say which). Nothing was sent. Fix it on ${label}, not here: run \`ocs lan peers\` there; if this machine is listed as expired, renew it there with \`ocs lan trust <its name for this machine, normally ${me}> --for 8h\`; if it is not listed, pair again.`,
+    `${label} no longer accepts this machine: its trust for this machine expired, was used up, or was removed (the reply does not say which). Nothing was sent. Fix it on ${label}, not here: run \`ocs lan peers\` there; if this machine is listed as expired or used up, renew it there with \`ocs lan trust <its name for this machine, normally ${me}> --for 8h\`; if it is not listed, pair again.`,
   whoRejected: (label, detail) => `LAN ${label}: ${detail}`,
   whoExpired: (label, at) =>
     `LAN ${label}: trust expired at ${at} — not contacted. Renew on this machine, no re-pairing needed: \`ocs lan trust ${label} --for 8h\` (or \`--forever\`)`,
@@ -250,6 +253,7 @@ Trust: ${i.terms}. This invitation expires in ${i.minutes} min.
   doctorOff: "LAN mode is off (optional): reach agents on your other computers with `ocs lan up` + `ocs lan pair` — see docs/lan.md",
   doctorRunning: (name, port, peers) => `LAN daemon running as ${name} on port ${port}, ${peers} paired peer${peers === 1 ? "" : "s"}`,
   doctorNoPeers: "no paired computers yet: run `ocs lan pair` here and send the printed text to the other one",
+  doctorInactivePeers: (count) => `${count} paired computer${count === 1 ? "" : "s"} no longer trusted (expired or used up): \`ocs lan peers\` shows the renew command, no re-pairing needed`,
   doctorAutostartOff: "LAN daemon will not come back after a restart: `ocs lan autostart on`",
   statusAutostart: (state) => `  start at login: ${state === "on" ? "on" : state === "stale" ? "stale (points at another ocs install — run `ocs lan autostart on`)" : "off (`ocs lan autostart on`)"}`,
 };
@@ -283,6 +287,7 @@ const zh: LanCatalog = {
   statusStopped: "lan: 未运行（用 `ocs lan up` 启动）",
   statusIdentity: (fp) => `  本机公钥：${fp}`,
   statusPeers: (count) => `  已配对对端：${count}`,
+  statusInactivePeers: (count) => `  已到期 / 次数用完的对端：${count}（\`ocs lan peers\` 里有续期命令）`,
   statusOffers: (count) => `  未兑现的配对码：${count}`,
   peersNone: "lan: 还没有配对的对端——运行 `ocs lan pair`，把打印出来的那段文字发给对方",
   peerLine: (label, name, fp, addr, lastSeen, terms) => `  ${label}（${name}）  公钥 ${fp}  ${addr}  最近互通 ${lastSeen}  信任：${terms}`,
@@ -294,7 +299,7 @@ const zh: LanCatalog = {
   peerExpiringSoon: (label, span, at) =>
     `lan: 提醒：本机对 ${label} 的信任还剩 ${span}（到 ${at}）。续期：\`ocs lan trust ${label} --for 8h\`。${label} 对本机的信任期限是它自己的——配对时用的默认期限的话，那边也要续。`,
   rejectedByPeer: (label, me) =>
-    `${label} 不再接受本机：它对本机的信任到期了、次数用完了，或者被移除了（应答里分不出是哪种）。什么都没发。要在 ${label} 上处理，不是本机：在那边跑 \`ocs lan peers\`；本机若显示为已到期，就在那边续期 \`ocs lan trust <它给本机起的名字，通常是 ${me}> --for 8h\`；若没列出来，就重新配对。`,
+    `${label} 不再接受本机：它对本机的信任到期了、次数用完了，或者被移除了（应答里分不出是哪种）。什么都没发。要在 ${label} 上处理，不是本机：在那边跑 \`ocs lan peers\`；本机若显示为已到期或次数用完，就在那边续期 \`ocs lan trust <它给本机起的名字，通常是 ${me}> --for 8h\`；若没列出来，就重新配对。`,
   whoRejected: (label, detail) => `局域网 ${label}：${detail}`,
   whoExpired: (label, at) =>
     `局域网 ${label}：信任已在 ${at} 到期——没有去连。在本机续期即可，不用重新配对：\`ocs lan trust ${label} --for 8h\`（或 \`--forever\`）`,
@@ -399,6 +404,7 @@ const zh: LanCatalog = {
   doctorOff: "局域网模式未开启（可选）：`ocs lan up` + `ocs lan pair` 就能找到你其他电脑上的 agent，见 docs/lan.md",
   doctorRunning: (name, port, peers) => `局域网守护进程运行中：${name}，端口 ${port}，已配对 ${peers} 台电脑`,
   doctorNoPeers: "还没有配对的电脑：这台跑 `ocs lan pair`，把打印出来的文字发给另一台",
+  doctorInactivePeers: (count) => `${count} 台配对过的电脑已不再信任（到期或次数用完）：\`ocs lan peers\` 里有续期命令，不用重新配对`,
   doctorAutostartOff: "重启后局域网守护进程不会自动回来：`ocs lan autostart on`",
   statusAutostart: (state) => `  登录自启：${state === "on" ? "开" : state === "stale" ? "失效（指向别处的 ocs，重跑 `ocs lan autostart on`）" : "关（`ocs lan autostart on`）"}`,
 };

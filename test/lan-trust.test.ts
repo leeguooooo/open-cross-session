@@ -312,6 +312,8 @@ describe("trust that runs out", () => {
 // ───────────── #79: expired trust stays listed, renewable, still refused ─────────────
 
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
+/** Tests that spawn the CLI several times get more room (Windows CI is slow to start bun). */
+const TC = 90_000;
 
 async function cli(m: Machine, args: string[]): Promise<{ code: number; out: string }> {
   const proc = Bun.spawn([process.execPath, CLI, ...args], { env: { ...m.env, OCS_UPGRADE_CHECK: "0" }, stdout: "pipe", stderr: "pipe" });
@@ -356,7 +358,7 @@ describe("expired trust is kept, listed and renewable, but still refused (#79)",
     } finally {
       await server.close();
     }
-  }, T);
+  }, TC);
 
   test("a used-up entry is kept too and stays inactive", () => {
     const a = machine("alpha");
@@ -381,6 +383,9 @@ describe("expired trust is kept, listed and renewable, but still refused (#79)",
     expect(peers.out).toContain("ocs lan trust bee --for 8h");
     const json = JSON.parse((await cli(a, ["lan", "peers", "--json"])).out) as { label: string; active: boolean }[];
     expect(json).toEqual([expect.objectContaining({ label: "bee", active: false })]);
+    const status = await cli(a, ["lan", "status"]);
+    expect(status.out).toContain("paired peers: 0");
+    expect(status.out).toContain("expired / used-up peers: 1");
     const who = await cli(a, ["lan", "who"]);
     expect(who.out).toContain("LAN bee: trust expired at");
     expect(who.out).toContain("ocs lan trust bee --for 8h");
@@ -396,7 +401,7 @@ describe("expired trust is kept, listed and renewable, but still refused (#79)",
     expect(renew.code).toBe(0);
     expect(peerActive(findPeer("bee", a.env)!)).toBe(true);
     expect((await cli(a, ["lan", "peers"])).out).toContain("left (until");
-  }, T);
+  }, TC);
 
   test("CLI on the refused machine: the hint says to fix it on the other machine, without claiming why", async () => {
     const a = machine("alpha");
@@ -418,7 +423,7 @@ describe("expired trust is kept, listed and renewable, but still refused (#79)",
     } finally {
       await server.close();
     }
-  }, T);
+  }, TC);
 
   test("trust ending within 30 minutes is noted once by who and dm; not when further away", async () => {
     const a = machine("alpha");
@@ -438,7 +443,7 @@ describe("expired trust is kept, listed and renewable, but still refused (#79)",
     } finally {
       await server.close();
     }
-  }, T);
+  }, TC);
 
   test("help marks --forever as exclusive with --once / --for (en + zh)", () => {
     for (const lang of ["en", "zh"] as const) {
