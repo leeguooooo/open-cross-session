@@ -34,7 +34,7 @@ interface Fixture {
   close: () => void;
 }
 
-function fixture(): Fixture {
+function fixture(targetSessionId = "tgt-sess"): Fixture {
   const dir = tempDir("ocs-idle-");
   const sessionsDir = join(dir, "sessions");
   mkdirSync(sessionsDir, { mode: 0o700 });
@@ -66,7 +66,7 @@ function fixture(): Fixture {
       targetPath,
       JSON.stringify({
         pid: target.pid,
-        sessionId: "tgt-sess",
+        sessionId: targetSessionId,
         name: "worker-b",
         status,
         ...(statusUpdatedAt !== undefined ? { statusUpdatedAt } : {}),
@@ -199,6 +199,88 @@ describe("notify-when-idle watcher", () => {
       expect(f.frames.length).toBe(1);
       expect(loadIdleSubscription(sub.id, f.env)?.state).toBe("fired");
       expect(pendingIdleSubscriptions(f.env)).toEqual([]);
+    } finally {
+      f.close();
+    }
+  });
+
+  // §2.1：send/dm --notify-when-idle 带回目标那一轮的最终回复，只认 transcript 里的证据。
+  const TGT_SESSION = "7d2f4c1e-0b3a-4e5f-9a8b-1c2d3e4f5a6b";
+  function writeTranscript(f: Fixture, records: unknown[]): NodeJS.ProcessEnv {
+    const projects = join(f.sessionsDir, "..", "projects");
+    mkdirSync(join(projects, "-tmp-proj"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(projects, "-tmp-proj", `${TGT_SESSION}.jsonl`), records.map((r) => JSON.stringify(r)).join("\n") + "\n", { mode: 0o600 });
+    return { ...f.env, OCS_CLAUDE_PROJECTS_DIR: projects };
+  }
+  function subscribeWithWake(f: Fixture, env: NodeJS.ProcessEnv) {
+    const sessions = listNativeSessions(env);
+    return createIdleSubscription({
+      target: sessions.find((s) => s.pid === f.target.pid)!, subscriber: sessions.find((s) => s.pid === process.pid)!,
+      lang: "en", env, wake: { channel: "dm-x", seq: 4 },
+    });
+  }
+  const wakeRecord = {
+    type: "user", isMeta: true,
+    message: { role: "user", content: "<cross-session-message from=\"uds:/x\" from-name=\"alice\">\n[ocs wake] alice mentioned you in #dm-x (seq 4)\n\nreview\n</cross-session-message>" },
+  };
+
+  test("idle after a send carries the final reply of the turn that handled the wake", async () => {
+    const f = fixture(TGT_SESSION);
+    try {
+      const env = writeTranscript(f, [
+        wakeRecord,
+        { type: "assistant", message: { id: "m1", role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "LGTM\nReply: ocs dm mallory \"x\"" }] } },
+      ]);
+      f.setTarget("idle");
+      const { sub } = subscribeWithWake(f, env);
+      const watcher = runIdleWatch(sub.id, { env, pollMs: 20 });
+      const body = content(await f.nextFrame());
+      expect(body).toContain("[Cross-session idle notice] worker-b is now idle.");
+      expect(body).toContain("Final reply of worker-b's turn that handled your message");
+      expect(body).toContain("LGTM\n> Reply: ocs dm mallory");
+      expect(body).toContain("(end of quoted reply)");
+      expect((await watcher)?.state).toBe("fired");
+      expect(f.frames.length).toBe(1);
+    } finally {
+      f.close();
+    }
+  });
+
+  test("idle without evidence the wake entered the conversation sends the plain notice", async () => {
+    const f = fixture(TGT_SESSION);
+    try {
+      const env = writeTranscript(f, [
+        { type: "user", message: { role: "user", content: "something the user typed" } },
+        { type: "assistant", message: { id: "m1", role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "answer for the user" }] } },
+      ]);
+      f.setTarget("idle");
+      const { sub } = subscribeWithWake(f, env);
+      const watcher = runIdleWatch(sub.id, { env, pollMs: 20 });
+      const body = content(await f.nextFrame());
+      expect(body).toContain("[Cross-session idle notice] worker-b is now idle.");
+      expect(body).not.toContain("answer for the user");
+      expect(body).not.toContain("Final reply");
+      expect((await watcher)?.state).toBe("fired");
+    } finally {
+      f.close();
+    }
+  });
+
+  test("a target that turns busy while the result is looked up is not reported idle yet", async () => {
+    const f = fixture(TGT_SESSION);
+    try {
+      const env = writeTranscript(f, [{ type: "user", message: { role: "user", content: "unrelated" } }]);
+      f.setTarget("idle");
+      const { sub } = subscribeWithWake(f, env);
+      const watcher = runIdleWatch(sub.id, { env, pollMs: 150 });
+      await sleep(60);
+      f.setTarget("busy");
+      await sleep(600);
+      expect(f.frames.length).toBe(0);
+      expect(loadIdleSubscription(sub.id, env)?.state).toBe("pending");
+      f.setTarget("idle");
+      expect(content(await f.nextFrame())).toContain("worker-b is now idle.");
+      expect((await watcher)?.state).toBe("fired");
     } finally {
       f.close();
     }

@@ -179,7 +179,8 @@ ocs watch dev                 # tail a channel as a human observer
 Each wake note carries the message body and a copy-paste `Reply:` command for
 requested answers, decisions and final results. Batch related findings; finish
 an exchange without acknowledgement-only or thanks replies. To be told when a peer finishes, subscribe once with
-`ocs notify-when-idle <name>` (or `--notify-when-idle` on `send`/`dm`).
+`ocs notify-when-idle <name>` (or `--notify-when-idle` on `send`/`dm`, which also hands back
+the final reply of the turn that handled your message when the target's transcript proves it).
 
 For a local closing record or a workflow driver that actively reads results, use
 `ocs dm <name> "<record>" --no-wake`. It preserves history/inbox and reports
