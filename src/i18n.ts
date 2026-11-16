@@ -145,6 +145,7 @@ interface Catalog {
   doctorNoPiSessions: string;
   doctorPiSelfRegistered: (target: string) => string;
   doctorPiSelfUnregistered: (target: string) => string;
+  doctorPiUnregisteredPids: (pids: number[]) => string;
   piSelfUnregistered: (target: string) => string;
   doctorAccel: string;
   doctorCmuxOk: string;
@@ -524,6 +525,10 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
     `this command runs in Pi session ${target}, but the ocs extension is not running in it — it cannot be woken. ` +
     "Usually Pi was started before `ocs skill install` / an ocs upgrade: run /reload in that Pi (a restart starts a new session and leaves replies parked for this one). " +
     "Non-TUI modes (rpc/json/print) never register. Also look for an \"ocs Pi integration failed\" notice in that Pi",
+  doctorPiUnregisteredPids: (pids) =>
+    `Pi process${pids.length === 1 ? "" : "es"} ${pids.join(", ")} on a terminal ha${pids.length === 1 ? "s" : "ve"} no ocs registration, so ${pids.length === 1 ? "it is" : "they are"} not in \`ocs who\` and cannot be woken. ` +
+    "Either Pi was opened before the extension was installed, or it lost its registration (an \"ocs:\" status line can still show). " +
+    "Run /reload in that Pi; the current extension also restores a lost registration by itself within 30s",
   piSelfUnregistered: (target) =>
     `note: you are Pi session ${target}, but the ocs extension is not running in it, so it is not registered. ` +
     "Sending works; replies to you are parked, not woken — collect them with `ocs inbox`. " +
@@ -929,6 +934,10 @@ ${lanMessages("zh").help}
     `当前命令所在的 Pi 会话 ${target} 里没有运行 ocs 扩展——它没法被唤醒。` +
     "多半是这个 Pi 在 `ocs skill install` / 升级 ocs 之前就开着：在那个 Pi 里 /reload（重启会换成新会话，发给这个会话的回信就留在原处）。" +
     "非 TUI 模式（rpc/json/print）不登记。也看看那个 Pi 里有没有「ocs Pi integration failed」提示",
+  doctorPiUnregisteredPids: (pids) =>
+    `终端里的 Pi 进程 ${pids.join("、")} 没有 ocs 登记，\`ocs who\` 里看不到，也没法被唤醒。` +
+    "要么这个 Pi 在装扩展之前就开着，要么它丢了登记（状态栏仍可能显示「ocs:」）。" +
+    "在那个 Pi 里 /reload；新版扩展自己也会在 30 秒内补回丢失的登记",
   piSelfUnregistered: (target) =>
     `注意：你是 Pi 会话 ${target}，但它里面没有运行 ocs 扩展，所以没登记。` +
     "能发消息；发给你的回信只会停进收件箱、不会唤醒你——用 `ocs inbox` 取。" +

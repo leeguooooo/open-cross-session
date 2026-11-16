@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   installPiIntegration,
   PI_EXTENSION_SOURCE,
@@ -13,6 +13,7 @@ import {
   piInboxPathValid,
   piSessionIdFromTarget,
   piTargetName,
+  unregisteredPiPids,
   wakePiSession,
   type PiSessionRegistration,
 } from "../src/pi-sessions.ts";
@@ -299,6 +300,142 @@ describe("installed Pi extension on Windows", () => {
       expect(listPiSessions({ OCS_HOME: home }, "win32")).toEqual([]);
     } finally {
       process.chdir(previousCwd);
+      if (host.exitCode === null) host.kill();
+    }
+  });
+});
+
+describe("doctor hint for Pi processes without a registration (#76)", () => {
+  test("lists terminal Pi processes whose pid has no live registration", () => {
+    const registered = { pid: 200 } as PiSessionRegistration;
+    const table = new Map([
+      [100, { tty: "ttys001", comm: "pi" }], // lost its registration
+      [200, { tty: "ttys002", comm: "pi" }], // registered
+      [300, { tty: "??", comm: "pi" }], // no terminal: not a TUI
+      [400, { tty: "ttys003", comm: "pi-rpc" }], // rpc never registers
+      [500, { tty: "ttys004", comm: "/usr/local/bin/pi" }],
+      [600, { tty: "ttys005", comm: "pip" }],
+    ]);
+    expect(unregisteredPiPids(table, [registered])).toEqual([100, 500]);
+    expect(unregisteredPiPids(table, [registered, { pid: 100 } as PiSessionRegistration, { pid: 500 } as PiSessionRegistration])).toEqual([]);
+  });
+});
+
+describe("installed Pi extension keeps a live TUI registered (#76)", () => {
+  interface LifecycleOutput {
+    sent: Array<Record<string, unknown>>;
+    notices: string[];
+    statuses: Array<string | null>;
+    envAfterForeign: string | null;
+    envAtWake: string | null;
+    registeredBeforeOldShutdown: string[];
+  }
+
+  function spawnLifecycle(scenario: string, extra: Record<string, string> = {}) {
+    // Short /tmp root: sockaddr_un paths are limited to ~104 bytes on macOS.
+    const root = mkdtempSync("/tmp/ocs-pi-76-");
+    tempRoots.push(root);
+    const home = join(root, "h");
+    const paths = installPiIntegration("---\nname: ocs\n---\n", { PI_CODING_AGENT_DIR: join(root, "a") }, root);
+    const host = Bun.spawn(
+      [process.execPath, join(import.meta.dir, "fixtures", "pi-extension-lifecycle.ts"), paths.extensionPath, SESSION_ID, scenario],
+      { env: { ...process.env, OCS_HOME: home, ...extra }, stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+    );
+    return { home, host };
+  }
+
+  async function waitFor<T>(probe: () => T | undefined, ms = 3_000): Promise<T | undefined> {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      const value = probe();
+      if (value !== undefined || Date.now() > deadline) return value;
+      await Bun.sleep(10);
+    }
+  }
+
+  /** Read the host's stderr until it prints `token` (the fixture's progress markers). */
+  async function waitForMarker(host: ReturnType<typeof Bun.spawn>, token: string): Promise<void> {
+    const reader = (host.stderr as ReadableStream<Uint8Array>).getReader();
+    let seen = "";
+    try {
+      while (!seen.includes(token)) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error(`host exited before ${token}: ${seen}`);
+        seen += new TextDecoder().decode(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  async function finish(host: ReturnType<typeof Bun.spawn>): Promise<LifecycleOutput> {
+    const stdout = await new Response(host.stdout as ReadableStream).text();
+    await host.exited;
+    return JSON.parse(stdout) as LifecycleOutput;
+  }
+
+  test("a non-TUI session in the same process neither unregisters nor un-identifies the TUI", async () => {
+    const { home, host } = spawnLifecycle("foreign");
+    try {
+      // the sibling session has started and shut down once the host says ready
+      await waitForMarker(host, "ready");
+      const still = listPiSessions({ OCS_HOME: home });
+      expect(still.map((s) => s.session_id)).toEqual([SESSION_ID]);
+      expect(await wakePiSession(still[0]!, "[ocs wake] still there?")).toEqual({ ok: true, sessionId: SESSION_ID, delivery: "queued" });
+      const output = await finish(host);
+      expect(output.envAfterForeign).toBe(SESSION_ID);
+      expect(output.statuses).toEqual([`ocs: ${piTargetName(SESSION_ID)}`, null]);
+      expect(listPiSessions({ OCS_HOME: home })).toEqual([]);
+    } finally {
+      if (host.exitCode === null) host.kill();
+    }
+  });
+
+  test("an old extension instance shutting down late does not take the newer inbox with it", async () => {
+    const { home, host } = spawnLifecycle("stale");
+    try {
+      // ready = the newer instance registered and the old one has shut down
+      await waitForMarker(host, "ready");
+      const sessions = listPiSessions({ OCS_HOME: home });
+      expect(sessions.map((s) => s.session_id)).toEqual([SESSION_ID]);
+      const live = sessions[0];
+      expect(readdirSync(join(home, "pi-inbox"))).toEqual([basename(live!.socket_path)]);
+      expect(await wakePiSession(live!, "[ocs wake] after reload")).toEqual({ ok: true, sessionId: SESSION_ID, delivery: "queued" });
+      const output = await finish(host);
+      // while both instances were live, the newer registration stayed in place
+      expect(output.registeredBeforeOldShutdown).toEqual([live!.socket_path]);
+      expect(output.sent).toHaveLength(1);
+      expect(listPiSessions({ OCS_HOME: home })).toEqual([]);
+      expect(readdirSync(join(home, "pi-inbox"))).toEqual([]);
+    } finally {
+      if (host.exitCode === null) host.kill();
+    }
+  });
+
+  test("an idle TUI recreates a deleted registration, inbox and identity", async () => {
+    const { home, host } = spawnLifecycle("heal", { OCS_PI_HEAL_INTERVAL_MS: "50" });
+    try {
+      await waitForMarker(host, "ready");
+      const original = listPiSessions({ OCS_HOME: home })[0];
+      expect(original?.session_id).toBe(SESSION_ID);
+      const stdin = host.stdin as import("bun").FileSink;
+      stdin.write("drop\n");
+      await stdin.flush();
+      await waitForMarker(host, "dropped");
+      // what #76 observed: the Pi process is alive, its registration and socket are gone
+      rmSync(join(home, "pi-sessions", `${SESSION_ID}.${host.pid}.json`));
+      rmSync(original!.socket_path);
+      expect(listPiSessions({ OCS_HOME: home })).toEqual([]);
+      const healed = await waitFor(() => listPiSessions({ OCS_HOME: home })[0]);
+      expect(healed?.session_id).toBe(SESSION_ID);
+      expect(healed?.socket_path).not.toBe(original!.socket_path);
+      expect(await wakePiSession(healed!, "[ocs wake] healed")).toEqual({ ok: true, sessionId: SESSION_ID, delivery: "queued" });
+      const output = await finish(host);
+      expect(output.envAtWake).toBe(SESSION_ID);
+      expect(output.notices).toEqual([]);
+      expect(listPiSessions({ OCS_HOME: home })).toEqual([]);
+      expect(readdirSync(join(home, "pi-inbox"))).toEqual([]);
+    } finally {
       if (host.exitCode === null) host.kill();
     }
   });

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A live Pi TUI no longer silently drops out of `ocs who` while its status line still says `ocs: pi-…` (#76). The Pi extension only lets the session that registered take its registration down: a second, non-TUI session in the same Pi process could remove the TUI's registration, inbox and `OCS_PI_SESSION_ID` (so `--as` was needed). Each inbox now listens on its own random socket path, so an old extension instance closing late cannot delete a newer socket. If the registration or socket disappears anyway, the extension restores both, and the session identity, on its next turn or within 30 seconds. After upgrading, run `ocs skill install` (or `ocs doctor --fix`), then `/reload` each open Pi to pick this up
+- `ocs doctor` lists Pi processes on a terminal that have no ocs registration, so a session missing from `ocs who` is reported instead of passing silently (#76)
+
 ## 0.9.21
 
 - `ocs dm <address>` without `@<peer>` for an agent that lives on a paired LAN computer no longer stores the message in a new local channel nobody reads. When the address is not a local session, ocs asks the paired peers (3 s total) and, if one lists that exact address, refuses before writing anything and tells you to use `<address>@<peer>`. It does not forward automatically: a name a peer reports is only a hint. The `ocs who` LAN hint now also says to address those agents as `<address>@<peer>` (#78)

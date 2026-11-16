@@ -192,6 +192,26 @@ export function listPiSessions(
   return sessions;
 }
 
+/**
+ * #76: Pi processes on a terminal (Pi titles itself `pi`; rpc mode is `pi-rpc` and never
+ * registers) that have no live registration. A hint only: it cannot tell a Pi opened before the
+ * extension was installed from one that lost its registration, and a short-lived `pi -p` on a
+ * terminal shows up too. The status label inside Pi is not visible from outside.
+ */
+export function unregisteredPiPids(
+  table: ReadonlyMap<number, { tty: string; comm: string }>,
+  sessions: readonly PiSessionRegistration[],
+): number[] {
+  const registered = new Set(sessions.map((session) => session.pid));
+  const pids: number[] = [];
+  for (const [pid, entry] of table) {
+    const name = entry.comm.slice(entry.comm.lastIndexOf("/") + 1);
+    if (name !== "pi" || entry.tty === "??" || entry.tty === "?" || entry.tty === "") continue;
+    if (!registered.has(pid)) pids.push(pid);
+  }
+  return pids.sort((a, b) => a - b);
+}
+
 export type PiWakeResult =
   | { ok: true; sessionId: string; delivery: "queued" }
   | { ok: false; reason: "unavailable" | "failed" | "unknown-outcome"; detail?: string };

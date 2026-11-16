@@ -70,7 +70,7 @@ import {
   piExtensionPath,
   piSkillPath,
 } from "./pi-extension.ts";
-import { listPiSessions, piSessionIdFromTarget, piTargetName } from "./pi-sessions.ts";
+import { listPiSessions, piSessionIdFromTarget, piTargetName, unregisteredPiPids } from "./pi-sessions.ts";
 import {
   hermesIdentity,
   hermesSessionKeyFromTarget,
@@ -131,6 +131,7 @@ import { verifiedClaudeWorkspaceIdentity } from "./workspace-registry.ts";
 import {
   codexQueueSupported,
   diagnoseCodexLiveness,
+  psTable,
 } from "./codex-queue.ts";
 import {
   findSelfClaudePid,
@@ -1583,6 +1584,11 @@ async function cmdDoctor(parsed: Parsed): Promise<void> {
   if (selfPi !== null) {
     if (pi.some((session) => session.session_id === selfPi)) ok(M.doctorPiSelfRegistered(piTargetName(selfPi)));
     else warn(M.doctorPiSelfUnregistered(piTargetName(selfPi)));
+  }
+  // #76: a live Pi can lose its registration while its status line still says "ocs:".
+  if (process.platform !== "win32") {
+    const missing = unregisteredPiPids(psTable(), pi);
+    if (missing.length > 0) warn(M.doctorPiUnregisteredPids(missing));
   }
 
   console.log(A.doctor);
