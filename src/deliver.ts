@@ -298,6 +298,7 @@ async function deliverToCodexTaskImpl(
     const queued = queueCodexThread({
       threadId: targetThreadId,
       livePid,
+      env,
       prompt: wakeNote({
         ...wakeInput,
         receiver: `codex-${targetThreadId.slice(0, 8)}`,
@@ -339,6 +340,7 @@ async function deliverToCodexTaskImpl(
     const queued = queueCodexThread({
       threadId: targetThreadId,
       livePid,
+      env,
       prompt: wakeNote({
         ...wakeInput,
         receiver: `codex-${targetThreadId.slice(0, 8)}`,

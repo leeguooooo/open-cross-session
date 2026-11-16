@@ -9,7 +9,7 @@ import { installOpenCodeIntegration, openCodePluginCurrent, openCodePluginPath, 
 import { chmodSync, mkdirSync, statSync, writeSync } from "node:fs";
 import { batchBody } from "./batch.ts";
 import { seenWakes, type SeenSource } from "./seen-wakes.ts";
-import { primeCodexDaemon } from "./codex-daemon.ts";
+import { diagnoseCodexDaemon, primeCodexDaemon } from "./codex-daemon.ts";
 import {
   CLAUDE_BIN_ENV,
   CLAUDE_CHANNEL_COMMAND,
@@ -1495,6 +1495,7 @@ async function cmdDoctor(parsed: Parsed): Promise<void> {
   if (process.platform === "win32") console.log(`  ｰ  ${M.doctorCodexQueueWindows}`);
   else if (codexQueueSupported()) ok(M.doctorCodexQueueOk);
   else warn(M.doctorCodexQueueMissing);
+  if (process.platform !== "win32") console.log(`  ｰ  ${M.doctorCodexDaemon(await diagnoseCodexDaemon())}`);
   const ipc = codexDesktopIpcStatus();
   const ipcAvailable = ipc.available;
   if (process.platform === "win32") {

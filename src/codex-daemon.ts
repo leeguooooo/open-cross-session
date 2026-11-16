@@ -25,7 +25,7 @@
 // 拍一张快照，同步代码读快照。没拍过 = 空快照 = 没有证据。
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { codexSessionsRoot, isCodexThreadId, listCodexRolloutFiles } from "./codex-sessions.ts";
@@ -192,11 +192,43 @@ export async function probeCodexDaemon(options: {
 }
 
 /** 命令入口调用：问一次守护进程并替换全局快照。永不抛错。 */
+let pidSource: ((env: NodeJS.ProcessEnv) => number | null) | null = null;
+
+/** 测试用：替换守护进程 pid 的来源（测试进程不是 codex 二进制，过不了身份校验）。 */
+export function setCodexDaemonPidSource(source: ((env: NodeJS.ProcessEnv) => number | null) | null): void {
+  pidSource = source;
+}
+
 export async function primeCodexDaemon(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   if (process.platform === "win32") return; // Windows 的 Codex 走 Desktop IPC（铁律 10）
   try {
-    snapshot = await probeCodexDaemon({ env });
+    const source = pidSource;
+    snapshot = await probeCodexDaemon({ env, ...(source === null ? {} : { daemonPid: () => source(env) }) });
   } catch {
     snapshot = EMPTY;
   }
+}
+
+export type CodexDaemonDiagnosis =
+  | { kind: "no-daemon"; socket: string }
+  | { kind: "untrusted-socket"; socket: string }
+  | { kind: "pid-unverified" }
+  | { kind: "loaded"; pid: number; threads: number };
+
+/**
+ * doctor 用：守护进程这条证据为什么有/没有。热路径只回答「有没有证据」，用户那里几种原因
+ * 长成同一句「没有活会话」。`loaded` 且 threads=0 也可能是探测失败（超时/应答畸形）。
+ */
+export async function diagnoseCodexDaemon(env: NodeJS.ProcessEnv = process.env): Promise<CodexDaemonDiagnosis> {
+  const socket = codexDaemonSocketPath(env);
+  try {
+    lstatSync(socket);
+  } catch {
+    return { kind: "no-daemon", socket };
+  }
+  if (trustedDaemonSocket(socket) === null) return { kind: "untrusted-socket", socket };
+  const pid = (pidSource ?? ((e: NodeJS.ProcessEnv) => codexDaemonPid(e)))(env);
+  if (pid === null) return { kind: "pid-unverified" };
+  const snap = await probeCodexDaemon({ env, daemonPid: () => pid });
+  return { kind: "loaded", pid, threads: snap.threads.size };
 }

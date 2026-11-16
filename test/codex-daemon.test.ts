@@ -6,9 +6,13 @@ import { join } from "node:path";
 import {
   codexDaemonPid,
   codexDaemonSnapshot,
+  diagnoseCodexDaemon,
   probeCodexDaemon,
+  setCodexDaemonPidSource,
   setCodexDaemonSnapshot,
 } from "../src/codex-daemon.ts";
+import { collectingSink, deliverToCodexTask } from "../src/deliver.ts";
+import { messages } from "../src/i18n.ts";
 import { codexThreadLivePid, codexThreadLivePids, queueCodexThread, resetCodexCliProbeCache } from "../src/codex-queue.ts";
 import { resolveDmTarget } from "../src/roster.ts";
 import { tempDir, autoCleanupTempDirs } from "./tmp";
@@ -32,6 +36,7 @@ function shortDir(mode = 0o700): string {
 const servers: Array<{ stop(force?: boolean): void }> = [];
 afterEach(() => {
   setCodexDaemonSnapshot(null);
+  setCodexDaemonPidSource(null);
   for (const server of servers.splice(0)) server.stop(true);
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -222,5 +227,64 @@ describe("判活与寻址：loaded 是 rollout 持有者之外的第二条证据
     const ambiguous = resolveDmTarget("codex-01a1bbbb", env)!;
     expect(ambiguous.threadId).toBeUndefined();
     expect([...(ambiguous.ambiguousCodexTargets ?? [])].sort()).toEqual([FRESH, FRESH_TWIN].sort());
+  });
+});
+
+describe("投递：lsof 没证据时按需问守护进程（客户原样用完整 UUID dm 的那条路）", () => {
+  function world(reply: Reply) {
+    const daemon = fakeDaemon(reply);
+    const bin = tempDir("ocs-cxd-dbin-");
+    const argsLog = join(bin, "args.log");
+    writeFileSync(join(bin, "codex"), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(argsLog)}\necho "Queued message 01a079c9-7318-7192-ae2c-8078515ad91a for thread $3."\n`, { mode: 0o755 });
+    resetCodexCliProbeCache();
+    setCodexDaemonPidSource(() => process.pid);
+    const env: NodeJS.ProcessEnv = {
+      CODEX_HOME: tempDir("ocs-cxd-dhome-"),
+      OCS_HOME: tempDir("ocs-cxd-ocs-"),
+      OCS_CODEX_DAEMON_SOCK: daemon.sock,
+      PATH: `${bin}:/usr/bin:/bin`,
+    };
+    return { env, argsLog, daemon };
+  }
+  const wake = { channel: "dm-test", seq: 1, from: "claude-x", body: "hello" };
+
+  test("没有 rollout、守护进程里 loaded → 现拍快照后真的 queue", async () => {
+    const w = world(typical);
+    const sink = collectingSink();
+    try {
+      await deliverToCodexTask(FRESH, wake, messages("en"), sink, undefined, w.env, { parkOffline: true, defer: false });
+    } finally {
+      resetCodexCliProbeCache();
+    }
+    expect(sink.outcome()).toBe("ok");
+    expect(await Bun.file(w.argsLog).text()).toContain(`queue --thread ${FRESH} --message`);
+    expect(w.daemon.seen).toContain("thread/loaded/list");
+  });
+
+  test("守护进程里没有 → 停靠 inbox，一个字都不 queue", async () => {
+    const w = world(({ method }) => (method === "thread/loaded/list" ? { result: { data: [], nextCursor: null } } : undefined));
+    const sink = collectingSink();
+    try {
+      await deliverToCodexTask(FRESH, wake, messages("en"), sink, undefined, w.env, { parkOffline: true, defer: false });
+    } finally {
+      resetCodexCliProbeCache();
+    }
+    expect(await Bun.file(w.argsLog).exists()).toBe(false);
+    expect(sink.outcome()).not.toBe("ok");
+  });
+});
+
+describe("doctor：守护进程这条证据为什么有/没有", () => {
+  test("没 socket / socket 不可信 / pid 不可信 / loaded 计数分得开", async () => {
+    expect((await diagnoseCodexDaemon({ OCS_CODEX_DAEMON_SOCK: join(shortDir(), "none.sock") })).kind).toBe("no-daemon");
+    const loose = fakeDaemon(typical, 0o777);
+    expect((await diagnoseCodexDaemon({ OCS_CODEX_DAEMON_SOCK: loose.sock })).kind).toBe("untrusted-socket");
+    expect(loose.seen).toEqual([]);
+    const daemon = fakeDaemon(typical);
+    setCodexDaemonPidSource(() => null);
+    expect((await diagnoseCodexDaemon({ OCS_CODEX_DAEMON_SOCK: daemon.sock, CODEX_HOME: tempDir("ocs-cxd-dg-") })).kind).toBe("pid-unverified");
+    setCodexDaemonPidSource(() => 4242);
+    expect(await diagnoseCodexDaemon({ OCS_CODEX_DAEMON_SOCK: daemon.sock, CODEX_HOME: tempDir("ocs-cxd-dg-") }))
+      .toEqual({ kind: "loaded", pid: 4242, threads: 1 });
   });
 });

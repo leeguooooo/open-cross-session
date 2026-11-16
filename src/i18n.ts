@@ -1,6 +1,7 @@
 // CLI 输出的双语目录。英文是 canonical；zh 由 locale/OCS_LANG 选中。
 // 规则：新增用户可见字符串必须两种语言同时补齐（TypeScript 结构保证漏一即报错）。
 
+import type { CodexDaemonDiagnosis } from "./codex-daemon.ts";
 import { lanMessages } from "./i18n-lan.ts";
 import type { CodexLivenessDiagnosis } from "./codex-queue.ts";
 
@@ -110,6 +111,7 @@ interface Catalog {
   doctorCodexQueueOk: string;
   doctorCodexQueueMissing: string;
   doctorCodexQueueWindows: string;
+  doctorCodexDaemon: (d: CodexDaemonDiagnosis) => string;
   doctorIpcOk: (path: string) => string;
   doctorIpcMissing: (path: string) => string;
   doctorIpcPipeVerified: (path: string, pid: number | null, image: string | null) => string;
@@ -448,6 +450,14 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   doctorCodex: "Codex side (`codex queue` preferred; Desktop IPC is the fallback)",
   doctorCodexQueueOk:
     "`codex queue` available — terminal Codex TUIs are wakeable without cmux or ChatGPT Desktop",
+  doctorCodexDaemon: (d) => {
+    switch (d.kind) {
+      case "no-daemon": return `Codex app-server daemon: not running (${d.socket}); new terminal sessions are reachable only after their first turn`;
+      case "untrusted-socket": return `Codex app-server daemon: socket not trusted (owner or a writable directory) — not consulted: ${d.socket}`;
+      case "pid-unverified": return "Codex app-server daemon: its pid file is missing or the process is not a codex binary — not consulted";
+      case "loaded": return `Codex app-server daemon: pid ${d.pid}, ${d.threads} loaded session(s) (0 can also mean the probe failed)`;
+    }
+  },
   doctorCodexQueueWindows: "`codex queue` is not used on Windows (no lsof to prove a task is live); Desktop tasks go through Desktop IPC below",
   doctorCodexQueueMissing:
     "`codex queue` unavailable (no codex CLI on PATH, or too old): only ChatGPT Desktop IPC / cmux remain",
@@ -840,6 +850,14 @@ ${lanMessages("zh").help}
   doctorCodex: "Codex 侧（首选 `codex queue`，Desktop IPC 为降级）",
   doctorCodexQueueOk:
     "`codex queue` 可用——终端里的 Codex TUI 无需 cmux、无需 ChatGPT Desktop 即可唤醒",
+  doctorCodexDaemon: (d) => {
+    switch (d.kind) {
+      case "no-daemon": return `Codex app-server 守护进程：没在跑（${d.socket}）；终端里的新会话要跑过第一轮才找得到`;
+      case "untrusted-socket": return `Codex app-server 守护进程：socket 不可信（属主不对或目录他人可写），不采信：${d.socket}`;
+      case "pid-unverified": return "Codex app-server 守护进程：pid 文件缺失或进程不是 codex 二进制，不采信";
+      case "loaded": return `Codex app-server 守护进程：pid ${d.pid}，${d.threads} 个会话 loaded（0 也可能是探测失败）`;
+    }
+  },
   doctorCodexQueueWindows: "Windows 上不走 `codex queue`（没有 lsof 证明任务活着）；Desktop 里的任务走下面的 Desktop IPC",
   doctorCodexQueueMissing:
     "`codex queue` 不可用（PATH 上没有 codex，或版本过旧）：只剩 ChatGPT Desktop IPC / cmux",
