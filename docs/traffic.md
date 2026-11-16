@@ -52,8 +52,10 @@ or daemon deliveries are active; it does not remove message history.
 ## Discovery capabilities
 
 `ocs who --json` attaches `capabilities` to local entries. `ocs who --lan --json`
-returns the same local roster plus `peers`, containing remote entries or an unavailable
-error. `ocs lan who --json` emits only the remote roster. Capabilities v1 contains:
+returns the same local roster plus `peers`, containing remote entries or an error:
+`unavailable` (not reachable), `rejected` (it refused this machine), or `trust-expired` /
+`trust-used-up` (this machine no longer trusts it, so it was not contacted). Rows carry
+`expires_at` when this machine's trust is time-limited. `ocs lan who --json` emits only the remote roster. Capabilities v1 contains:
 
 | Field | Values / meaning |
 |---|---|

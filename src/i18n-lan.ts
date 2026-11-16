@@ -24,9 +24,17 @@ export interface LanCatalog {
   statusOffers: (count: number) => string;
   peersNone: string;
   peerLine: (label: string, name: string, fp: string, addr: string, lastSeen: string, terms: string) => string;
-  peersPruned: (labels: string) => string;
-  peerExpired: (label: string) => string;
+  peerRenewHint: (label: string) => string;
+  peerExpired: (label: string, at: string) => string;
+  peerUsedUp: (label: string) => string;
+  peerExpiringSoon: (label: string, span: string, at: string) => string;
+  rejectedByPeer: (label: string, me: string) => string;
+  whoRejected: (label: string, detail: string) => string;
+  whoExpired: (label: string, at: string) => string;
+  whoUsedUp: (label: string) => string;
   termsForever: string;
+  termsExpired: (at: string) => string;
+  termsUsedUp: string;
   termsUntil: (span: string, at: string) => string;
   termsUses: (n: number) => string;
   termsJoin: string;
@@ -99,13 +107,15 @@ export interface LanCatalog {
 const en: LanCatalog = {
   help: `  ocs lan up [--port <n>] [--bind <ip>] [--name <name>] [--no-discover | --discover]
       Start the LAN daemon (off by default). Only paired machines can reach your agents.
-  ocs lan pair [--once] [--for <30m|8h|7d> | --forever] [--label <name>]
+  ocs lan pair [--forever | [--once] [--for <30m|8h|7d>]] [--label <name>]
       Print a pairing text to send to the other person and wait for their request;
       you confirm it by comparing a 6-digit code. Trust lasts 8h unless you say otherwise
-      (--forever is meant for your own devices).
+      (--forever is meant for your own devices and cannot be combined with --once / --for;
+      --once and --for can be combined).
   ocs lan join <key> [--addr <host:port>[,…]] [--label <name>]   the command inside that text
   ocs lan approve <6-digit code> | reject       answer a request when \`pair\` has no terminal
-  ocs lan trust <peer> --once | --for <d> | --forever   change how long this machine trusts a peer
+  ocs lan trust <peer> --forever | [--once] [--for <d>]   change how long this machine trusts a peer
+      (also renews an expired one without pairing again)
   ocs lan pair --code … / ocs lan pair <code>   older one-time-code pairing (works with ocs 0.6/0.7)
   ocs lan status | peers | scan | who [<peer>] | unpair <peer> | down | autostart on|off
       Then: ocs dm <address>@<peer> <text>; ocs who --lan lists remote agents.`,
@@ -127,15 +137,29 @@ const en: LanCatalog = {
   statusOffers: (count) => `  open pairing codes: ${count}`,
   peersNone: "lan: no paired peers — run `ocs lan pair` and send the printed text to the other person",
   peerLine: (label, name, fp, addr, lastSeen, terms) => `  ${label}  (${name})  key ${fp}  ${addr}  last seen ${lastSeen}  trust: ${terms}`,
-  peersPruned: (labels) => `lan: trust expired and removed: ${labels}`,
-  peerExpired: (label) => `lan: trust for ${label} has expired — pair again (\`ocs lan pair\`) or extend it: \`ocs lan trust ${label} --for 8h\``,
+  peerRenewHint: (label) => `      renew here (no re-pairing needed): ocs lan trust ${label} --for 8h   (or --forever for your own device)`,
+  peerExpired: (label, at) =>
+    `lan: this machine's trust for ${label} expired at ${at}; nothing was sent. Renew it here, no re-pairing needed: \`ocs lan trust ${label} --for 8h\` (or \`--forever\` for your own device)`,
+  peerUsedUp: (label) =>
+    `lan: ${label} has used up the messages this machine allowed it; nothing was sent. Renew it here, no re-pairing needed: \`ocs lan trust ${label} --for 8h\``,
+  peerExpiringSoon: (label, span, at) =>
+    `lan: note: this machine's trust for ${label} ends in ${span} (at ${at}). Extend it: \`ocs lan trust ${label} --for 8h\`. ${label} has its own limit for this machine — if you paired with the default, extend it there too.`,
+  rejectedByPeer: (label, me) =>
+    `${label} no longer accepts this machine: its trust for this machine expired, was used up, or was removed (the reply does not say which). Nothing was sent. Fix it on ${label}, not here: run \`ocs lan peers\` there; if this machine is listed as expired, renew it there with \`ocs lan trust <its name for this machine, normally ${me}> --for 8h\`; if it is not listed, pair again.`,
+  whoRejected: (label, detail) => `LAN ${label}: ${detail}`,
+  whoExpired: (label, at) =>
+    `LAN ${label}: trust expired at ${at} — not contacted. Renew on this machine, no re-pairing needed: \`ocs lan trust ${label} --for 8h\` (or \`--forever\`)`,
+  whoUsedUp: (label) =>
+    `LAN ${label}: allowed messages used up — not contacted. Renew on this machine: \`ocs lan trust ${label} --for 8h\``,
   termsForever: "permanent",
+  termsExpired: (at) => `expired at ${at}`,
+  termsUsedUp: "used up",
   termsUntil: (span, at) => `${span} left (until ${at})`,
   termsUses: (n) => `${n} message${n === 1 ? "" : "s"} left`,
   termsJoin: ", ",
   grantConflict: "lan: --forever cannot be combined with --once or --for",
   badDuration: (value) => `lan: bad duration ${value} (want e.g. 30m, 8h, 7d; at least 1m, at most 366d)`,
-  trustUsage: "usage: ocs lan trust <peer> --once | --for <30m|8h|7d> | --forever",
+  trustUsage: "usage: ocs lan trust <peer> --forever | [--once] [--for <30m|8h|7d>]",
   trustUpdated: (label, terms) => `lan: ${label} is now trusted: ${terms}`,
   trustLocalOnly: "  (this only changes how long this machine accepts it; the other side keeps its own limit)",
   pairInvite: (i) => `Send the text between the lines to the person you are pairing with:
@@ -233,12 +257,14 @@ Trust: ${i.terms}. This invitation expires in ${i.minutes} min.
 const zh: LanCatalog = {
   help: `  ocs lan up [--port <n>] [--bind <ip>] [--name <名字>] [--no-discover | --discover]
       启动局域网守护进程（默认关闭）。只有配对过的机器能找到你的 agent
-  ocs lan pair [--once] [--for <30m|8h|7d> | --forever] [--label <名字>]
+  ocs lan pair [--forever | [--once] [--for <30m|8h|7d>]] [--label <名字>]
       打印一段配对文字发给对方，等对方发来请求；你核对 6 位核对码后确认。
-      默认信任 8 小时（--forever 留给自己的设备）
+      默认信任 8 小时（--forever 留给自己的设备，不能和 --once / --for 一起用；
+      --once 和 --for 可以一起用）
   ocs lan join <公钥> [--addr <host:port>[,…]] [--label <名字>]   配对文字里的那条命令
   ocs lan approve <6 位核对码> | reject        \`pair\` 没有终端可交互时用来确认 / 拒绝
-  ocs lan trust <对端> --once | --for <时长> | --forever   改本机对某个对端的信任期限
+  ocs lan trust <对端> --forever | [--once] [--for <时长>]   改本机对某个对端的信任期限
+      （已过期的也能这样续期，不用重新配对）
   ocs lan pair --code … / ocs lan pair <配对码>  旧的一次性配对码方式（兼容 ocs 0.6/0.7）
   ocs lan status | peers | scan | who [<对端>] | unpair <对端> | down | autostart on|off
       之后：ocs dm <地址>@<对端> <内容>；ocs who --lan 列出远端 agent`,
@@ -260,15 +286,29 @@ const zh: LanCatalog = {
   statusOffers: (count) => `  未兑现的配对码：${count}`,
   peersNone: "lan: 还没有配对的对端——运行 `ocs lan pair`，把打印出来的那段文字发给对方",
   peerLine: (label, name, fp, addr, lastSeen, terms) => `  ${label}（${name}）  公钥 ${fp}  ${addr}  最近互通 ${lastSeen}  信任：${terms}`,
-  peersPruned: (labels) => `lan: 信任已到期，已移除：${labels}`,
-  peerExpired: (label) => `lan: 对 ${label} 的信任已到期——重新配对（\`ocs lan pair\`）或续期：\`ocs lan trust ${label} --for 8h\``,
+  peerRenewHint: (label) => `      在本机续期（不用重新配对）：ocs lan trust ${label} --for 8h   （自己的设备可用 --forever）`,
+  peerExpired: (label, at) =>
+    `lan: 本机对 ${label} 的信任已在 ${at} 到期，什么都没发。在本机续期即可，不用重新配对：\`ocs lan trust ${label} --for 8h\`（自己的设备可用 \`--forever\`）`,
+  peerUsedUp: (label) =>
+    `lan: 本机允许 ${label} 发的消息已经用完，什么都没发。在本机续期即可，不用重新配对：\`ocs lan trust ${label} --for 8h\``,
+  peerExpiringSoon: (label, span, at) =>
+    `lan: 提醒：本机对 ${label} 的信任还剩 ${span}（到 ${at}）。续期：\`ocs lan trust ${label} --for 8h\`。${label} 对本机的信任期限是它自己的——配对时用的默认期限的话，那边也要续。`,
+  rejectedByPeer: (label, me) =>
+    `${label} 不再接受本机：它对本机的信任到期了、次数用完了，或者被移除了（应答里分不出是哪种）。什么都没发。要在 ${label} 上处理，不是本机：在那边跑 \`ocs lan peers\`；本机若显示为已到期，就在那边续期 \`ocs lan trust <它给本机起的名字，通常是 ${me}> --for 8h\`；若没列出来，就重新配对。`,
+  whoRejected: (label, detail) => `局域网 ${label}：${detail}`,
+  whoExpired: (label, at) =>
+    `局域网 ${label}：信任已在 ${at} 到期——没有去连。在本机续期即可，不用重新配对：\`ocs lan trust ${label} --for 8h\`（或 \`--forever\`）`,
+  whoUsedUp: (label) =>
+    `局域网 ${label}：允许的消息次数已用完——没有去连。在本机续期：\`ocs lan trust ${label} --for 8h\``,
   termsForever: "长期",
+  termsExpired: (at) => `已在 ${at} 到期`,
+  termsUsedUp: "次数已用完",
   termsUntil: (span, at) => `还剩 ${span}（到 ${at}）`,
   termsUses: (n) => `还能收 ${n} 条消息`,
   termsJoin: "，",
   grantConflict: "lan: --forever 不能和 --once / --for 一起用",
   badDuration: (value) => `lan: 时长不合法：${value}（例如 30m、8h、7d；最短 1m，最长 366d）`,
-  trustUsage: "用法: ocs lan trust <对端> --once | --for <30m|8h|7d> | --forever",
+  trustUsage: "用法: ocs lan trust <对端> --forever | [--once] [--for <30m|8h|7d>]",
   trustUpdated: (label, terms) => `lan: 现在对 ${label} 的信任：${terms}`,
   trustLocalOnly: "  （只改本机接受它多久；对方那边的期限由对方自己决定）",
   pairInvite: (i) => `把两条线之间的文字发给要配对的人：

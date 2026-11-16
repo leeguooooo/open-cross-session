@@ -19,7 +19,8 @@ import {
   DEFAULT_PEER_GRANT,
   grantTerms,
   peerActive,
-  pruneExpiredPeers,
+  peerExpiringSoon,
+  peerInactiveReason,
   setPeerTerms,
   type PairOffer,
   type PeerGrant,
@@ -77,8 +78,51 @@ function identity(ctx: LanCliContext): LanIdentity {
 function requirePeer(ctx: LanCliContext, query: string, options: { allowExpired?: boolean } = {}): LanPeer {
   const peer = guarded(ctx, () => findPeer(query));
   if (peer === null) ctx.fail(lanMessages(ctx.lang).peerNotFound(query));
-  if (options.allowExpired !== true && !peerActive(peer)) ctx.fail(lanMessages(ctx.lang).peerExpired(peer.label));
+  if (options.allowExpired !== true && !peerActive(peer)) ctx.fail(inactiveMessage(ctx.lang, peer));
   return peer;
+}
+
+/** Why this machine will not use `peer` (it is inactive), with the local renew command. */
+function inactiveMessage(lang: Lang, peer: LanPeer): string {
+  const L = lanMessages(lang);
+  return peerInactiveReason(peer) === "expired" ? L.peerExpired(peer.label, formatStamp(peer.expires_at!)) : L.peerUsedUp(peer.label);
+}
+
+/** Local time `MM-DD HH:mm`. */
+function formatStamp(iso: string): string {
+  const at = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+}
+
+function formatSpan(ms: number): string {
+  const left = Math.max(0, ms);
+  return left >= 86_400_000 ? `${Math.round(left / 86_400_000)}d`
+    : left >= 3_600_000 ? `${Math.round(left / 3_600_000)}h`
+    : `${Math.max(1, Math.round(left / 60_000))}m`;
+}
+
+/** Local trust for `peer` ends within 30 minutes → one note (local info only). */
+export function expiringNote(lang: Lang, peer: LanPeer, now = Date.now()): string | null {
+  if (!peerExpiringSoon(peer, now)) return null;
+  return lanMessages(lang).peerExpiringSoon(peer.label, formatSpan(Date.parse(peer.expires_at!) - now), formatStamp(peer.expires_at!));
+}
+
+/**
+ * The other machine refused us at the handshake (welcome `paired:false`). The wire does not say
+ * why — expired, used up, unpaired or never paired look the same, and telling an unpaired
+ * connection more would leak trust-store state — so the hint covers every case and points at
+ * the machine that has to act.
+ */
+function rejectedMessage(lang: Lang, peer: LanPeer, prefixed = true): string {
+  let me = "?";
+  try {
+    me = loadLanConfig().name;
+  } catch {
+    // unreadable config: keep the placeholder
+  }
+  const text = lanMessages(lang).rejectedByPeer(peer.label, me);
+  return prefixed ? `lan: ${text}` : text;
 }
 
 const DURATION_RE = /^(\d{1,4})(m|h|d)$/;
@@ -115,16 +159,10 @@ function describeTerms(lang: Lang, terms: PeerTerms, now = Date.now()): string {
   const L = lanMessages(lang);
   const parts: string[] = [];
   if (terms.expires_at !== undefined) {
-    const at = new Date(terms.expires_at);
-    const left = Math.max(0, at.getTime() - now);
-    const pad = (n: number) => String(n).padStart(2, "0");
-    const stamp = `${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
-    const span = left >= 86_400_000 ? `${Math.round(left / 86_400_000)}d`
-      : left >= 3_600_000 ? `${Math.round(left / 3_600_000)}h`
-      : `${Math.max(1, Math.round(left / 60_000))}m`;
-    parts.push(L.termsUntil(span, stamp));
+    const left = Date.parse(terms.expires_at) - now;
+    parts.push(left > 0 ? L.termsUntil(formatSpan(left), formatStamp(terms.expires_at)) : L.termsExpired(formatStamp(terms.expires_at)));
   }
-  if (terms.uses_left !== undefined) parts.push(L.termsUses(terms.uses_left));
+  if (terms.uses_left !== undefined) parts.push(terms.uses_left > 0 ? L.termsUses(terms.uses_left) : L.termsUsedUp);
   return parts.length === 0 ? L.termsForever : parts.join(L.termsJoin);
 }
 
@@ -278,19 +316,23 @@ function lanStatus(ctx: LanCliContext): void {
 
 function lanPeers(ctx: LanCliContext): void {
   const L = lanMessages(ctx.lang);
-  const gone = guarded(ctx, () => pruneExpiredPeers());
   const peers = guarded(ctx, () => listPeers());
+  const now = Date.now();
   if (ctx.flags.has("json")) {
-    console.log(JSON.stringify(peers.map(({ key: _key, ...rest }) => rest), null, 2));
+    console.log(JSON.stringify(peers.map((p) => {
+      const { key: _key, ...rest } = p;
+      return { ...rest, active: peerActive(p, now) };
+    }), null, 2));
     return;
   }
-  if (gone.length > 0) console.log(L.peersPruned(gone.map((p) => p.label).join(", ")));
   if (peers.length === 0) {
     console.log(L.peersNone);
     return;
   }
   for (const p of peers) {
-    console.log(L.peerLine(p.label, p.name, shortFingerprint(p.fingerprint), p.addrs[0] ?? "?", p.last_seen ?? "?", describeTerms(ctx.lang, p)));
+    console.log(L.peerLine(p.label, p.name, shortFingerprint(p.fingerprint), p.addrs[0] ?? "?", p.last_seen ?? "?", describeTerms(ctx.lang, p, now)));
+    // Expired (or used up) entries stay listed so they can be renewed here without re-pairing (#79).
+    if (!peerActive(p, now)) console.log(L.peerRenewHint(p.label));
   }
 }
 
@@ -527,7 +569,7 @@ async function lanScan(ctx: LanCliContext): Promise<void> {
   if (ctx.flags.has("json")) {
     console.log(JSON.stringify(found.map((i) => ({
       ...i,
-      paired_as: peers.find((p) => p.fingerprint === i.fingerprint)?.label ?? null,
+      paired_as: peers.find((p) => p.fingerprint === i.fingerprint && peerActive(p))?.label ?? null,
     })), null, 2));
     return;
   }
@@ -536,7 +578,7 @@ async function lanScan(ctx: LanCliContext): Promise<void> {
     return;
   }
   for (const i of found) {
-    const label = peers.find((p) => p.fingerprint === i.fingerprint)?.label ?? null;
+    const label = peers.find((p) => p.fingerprint === i.fingerprint && peerActive(p))?.label ?? null;
     console.log(L.scanLine(i.name, shortFingerprint(i.fingerprint), i.host, i.port, label));
   }
 }
@@ -592,17 +634,34 @@ export async function findLanAgents(
   return settled.flat().sort();
 }
 
+/** Rejected by the other machine at the handshake (it stopped trusting this one). */
+function isRejected(error: unknown): boolean {
+  return error instanceof LanClientError && error.code === "unpaired";
+}
+
+/**
+ * One `who --lan --json` row. A peer this machine no longer trusts is listed but not contacted
+ * (`trust-expired` / `trust-used-up`); a peer that refused us is `rejected`.
+ */
+async function whoJsonRow(peer: LanPeer, id: LanIdentity) {
+  const expires = peer.expires_at === undefined ? {} : { expires_at: peer.expires_at };
+  if (!peerActive(peer)) {
+    return { peer: peer.label, ...expires, error: peerInactiveReason(peer) === "expired" ? "trust-expired" : "trust-used-up" };
+  }
+  try {
+    const who = await remoteWho(peer, id);
+    return { peer: peer.label, ...expires, name: who.name, entries: who.entries.map((entry) => ({
+      ...entry, address: `${entry.address}@${peer.label}` })) };
+  } catch (error) {
+    return { peer: peer.label, ...expires, error: isRejected(error) ? "rejected" : "unavailable" };
+  }
+}
+
 export async function lanWhoJson() {
-  const peers = activePeers();
+  const peers = listPeers();
   if (peers.length === 0) return [];
   const id = loadOrCreateIdentity();
-  return Promise.all(peers.map(async (peer) => {
-    try {
-      const who = await remoteWho(peer, id);
-      return { peer: peer.label, name: who.name, entries: who.entries.map((entry) => ({
-        ...entry, address: `${entry.address}@${peer.label}` })) };
-    } catch { return { peer: peer.label, error: "unavailable" }; }
-  }));
+  return Promise.all(peers.map((peer) => whoJsonRow(peer, id)));
 }
 
 /** `ocs lan who [peer]` 和 `ocs who --lan` 共用：并发查每个对端，离线的单独一行。 */
@@ -610,7 +669,7 @@ export async function printLanWho(ctx: Pick<LanCliContext, "lang" | "fail"> & { 
   const L = lanMessages(ctx.lang);
   let peers: LanPeer[];
   try {
-    peers = only === undefined ? activePeers() : [only];
+    peers = only === undefined ? listPeers() : [only];
   } catch (error) {
     ctx.fail(L.stateError(error instanceof Error ? error.message : String(error)));
   }
@@ -619,25 +678,33 @@ export async function printLanWho(ctx: Pick<LanCliContext, "lang" | "fail"> & { 
     return;
   }
   const id = loadOrCreateIdentity();
+  if (ctx.flags?.has("json")) {
+    console.log(JSON.stringify({ v: 1, peers: await Promise.all(peers.map((peer) => whoJsonRow(peer, id))) }));
+    return;
+  }
+  const now = Date.now();
+  // Peers this machine no longer trusts stay listed with the renew command, but are not contacted.
   const results = await Promise.all(peers.map(async (peer) => {
+    if (!peerActive(peer, now)) return { peer, inactive: true as const };
     try {
       return { peer, who: await remoteWho(peer, id) };
     } catch (error) {
       return { peer, error };
     }
   }));
-  if (ctx.flags?.has("json")) {
-    console.log(JSON.stringify({ v: 1, peers: results.map((result) => "error" in result
-      ? { peer: result.peer.label, error: "unavailable" }
-      : { peer: result.peer.label, name: result.who.name, entries: result.who.entries.map((entry) => ({
-          ...entry, address: `${entry.address}@${result.peer.label}` })) }) }));
-    return;
-  }
   for (const result of results) {
+    if ("inactive" in result) {
+      const p = result.peer;
+      console.log(peerInactiveReason(p, now) === "expired" ? L.whoExpired(p.label, formatStamp(p.expires_at!)) : L.whoUsedUp(p.label));
+      continue;
+    }
+    const note = expiringNote(ctx.lang, result.peer, now);
+    if (note !== null) console.log(note);
     if ("error" in result) {
       const e = result.error;
       console.log(e instanceof LanClientError && e.mismatches.length > 0
         ? L.keyMismatch(result.peer.label, e.mismatches.join(", "))
+        : isRejected(e) ? L.whoRejected(result.peer.label, rejectedMessage(ctx.lang, result.peer, false))
         : L.whoOffline(result.peer.label, e instanceof Error ? e.message : String(e)));
       continue;
     }
@@ -711,6 +778,8 @@ export async function lanDm(ctx: LanCliContext, target: string, body: string, se
   const parsed = splitRemoteAddress(target);
   if (parsed === null) ctx.fail(L.dmAddressInvalid(target));
   const peer = requirePeer(ctx, parsed.peer);
+  const note = expiringNote(ctx.lang, peer);
+  if (note !== null) console.log(note);
   let result: Awaited<ReturnType<typeof sendRemoteDm>>;
   try {
     result = await sendRemoteDm(peer, identity(ctx), {
@@ -722,7 +791,7 @@ export async function lanDm(ctx: LanCliContext, target: string, body: string, se
       noWake: ctx.flags.has("no-wake"),
     });
   } catch (error) {
-    ctx.fail(describeClientError(ctx, peer.label, error));
+    ctx.fail(isRejected(error) ? rejectedMessage(ctx.lang, peer) : describeClientError(ctx, peer.label, error));
   }
   if (result.delivered === "unknown") {
     ctx.recordRemote?.({ stored: null, wake: "unknown" });
@@ -732,7 +801,8 @@ export async function lanDm(ctx: LanCliContext, target: string, body: string, se
   }
   const reply = result.reply;
   if (!reply.ok) {
-    ctx.fail(L.dmRefused(target, reply.error, reply.detail ?? ""));
+    // "unpaired" after a paired handshake: its trust for this machine ran out mid-request.
+    ctx.fail(reply.error === "unpaired" ? rejectedMessage(ctx.lang, peer) : L.dmRefused(target, reply.error, reply.detail ?? ""));
   }
   ctx.recordRemote?.({ stored: true, channel: reply.channel, seq: reply.seq,
     wake: reply.wake ?? (reply.outcome === "ok" ? "accepted" : reply.outcome) });
