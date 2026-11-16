@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import { CLAUDE_NATIVE_SESSIONS_DIR_ENV } from "../src/claude-inject.ts";
@@ -188,6 +188,18 @@ describe("ocs lan 端到端（两台机器）", () => {
       const who = await run(b, ["who", "--lan"]);
       expect(who.stdout).toContain("LAN alpha (alpha):");
       expect(who.stdout).toContain("claude-aaaaaaaa@alpha  claude  idle  worker-a");
+
+      // #78: the address without @peer is not a local session on B. Before, B stored it in a new
+      // local orphan channel and said "no live session"; now it refuses before writing anything
+      // and names the peer that has it.
+      const channelsDir = join(b.env[OCS_HOME_ENV]!, "channels");
+      const listChannels = () => existsSync(channelsDir) ? readdirSync(channelsDir).sort() : [];
+      const channelsBefore = listChannels();
+      const bare = await run(b, ["dm", "claude-aaaaaaaa", "no peer suffix"]);
+      expect(bare.code).toBe(1);
+      expect(bare.stdout + bare.stderr).toContain("claude-aaaaaaaa@alpha");
+      expect(bare.stdout + bare.stderr).toContain("Nothing was stored");
+      expect(listChannels()).toEqual(channelsBefore);
 
       // Silent remote commit: JSON remote seq must describe A, never the optional local copy.
       const before = a.frames.length;

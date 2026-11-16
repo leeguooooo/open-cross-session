@@ -83,6 +83,7 @@ export interface LanCatalog {
   whoEmpty: string;
   whoNoPeers: string;
   whoHint: (count: number) => string;
+  dmOnLanPeer: (target: string, addresses: string[]) => string;
   stateError: (detail: string) => string;
   autostartOn: (where: string) => string;
   autostartOff: (removed: boolean) => string;
@@ -214,7 +215,9 @@ Trust: ${i.terms}. This invitation expires in ${i.minutes} min.
   whoEntry: (address, kind, status, label) => `  ${address}  ${kind}${status === "" ? "" : `  ${status}`}${label === "" ? "" : `  ${label}`}`,
   whoEmpty: "  (no reachable agents)",
   whoNoPeers: "LAN: no paired peers (see `ocs lan pair`)",
-  whoHint: (count) => `LAN: ${count} paired peer${count === 1 ? "" : "s"} — \`ocs who --lan\` lists their agents`,
+  whoHint: (count) => `LAN: ${count} paired peer${count === 1 ? "" : "s"} — \`ocs who --lan\` lists their agents (address them as <address>@<peer>)`,
+  dmOnLanPeer: (target, addresses) =>
+    `${target} is not a session on this computer, but a paired LAN peer has it: ${addresses.join(", ")}. Nothing was stored. Send with \`ocs dm ${addresses[0]} "<text>"\`${addresses.length > 1 ? " (pick the right peer)" : ""}.`,
   stateError: (detail) => `lan: refusing to use local LAN state: ${detail}`,
   autostartOn: (where) => `lan: the daemon will start at login (${where}); \`ocs lan up\` starts it now`,
   autostartOff: (removed) => removed ? "lan: login autostart removed (a running daemon keeps running; `ocs lan down` stops it)" : "lan: login autostart was not set",
@@ -345,7 +348,9 @@ const zh: LanCatalog = {
   whoEntry: (address, kind, status, label) => `  ${address}  ${kind}${status === "" ? "" : `  ${status}`}${label === "" ? "" : `  ${label}`}`,
   whoEmpty: "  （没有可达的 agent）",
   whoNoPeers: "局域网：没有已配对的对端（见 `ocs lan pair`）",
-  whoHint: (count) => `局域网：${count} 个已配对对端——\`ocs who --lan\` 列出它们的 agent`,
+  whoHint: (count) => `局域网：${count} 个已配对对端——\`ocs who --lan\` 列出它们的 agent（地址写成 <地址>@<对端>）`,
+  dmOnLanPeer: (target, addresses) =>
+    `${target} 不是本机的会话，但已配对的局域网对端上有：${addresses.join("、")}。这条消息没有存。请改用 \`ocs dm ${addresses[0]} "<内容>"\`${addresses.length > 1 ? "（选对那台）" : ""}。`,
   stateError: (detail) => `lan: 本机局域网状态不可信，拒绝使用：${detail}`,
   autostartOn: (where) => `lan: 登录后会自动启动守护进程（${where}）；现在就要用请跑 \`ocs lan up\``,
   autostartOff: (removed) => removed ? "lan: 已取消登录自启（正在跑的守护进程不受影响，停它用 `ocs lan down`）" : "lan: 本来就没设登录自启",

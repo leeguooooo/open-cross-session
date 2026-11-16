@@ -547,6 +547,51 @@ function lanUnpair(ctx: LanCliContext, query: string): void {
   console.log(lanMessages(ctx.lang).unpaired(peer.label));
 }
 
+/** 本机找不到的地址，在局域网对端里精确查一遍的总预算：dm 不能为一台慢对端卡 15 秒。 */
+export const LAN_LOOKUP_TIMEOUT_MS = 3000;
+
+/**
+ * #78：`ocs dm <地址>` 本机没有这个会话时，看已配对对端有没有同地址的 agent。只返回提示用的
+ * `<地址>@<对端>`，绝不自动投过去——对端自报的名字只是提示（铁律 11），自动转投等于让对端
+ * 抢注名字截走本该停在本机的消息。查不到、超时、对端离线一律当没有。
+ */
+export async function findLanAgents(
+  address: string,
+  options: { timeoutMs?: number; who?: (peer: LanPeer) => Promise<{ entries: { address: string }[] }>; peers?: LanPeer[] } = {},
+): Promise<string[]> {
+  let peers: LanPeer[];
+  try {
+    peers = options.peers ?? activePeers();
+  } catch {
+    return [];
+  }
+  if (peers.length === 0) return [];
+  const who = options.who ?? (() => {
+    const id = loadOrCreateIdentity();
+    return (peer: LanPeer) => remoteWho(peer, id);
+  })();
+  const wanted = address.toLowerCase();
+  const lookups = peers.map(async (peer) => {
+    try {
+      const roster = await who(peer);
+      return roster.entries.some((entry) => entry.address.toLowerCase() === wanted) ? [`${address}@${peer.label}`] : [];
+    } catch {
+      return [];
+    }
+  });
+  const timeout = new Promise<string[][]>((resolve) => {
+    const timer = setTimeout(() => resolve([]), options.timeoutMs ?? LAN_LOOKUP_TIMEOUT_MS);
+    timer.unref?.();
+  });
+  // 超时只丢掉还没回来的对端：已回来的照样算。
+  const settled: string[][] = [];
+  await Promise.race([
+    Promise.all(lookups.map((lookup) => lookup.then((hit) => { settled.push(hit); }))),
+    timeout,
+  ]);
+  return settled.flat().sort();
+}
+
 export async function lanWhoJson() {
   const peers = activePeers();
   if (peers.length === 0) return [];
