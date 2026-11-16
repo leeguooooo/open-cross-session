@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.20
+
 - `send` / `dm --notify-when-idle` now hands back the result: when the Claude target goes idle, the idle notice also carries the final reply of the turn that handled your message, quoted as data. ocs reads it from the target's own transcript (no hooks, no settings changes) and leaves it out whenever it cannot prove that turn handled your message — held or refused wakes, a person typing in between, an interrupted turn. See docs/wake-protocol.md §2.1
 
 ## 0.9.19
