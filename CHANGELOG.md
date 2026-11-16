@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Waking a Codex session whose last turn was interrupted (or hit its budget) now says so: Codex holds queued messages until someone types in that session, so the wake runs after that input, not now. The result is still `queued` (not lost — do not resend); before, nothing explained why the target stayed quiet. See docs/wake-protocol.md §1.1
+
 ## 0.9.18
 
 - Codex sessions hosted by the Codex app-server daemon (CLI 0.16x terminal TUIs) are now reachable even before their first turn: a brand-new session has no rollout file yet, so `ocs dm codex-<id>` used to report "no live session" (or blame Codex Desktop) although the status bar already showed the address. ocs now also asks your own daemon which threads are loaded (read-only, over the same trusted socket as `turn/steer`), lists them in `ocs who`, and resolves `codex-<8hex>` to them. Note: a thread stays loaded in the daemon after its terminal closes and a queued wake then runs in the background — "queued" means the agent will process it, not that someone is watching

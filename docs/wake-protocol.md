@@ -120,6 +120,13 @@ Codex 宿主在目标正跑回合时不会丢弃 `codex queue` / Desktop start-t
 
    这一段与 `Reply:` / `Thread:` 一样不进降级阶梯。`<ago>` 按消息落盘时间算，延迟一眼可见。
 
+**中断后被扣住**（ocs v0.9.19）：rollout 最后一个生命周期事件是 `turn_aborted` 且 `reason` 为
+`interrupted` 或 `budget_limited` 时，Codex 故意扣住排队输入，不让它自己开轮，直到有人在那个会话里
+输入；那一轮跑完，被扣的消息才各开一轮（openai/codex#56914；Codex 0.167.2 实测：40 秒内一直在
+`thread/queue/list` 里，用户输入后紧接着跑）。ocs 照常 queue（目标不忙），结果仍是「已入队」，
+另打一行提示「要等用户输入才会跑、不要重发」。不新增 `--json` 状态：Claude 回执的 `held` 证明没进对话，
+这里只是延后，语义不同。
+
 `--peek` 不推进游标，所以 peek 过的消息仍会被合并唤醒提醒——读取不等于处理，宁可多提醒一次也不吞消息。
 空闲目标的投递和 0.7.3 完全一样。
 

@@ -169,19 +169,11 @@ const LIFECYCLE_RE = /"type":"event_msg","payload":\{"type":"(task_started|task_
 // turn_id on the same line; both places carry the same id.
 const TURN_ID_RE = /"turn_id":"([^"]+)"/;
 
-function turnIdAfter(text: string, index: number): string {
-  const lineEnd = text.indexOf("\n", index);
-  return TURN_ID_RE.exec(text.slice(index, lineEnd === -1 ? undefined : lineEnd))?.[1] ?? "";
-}
-
-/**
- * 目标此刻正在跑的回合 id；空闲返回 null。证据取 rollout 里最后一个回合生命周期事件：
- * `task_started` 之后还没有 `task_complete` / `turn_aborted` = 正忙。
- * 从文件尾按块往前找，长回合的事件多也能找到；读不到 rollout 或找不到任何事件按空闲处理
- * （空闲＝照旧立即投递，即 0.7.3 的行为，不会因为判不出来而把唤醒憋住）。
- * 忙但 task_started 没带 turn_id（旧格式）返回空串：仍算忙，只是没法 steer。
- */
-export function codexActiveTurnId(threadId: string, env: NodeJS.ProcessEnv = process.env): string | null {
+/** rollout 里最后一个回合生命周期事件：类型 + 它那一行的文本。读不到或没有事件为 null。 */
+function lastCodexLifecycle(
+  threadId: string,
+  env: NodeJS.ProcessEnv,
+): { type: string; line: string } | null {
   const path = codexRolloutPath(threadId, env);
   if (path === null) return null;
   let fd: number;
@@ -202,7 +194,10 @@ export function codexActiveTurnId(threadId: string, env: NodeJS.ProcessEnv = pro
       const text = buf.toString("utf8") + carry;
       let last: RegExpMatchArray | null = null;
       for (const match of text.matchAll(LIFECYCLE_RE)) last = match;
-      if (last !== null) return last[1] === "task_started" ? turnIdAfter(text, last.index!) : null;
+      if (last !== null) {
+        const lineEnd = text.indexOf("\n", last.index!);
+        return { type: last[1]!, line: text.slice(last.index!, lineEnd === -1 ? undefined : lineEnd) };
+      }
       const firstNewline = text.indexOf("\n");
       carry = firstNewline === -1 ? text : text.slice(0, firstNewline);
       end = start;
@@ -213,6 +208,36 @@ export function codexActiveTurnId(threadId: string, env: NodeJS.ProcessEnv = pro
   } finally {
     closeSync(fd);
   }
+}
+
+/**
+ * 目标此刻正在跑的回合 id；空闲返回 null。证据取 rollout 里最后一个回合生命周期事件：
+ * `task_started` 之后还没有 `task_complete` / `turn_aborted` = 正忙。
+ * 从文件尾按块往前找，长回合的事件多也能找到；读不到 rollout 或找不到任何事件按空闲处理
+ * （空闲＝照旧立即投递，即 0.7.3 的行为，不会因为判不出来而把唤醒憋住）。
+ * 忙但 task_started 没带 turn_id（旧格式）返回空串：仍算忙，只是没法 steer。
+ */
+export function codexActiveTurnId(threadId: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const last = lastCodexLifecycle(threadId, env);
+  if (last === null || last.type !== "task_started") return null;
+  return TURN_ID_RE.exec(last.line)?.[1] ?? "";
+}
+
+/** Codex 扣住排队输入的中断原因（rexume 在 0.164 观察到，本仓在 0.167.2 实测）。 */
+const HOLDING_ABORT_REASONS = new Set(["interrupted", "budget_limited"]);
+const REASON_RE = /"reason":"([^"]+)"/;
+
+/**
+ * 这个 thread 排队的输入此刻会不会被 Codex 扣住：最后一轮被用户中断（或预算耗尽），之后没跑过
+ * 新的一轮时，Codex 故意不让排队消息自己开轮（免得用户刚喊停它又接着跑），直到有人在那个会话里
+ * 输入；输入那一轮跑完，被扣的消息才各开一轮（openai/codex#56914）。返回中断原因，不会被扣为 null。
+ * 只做提示：queue 依然是「已入队」，不是失败，也不是送达。
+ */
+export function codexQueueHoldReason(threadId: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const last = lastCodexLifecycle(threadId, env);
+  if (last === null || last.type !== "turn_aborted") return null;
+  const reason = REASON_RE.exec(last.line)?.[1];
+  return reason !== undefined && HOLDING_ABORT_REASONS.has(reason) ? reason : null;
 }
 
 export function codexThreadBusy(threadId: string, env: NodeJS.ProcessEnv = process.env): boolean {

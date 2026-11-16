@@ -3,6 +3,7 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   codexActiveTurnId,
+  codexQueueHoldReason,
   codexReceiverCursor,
   coalescedWakeInput,
   deferCodexWakeIfBusy,
@@ -74,6 +75,46 @@ describe("codex-defer：回合判定", () => {
     const filler = `${JSON.stringify({ type: "event_msg", payload: { type: "item_completed", x: "y".repeat(1000) } })}\n`;
     appendFileSync(e.rollout, filler.repeat(700)); // ~700KB > 256KB 块
     expect(codexActiveTurnId(THREAD, e)).toBe("turn-long");
+  });
+});
+
+describe("codex-defer：中断后 Codex 扣住排队消息（openai/codex#56914）", () => {
+  // 逐字取自 codex 0.167.2 被 Esc 中断后写的 rollout（只换了 id）；之后 `codex queue` 的消息一直
+  // 留在 thread/queue/list 里，直到用户在会话里输入、那一轮跑完才开轮。
+  const aborted = (reason: string) =>
+    `{"timestamp":"2026-11-16T05:12:09.000Z","type":"event_msg","payload":{"type":"turn_aborted","root_turn_id":"turn-x","turn_id":"turn-x","reason":"${reason}","started_at":1794805925,"completed_at":1794805929,"duration_ms":4240}}\n`;
+
+  test("最后一轮被中断 / 预算耗尽 → 会被扣住，返回原因", () => {
+    const e = env();
+    lifecycle(e.rollout, "task_started", "turn-x");
+    appendFileSync(e.rollout, aborted("interrupted"));
+    expect(codexQueueHoldReason(THREAD, e)).toBe("interrupted");
+    expect(codexActiveTurnId(THREAD, e)).toBeNull(); // 不忙：照常 queue，只是提示会被扣
+    appendFileSync(e.rollout, aborted("budget_limited"));
+    expect(codexQueueHoldReason(THREAD, e)).toBe("budget_limited");
+  });
+
+  test("其它中断原因、之后又跑过新的一轮、正常结束、没有 rollout → 不会被扣", () => {
+    const e = env();
+    expect(codexQueueHoldReason(THREAD, e)).toBeNull();
+    appendFileSync(e.rollout, aborted("replaced"));
+    expect(codexQueueHoldReason(THREAD, e)).toBeNull();
+    appendFileSync(e.rollout, aborted("interrupted"));
+    lifecycle(e.rollout, "task_started", "turn-y"); // 用户输入后新的一轮：解除
+    expect(codexQueueHoldReason(THREAD, e)).toBeNull();
+    lifecycle(e.rollout, "task_complete", "turn-y");
+    expect(codexQueueHoldReason(THREAD, e)).toBeNull();
+    expect(codexQueueHoldReason("01a19999-9a71-71c1-94df-c9a134c96a1b", e)).toBeNull();
+  });
+
+  test("原因只从中断那一行取，不借后面行的 reason", () => {
+    const e = env();
+    lifecycle(e.rollout, "turn_aborted", "turn-z"); // 没带 reason
+    appendFileSync(e.rollout, `{"type":"event_msg","payload":{"type":"item_completed","reason":"interrupted"}}\n`);
+    expect(codexQueueHoldReason(THREAD, e)).toBeNull();
+    // 只认 turn_aborted：正常结束的那一行即使带同名字段也不算
+    appendFileSync(e.rollout, `{"type":"event_msg","payload":{"type":"task_complete","turn_id":"t9","reason":"interrupted"}}\n`);
+    expect(codexQueueHoldReason(THREAD, e)).toBeNull();
   });
 });
 

@@ -69,6 +69,7 @@ interface Catalog {
   codexFailed: (reason: string, detail: string) => string;
   codexCmuxFallback: (thread: string, reason: string, ref: string) => string;
   codexQueued: (thread: string, pid: number, messageId: string | null) => string;
+  codexQueueHeld: (thread: string, reason: string) => string;
   codexQueueSkipped: (thread: string, reason: string, detail: string) => string;
   codexWakeSelfSkipped: (thread: string) => string;
   piWakeAccepted: (target: string) => string;
@@ -386,6 +387,8 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   codexQueued: (thread, pid, messageId) =>
     `wake(codex): queued → task ${thread} via \`codex queue\` (live pid ${pid}` +
     `${messageId === null ? "" : `, message ${messageId}`}) — queued, not confirmed read`,
+  codexQueueHeld: (thread, reason) =>
+    `wake(codex): note — ${thread.slice(0, 8)}'s last turn ended ${reason}; Codex holds queued messages until someone types in that session, so this wake runs after that input, not now (it is not lost; do not resend)`,
   codexQueueSkipped: (thread, reason, detail) =>
     `wake(codex): \`codex queue\` skipped for ${thread} (${reason})${detail ? `: ${detail}` : ""}; trying Desktop IPC`,
   codexSteered: (thread, turnId) =>
@@ -787,6 +790,8 @@ ${lanMessages("zh").help}
   codexQueued: (thread, pid, messageId) =>
     `wake(codex): 已 queue → task ${thread}（\`codex queue\`，活进程 pid ${pid}` +
     `${messageId === null ? "" : `，message ${messageId}`}）——已入队，未确认读取`,
+  codexQueueHeld: (thread, reason) =>
+    `wake(codex)：注意——${thread.slice(0, 8)} 上一轮以 ${reason} 结束；Codex 会扣住排队消息，直到有人在那个会话里输入，这条唤醒要等那次输入之后才会跑，不是现在（没有丢，不要重发）`,
   codexQueueSkipped: (thread, reason, detail) =>
     `wake(codex): ${thread} 跳过 \`codex queue\`（${reason}）${detail ? `: ${detail}` : ""}；改试 Desktop IPC`,
   codexSteered: (thread, turnId) =>

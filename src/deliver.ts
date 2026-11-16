@@ -12,7 +12,7 @@ import { wakeAgy } from "./agy.ts";
 import { grokTargetName, selfGrokSessionId, wakeGrokSession, type GrokWakeResult } from "./grok.ts";
 import { agyMessages } from "./i18n-agy.ts";
 import { detectLang } from "./i18n.ts";
-import { codexActiveTurnId, deferCodexWakeIfBusy, loadDeferredCodexWake } from "./codex-defer.ts";
+import { codexActiveTurnId, deferCodexWakeIfBusy, loadDeferredCodexWake, codexQueueHoldReason } from "./codex-defer.ts";
 import { steerCodexTurn } from "./codex-steer.ts";
 import { codexHosts, codexThreadLivePid, psTable, queueCodexThread } from "./codex-queue.ts";
 import { primeCodexDaemon } from "./codex-daemon.ts";
@@ -307,6 +307,8 @@ async function deliverToCodexTaskImpl(
     });
     if (queued.ok) {
       sink.log(M.codexQueued(queued.threadId, queued.pid, queued.messageId));
+      const held = codexQueueHoldReason(queued.threadId, env);
+      if (held !== null) sink.log(M.codexQueueHeld(queued.threadId, held));
       return true;
     }
     if (queued.reason === "unknown-outcome") {
@@ -349,6 +351,8 @@ async function deliverToCodexTaskImpl(
     });
     if (queued.ok) {
       sink.log(M.codexQueued(queued.threadId, queued.pid, queued.messageId));
+      const held = codexQueueHoldReason(queued.threadId, env);
+      if (held !== null) sink.log(M.codexQueueHeld(queued.threadId, held));
       return true;
     }
     if (queued.reason === "unknown-outcome") {
