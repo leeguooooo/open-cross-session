@@ -270,7 +270,8 @@ describe("投递：lsof 没证据时按需问守护进程（客户原样用完�
       resetCodexCliProbeCache();
     }
     expect(await Bun.file(w.argsLog).exists()).toBe(false);
-    expect(sink.outcome()).not.toBe("ok");
+    // 后续降级（Desktop IPC）有没有、怎么失败取决于机器；这里只钉住「没 loaded 就绝不 queue」。
+    expect(sink.lines.some((line) => /queued →/.test(line))).toBe(false);
   });
 });
 
