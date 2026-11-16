@@ -21,6 +21,7 @@ import {
 import { listNativeSessions, type NativeClaudeSession } from "./claude-inject.ts";
 import { codexDesktopIpcAvailable } from "./codex-ipc.ts";
 import { codexHosts, codexQueueAvailable, codexThreadLivePids, psTable } from "./codex-queue.ts";
+import { codexDaemonSnapshot } from "./codex-daemon.ts";
 import {
   codexSessionsRoot,
   isCodexThreadId,
@@ -435,9 +436,18 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
   const ps = psTable(env);
   // Check every rollout for liveness before limiting historical Desktop candidates.
   // Long-running threads can be days older than the ten newest, already-exited tasks.
-  const codexLive = codexThreadLivePids(files.map((file) => file.threadId), env, ps);
+  const codexLive = codexThreadLivePids(
+    [...new Set([...files.map((file) => file.threadId), ...codexDaemonSnapshot().threads.keys()])], env, ps);
   const candidateIds = new Set([...files.slice(0, 10).map((file) => file.threadId), ...codexLive.keys()]);
-  const codexSessions = listCodexSessions(root, { limit: candidateIds.size, threadIds: candidateIds });
+  const codexSessions: Array<{ threadId: string; summary: string | null; cwd: string | null }> =
+    listCodexSessions(root, { limit: candidateIds.size, threadIds: candidateIds });
+  // 守护进程里 loaded、还没有 rollout 的新会话（codex-daemon.ts）：没有 rollout 头可读，
+  // cwd 用守护进程报的。
+  const listed = new Set(codexSessions.map((s) => s.threadId));
+  for (const thread of codexDaemonSnapshot().threads.values()) {
+    if (listed.has(thread.threadId) || !codexLive.has(thread.threadId)) continue;
+    codexSessions.push({ threadId: thread.threadId, summary: null, cwd: thread.cwd });
+  }
   // 宿主（tty + GUI 应用）只对活会话有意义，一次 ps 全解出来。
   const codexHostByPid = codexHosts([...new Set(codexLive.values())], env, ps);
   for (const s of codexSessions) {
@@ -778,9 +788,11 @@ export function resolveDmTarget(
   const codexShort = CODEX_SHORT_TARGET_RE.exec(target);
   if (codexShort !== null) {
     const prefix = codexShort[1]!.toLowerCase();
-    // 只扫固定布局下的文件名，不读每份 rollout 的 512 KiB 头部。
-    const matches = listCodexRolloutFiles(codexSessionsRoot(env))
-      .filter((session) => session.threadId.startsWith(prefix));
+    // 只扫固定布局下的文件名，不读每份 rollout 的 512 KiB 头部。还没跑过第一轮的会话没有
+    // rollout，只在守护进程里 loaded（codex-daemon.ts）——statebar 已经把它的地址亮出来了。
+    const ids = new Set(listCodexRolloutFiles(codexSessionsRoot(env)).map((session) => session.threadId));
+    for (const threadId of codexDaemonSnapshot().threads.keys()) ids.add(threadId);
+    const matches = [...ids].filter((threadId) => threadId.startsWith(prefix)).map((threadId) => ({ threadId }));
     if (matches.length === 1) {
       const threadId = matches[0]!.threadId;
       return {

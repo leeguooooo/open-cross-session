@@ -45,6 +45,7 @@ import { buildRoster, resolveDmTarget, type ResolvedDmTarget } from "./roster.ts
 import { findAgyWorker } from "./agy.ts";
 import { grokTargetName, listGrokSessions } from "./grok.ts";
 import { codexThreadLivePid } from "./codex-queue.ts";
+import { primeCodexDaemon } from "./codex-daemon.ts";
 import { hermesTargetName, listHermesSessions } from "./hermes.ts";
 import { codexDesktopIpcAvailable, discoverCodexDesktopOwners } from "./codex-ipc.ts";
 import { appendMessage, BODY_LIMIT, NAME_RE, OCS_IDENTITY_RE } from "./store.ts";
@@ -152,6 +153,7 @@ async function desktopClaimed(threadIds: readonly string[], env: NodeJS.ProcessE
 /** 远端 who：只给地址、种类、状态和一句短标签，不给 pid / 路径。 */
 export async function lanWhoEntries(env: NodeJS.ProcessEnv = process.env): Promise<LanWhoEntry[]> {
   const out: LanWhoEntry[] = [];
+  await primeCodexDaemon(env);
   const hermes = await listHermesSessions({ env });
   const grok = await listGrokSessions({ env });
   const roster = buildRoster(env, hermes.available ? hermes.sessions : [], grok.sessions);
@@ -246,6 +248,7 @@ export async function handleLanDm(
     return { ok: false, error: "bad-request", detail: "body" };
   }
   const replyLang: Lang = req.lang === "zh" ? "zh" : "en";
+  await primeCodexDaemon(env); // 长驻进程：每个请求现拍，不用上一次的快照
   let resolved: ResolvedDmTarget | null;
   try {
     resolved = resolveDmTarget(to, env);

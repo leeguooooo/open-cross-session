@@ -9,6 +9,7 @@ import { installOpenCodeIntegration, openCodePluginCurrent, openCodePluginPath, 
 import { chmodSync, mkdirSync, statSync, writeSync } from "node:fs";
 import { batchBody } from "./batch.ts";
 import { seenWakes, type SeenSource } from "./seen-wakes.ts";
+import { primeCodexDaemon } from "./codex-daemon.ts";
 import {
   CLAUDE_BIN_ENV,
   CLAUDE_CHANNEL_COMMAND,
@@ -2015,6 +2016,9 @@ function signalNumber(signal: NodeJS.Signals): number | null {
   return constants.signals[signal] ?? null;
 }
 
+const CODEX_DAEMON_PRIME_COMMANDS = new Set(["who", "doctor", "notify-when-idle"]);
+const CODEX_SHORT_IN_TEXT_RE = /(?:^|[^0-9a-z-])codex-[0-9a-f]{8}(?![0-9a-f-])/i;
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   // 人在 shell 中常把身份覆盖写在子命令前；仍由目标命令的 schema 校验，
@@ -2046,6 +2050,13 @@ async function main(): Promise<void> {
   // 回执 helper 是本 CLI 的内部子命令：只有从这里进来的进程才知道怎么把自己再跑一遍。
   setWakeHelperCommand(selfCommand());
   setCodexWakeWatcherCommand(selfCommand());
+  // Codex 守护进程托管的会话（新会话第一轮前没有 rollout）：解析与判活是同步的，先拍一张快照。
+  // dm/send 只在参数里出现 `codex-<8hex>` 短地址时才需要（完整 id 的判活由投递路径按需补拍）。
+  if (
+    command !== undefined &&
+    (CODEX_DAEMON_PRIME_COMMANDS.has(command) ||
+      ((command === "dm" || command === "send") && rest.some((arg) => CODEX_SHORT_IN_TEXT_RE.test(arg))))
+  ) await primeCodexDaemon();
   maybeUpdateNotice(OCS_VERSION, command, selfCommand());
   if (jsonRun !== null) {
     try {

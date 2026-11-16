@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Codex sessions hosted by the Codex app-server daemon (CLI 0.16x terminal TUIs) are now reachable even before their first turn: a brand-new session has no rollout file yet, so `ocs dm codex-<id>` used to report "no live session" (or blame Codex Desktop) although the status bar already showed the address. ocs now also asks your own daemon which threads are loaded (read-only, over the same trusted socket as `turn/steer`), lists them in `ocs who`, and resolves `codex-<8hex>` to them. Note: a thread stays loaded in the daemon after its terminal closes and a queued wake then runs in the background — "queued" means the agent will process it, not that someone is watching
+
 ## 0.9.17
 
 - Reading the session record for read evidence (0.9.16) now opens the file once with no symlink following and non-blocking, and checks the opened file itself; before, the path was checked and then reopened, so it could be swapped for a link to another record between the two (found by two independent reviewers during an `ocs claude` trial)

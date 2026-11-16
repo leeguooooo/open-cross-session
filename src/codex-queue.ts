@@ -21,6 +21,7 @@ import { spawnSync } from "node:child_process";
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isCodexThreadId, listCodexRolloutFiles, codexSessionsRoot } from "./codex-sessions.ts";
+import { codexDaemonLoadedPid } from "./codex-daemon.ts";
 
 /** `codex --version` 探测预算。 */
 export const CODEX_CLI_PROBE_TIMEOUT_MS = 3000;
@@ -128,10 +129,17 @@ export function codexThreadLivePids(
 ): Map<string, number> {
   const table = table_ ?? psTable(env);
   const holders = codexRolloutHolderPids(threadIds, env, table);
-  if (holders.size === 0) return holders;
   const live = new Map<string, number>();
   for (const [threadId, pid] of holders) {
     if (isCodexRolloutHolder(pid, table)) live.set(threadId, pid);
+  }
+  // 第二条证据：守护进程里 loaded（codex-daemon.ts）。新会话第一轮之前没有 rollout，
+  // lsof 无从查起；快照只在命令入口拍过才非空，没拍过 = 没有这条证据。
+  for (const threadId of threadIds) {
+    const id = threadId.toLowerCase();
+    if (live.has(id)) continue;
+    const daemonPid = codexDaemonLoadedPid(id);
+    if (daemonPid !== null) live.set(id, daemonPid);
   }
   return live;
 }
