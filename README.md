@@ -414,8 +414,9 @@ ocs dm claude-1a2b3c4d@mini "can you look at the CI failure?"
 
 Trust is temporary unless you say otherwise: `ocs lan pair` grants 8 hours, `--for 30m|2h|7d`
 picks another period, `--once` allows a single message, and `--forever` is meant for your own
-devices. Both sides get the same period; expired peers are refused and dropped.
-`ocs lan trust <peer> --for 8h | --forever` changes it later on this side.
+devices (it cannot be combined with `--once` / `--for`). Both sides get the same period;
+expired peers are refused but stay listed, and `ocs lan trust <peer> --for 8h | --forever`
+renews or changes the period on this side without pairing again.
 Without a terminal (e.g. an agent ran `ocs lan pair`), approve with `ocs lan approve <code>`.
 Peers on ocs 0.6/0.7 can still pair with the old one-time code: `ocs lan pair --code` there or here.
 

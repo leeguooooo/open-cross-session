@@ -365,8 +365,8 @@ ocs dm claude-1a2b3c4d@mini "帮我看下 CI 为什么挂了"
 ```
 
 信任默认是临时的：`ocs lan pair` 给 8 小时，`--for 30m|2h|7d` 换个时长，`--once` 只许一条消息，
-`--forever` 留给自己的设备。两边按同一个期限互信，到期的对端会被拒绝并清掉；之后可以用
-`ocs lan trust <对端> --for 8h | --forever` 改本机这边的期限。没有终端可交互时（比如 agent 跑的 `ocs lan pair`），
+`--forever` 留给自己的设备。两边按同一个期限互信，到期的对端会被拒绝但仍列出来；
+`ocs lan trust <对端> --for 8h | --forever` 在本机续期或改期限，不用重新配对。没有终端可交互时（比如 agent 跑的 `ocs lan pair`），
 用 `ocs lan approve <核对码>` 确认。对方还是 ocs 0.6/0.7 的话，仍可用旧的一次性配对码：`ocs lan pair --code`。
 
 A 上被唤醒的会话看到发送者是 `claude-9f8e7d6c@<label>`，`Reply:` 行直接回到 B。

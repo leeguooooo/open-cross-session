@@ -247,7 +247,7 @@ describe("ocs lan 端到端（两台机器）", () => {
       expect((await run(b, ["lan", "unpair", "alpha"])).code).toBe(0);
       const refused = await run(a, ["dm", "claude-bbbbbbbb@bee", "still there?"]);
       expect(refused.code).toBe(1);
-      expect(refused.stderr).toContain("no longer trusts this machine");
+      expect(refused.stderr).toContain("no longer accepts this machine");
     } finally {
       await run(a, ["lan", "down"]);
       await run(b, ["lan", "down"]);

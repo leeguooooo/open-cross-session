@@ -250,10 +250,14 @@ export function listPeers(env: NodeJS.ProcessEnv = process.env): LanPeer[] {
   return peers;
 }
 
-/** Every trust-store write also drops inactive peers, so expired entries do not linger. */
+/**
+ * Inactive (expired / used-up) peers are kept (#79): `ocs lan peers` and `ocs who --lan` still
+ * list them with the renew command, and `ocs lan trust` renews them without re-pairing. Keeping
+ * the record grants nothing — the handshake and every DM go through `peerActive`. Only
+ * `ocs lan unpair` removes an entry.
+ */
 function savePeers(peers: LanPeer[], env: NodeJS.ProcessEnv): void {
-  const now = Date.now();
-  writePrivateJson(peersPath(env), { v: 1, peers: peers.filter((peer) => peerActive(peer, now)) });
+  writePrivateJson(peersPath(env), { v: 1, peers });
 }
 
 /** Peers whose trust is still active. */
@@ -261,15 +265,20 @@ export function activePeers(env: NodeJS.ProcessEnv = process.env, now = Date.now
   return listPeers(env).filter((peer) => peerActive(peer, now));
 }
 
-/** Remove inactive peers; returns the removed ones. */
-export function pruneExpiredPeers(env: NodeJS.ProcessEnv = process.env): LanPeer[] {
-  return withLock("peers", env, () => {
-    const peers = listPeers(env);
-    const now = Date.now();
-    const gone = peers.filter((peer) => !peerActive(peer, now));
-    if (gone.length > 0) savePeers(peers, env);
-    return gone;
-  });
+/** Why an inactive peer is inactive; null while it is active. */
+export function peerInactiveReason(peer: LanPeer, now = Date.now()): "expired" | "used-up" | null {
+  if (peer.expires_at !== undefined && !(Date.parse(peer.expires_at) > now)) return "expired";
+  if (peer.uses_left !== undefined && peer.uses_left <= 0) return "used-up";
+  return null;
+}
+
+/** Active trust ends within this window → `ocs who --lan` / `ocs dm …@peer` warn once. */
+export const PEER_EXPIRY_WARN_MS = 30 * 60 * 1000;
+
+/** Active peer whose time-limited trust ends within `PEER_EXPIRY_WARN_MS`. */
+export function peerExpiringSoon(peer: LanPeer, now = Date.now()): boolean {
+  if (!peerActive(peer, now) || peer.expires_at === undefined) return false;
+  return Date.parse(peer.expires_at) - now <= PEER_EXPIRY_WARN_MS;
 }
 
 export function findPeerByFingerprint(fp: string, env: NodeJS.ProcessEnv = process.env): LanPeer | null {
@@ -336,7 +345,7 @@ export function notePeerAddress(fp: string, addr: string, env: NodeJS.ProcessEnv
   withLock("peers", env, () => {
     const peers = listPeers(env);
     const peer = peers.find((p) => p.fingerprint === fp);
-    if (peer === undefined) return;
+    if (peer === undefined || !peerActive(peer)) return;
     peer.addrs = [...new Set([addr, ...peer.addrs])].slice(0, 4);
     peer.last_seen = new Date().toISOString();
     savePeers(peers, env);
@@ -346,7 +355,7 @@ export function notePeerAddress(fp: string, addr: string, env: NodeJS.ProcessEnv
 /**
  * Take one use for an incoming DM (atomic under the lock). Returns false when the peer is no
  * longer active — that DM must not be stored. The DM that takes the last use still goes
- * through; the peer is inactive afterwards and pruned on the next write.
+ * through; the peer is inactive afterwards (listed as used up until renewed or unpaired).
  */
 export function consumePeerUse(fp: string, env: NodeJS.ProcessEnv = process.env): boolean {
   return withLock("peers", env, () => {
@@ -355,8 +364,7 @@ export function consumePeerUse(fp: string, env: NodeJS.ProcessEnv = process.env)
     if (peer === undefined || !peerActive(peer)) return false;
     if (peer.uses_left === undefined) return true;
     peer.uses_left--;
-    // Skip savePeers' pruning: the DM that just took the last use is still being delivered.
-    writePrivateJson(peersPath(env), { v: 1, peers });
+    savePeers(peers, env);
     return true;
   });
 }

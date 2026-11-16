@@ -256,7 +256,7 @@ export async function sendRemoteDm(
   const conn = await connectPeer(peer, identity, env);
   if (!conn.paired) {
     conn.channel.destroy();
-    throw new LanClientError("unpaired", `peer ${peer.label} no longer trusts this machine; pair again`);
+    throw new LanClientError("unpaired", `peer ${peer.label} refused this machine (its trust for this machine expired, was used up, or was removed)`);
   }
   const { noWake, ...fields } = payload;
   // New op: old receivers reject it before storing instead of ignoring a flag and waking.
@@ -300,7 +300,7 @@ export async function remoteWho(
   const conn = await connectPeer(peer, identity, env, { scanTimeoutMs: 1000 });
   if (!conn.paired) {
     conn.channel.destroy();
-    throw new LanClientError("unpaired", `peer ${peer.label} no longer trusts this machine; pair again`);
+    throw new LanClientError("unpaired", `peer ${peer.label} refused this machine (its trust for this machine expired, was used up, or was removed)`);
   }
   const reply = await request(conn, { op: "who" }, 15_000);
   if (reply.ok !== true || !Array.isArray(reply.entries)) {

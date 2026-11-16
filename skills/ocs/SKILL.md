@@ -158,7 +158,7 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
   DM names; `ocs read <channel>` advances the same stable cursor.
 - LAN (opt-in): `<address>@<peer>` reaches an agent on another machine the user paired
   with `ocs lan pair`. A wake note from such a sender shows `x@peer` and its `Reply:` line
-  already routes back. Only run `ocs lan up` / `ocs lan pair` / `ocs lan join` when the user asks:
+  already routes back. Only run `ocs lan up` / `ocs lan pair` / `ocs lan join` / `ocs lan trust` when the user asks:
   pairing lets that machine prompt this machine's agents. Trust is temporary by default (8h);
   use `--forever` only when the user says the other machine is their own. Never run
   `ocs lan approve` on your own judgement — only with the exact 6-digit code the user says they

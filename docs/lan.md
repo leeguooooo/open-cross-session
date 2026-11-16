@@ -50,7 +50,7 @@ A 那边被唤醒的会话看到发送者是 `claude-9f8e7d6c@laptop`，`Reply:`
 | Impostor answers a `join` (0.8+) | The pairing text carries 100 bits of the inviter's fingerprint; the requester pins it in the handshake and sends neither its identity nor the request on mismatch |
 | Stranger slips in a pairing request (0.8+) | Requests are only accepted while `ocs lan pair` is waiting, one at a time; the inviter's human must see the same 6-digit check code (derived from that connection's transcript and session key) as the requester before trusting it |
 | Stranger pops prompts on an idle machine (0.8+) | No open invitation → immediate `no-offer`; request rate shares the 10/min/IP pairing limit |
-| Trust outlives its purpose (0.8+) | Pairing grants 8 h by default (`--once`, `--for`, `--forever`); expired or used-up peers are unpaired at the handshake and pruned on the next trust-store write |
+| Trust outlives its purpose (0.8+) | Pairing grants 8 h by default (`--once`, `--for`, `--forever`); expired or used-up peers are unpaired at the handshake. Their entries stay in the trust store (since #79, so they can be renewed locally) but grant nothing until a local `ocs lan trust` |
 | 远端冒充本机会话名 | 发送者一律显示 `<对方地址>@<本机给对端起的 label>`，label 远端改不了 |
 | 正文闭合包装标签、伪造 `Reply:` 行 | 唤醒 note 里正文的 `<cross-session-message` 被中和成 `‹…`，行首形似 `Reply:` / `Thread:` / 唤醒首行的加 `> `（wake-protocol §1）；Codex queue / Pi / cmux 这类没有包装的载体同样生效 |
 | 远端随手造频道塞满磁盘 | 远端 DM 只投活目标（Claude 活会话或登记过的 ocs 名字；Codex 要有活进程持有 rollout；Pi 要有活登记；Hermes 要宿主此刻列为打开），其余 `not-found` 不落盘；每对端限速 30 条突发、0.5 条/秒，且每 UTC 日正文 ≤16 MiB |
@@ -176,8 +176,22 @@ returns it in the pairing reply so the joiner trusts it back for the same period
 - A use is taken only right before a DM is stored for a live target (atomic, under the peers
   lock), so a mistyped address does not burn a `--once` grant. The DM taking the last use goes
   through.
-- Every trust-store write drops inactive entries; `ocs lan peers` prunes and reports them.
-- `ocs lan trust <peer> --once | --for <d> | --forever` rewrites this machine's period only.
+- Inactive entries are kept (#79; before that every trust-store write dropped them). `ocs lan
+  peers` shows them as `expired at <time>` / `used up` with the renew command, and `ocs who --lan`
+  lists them without connecting (`--json`: `error: "trust-expired"` / `"trust-used-up"`). Only
+  `ocs lan unpair` removes an entry. Keeping the entry changes nothing at the handshake.
+- `ocs lan trust <peer> --forever | [--once] [--for <d>]` rewrites this machine's period only, and
+  renews an inactive entry without pairing again. It is a local human action on the machine that
+  holds the trust; the other machine cannot trigger it. `--forever` cannot be combined with
+  `--once` / `--for`.
+- When this machine's trust for a peer ends within 30 minutes, `ocs who --lan` and
+  `ocs dm …@peer` print one note with the extend command. It only knows this side's period;
+  the other machine keeps its own (both start equal when pairing).
+- The refused side cannot tell why: `welcome` only carries `paired:false`, the same for an
+  expired, used-up, removed or never-paired key. That stays so — a reason would tell any
+  connection holding an old key about the other machine's trust store. So its message says the
+  other machine no longer accepts this one, and to fix it **there**: `ocs lan peers` on that
+  machine; renew this machine's entry if it is listed as expired, otherwise pair again.
 
 ## 发现
 

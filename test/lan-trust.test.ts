@@ -6,7 +6,9 @@ import { CLAUDE_NATIVE_SESSIONS_DIR_ENV } from "../src/claude-inject.ts";
 import { encodePairingCode, fingerprintDigest, generateIdentity, type LanIdentity } from "../src/lan-crypto.ts";
 import { handleLanPairRequest, startLanServer, type LanServerHandle } from "../src/lan-daemon.ts";
 import { LanClientError, pairByRequest, pairWithCode, replyTerms, sendRemoteDm } from "../src/lan-client.ts";
+import { lanMessages } from "../src/i18n-lan.ts";
 import {
+  consumePeerUse,
   createPairOffer,
   decidePairRequest,
   findPeer,
@@ -14,7 +16,9 @@ import {
   listPeers,
   loadOrCreateIdentity,
   loadPairOffer,
+  notePeerAddress,
   peerActive,
+  peerInactiveReason,
   redeemPairOffer,
   saveLanConfig,
   setPeerTerms,
@@ -302,5 +306,151 @@ describe("trust that runs out", () => {
     expect(replyTerms({ expires_at: "soon", uses: -3 }, now)).toEqual({});
     expect(replyTerms({ expires_at: new Date(now - 1).toISOString(), uses: 1.5 }, now)).toEqual({});
     expect(replyTerms({}, now)).toEqual({});
+  });
+});
+
+// ───────────── #79: expired trust stays listed, renewable, still refused ─────────────
+
+const CLI = join(import.meta.dir, "..", "src", "cli.ts");
+/** Tests that spawn the CLI several times get more room (Windows CI is slow to start bun). */
+const TC = 90_000;
+
+async function cli(m: Machine, args: string[]): Promise<{ code: number; out: string }> {
+  const proc = Bun.spawn([process.execPath, CLI, ...args], { env: { ...m.env, OCS_UPGRADE_CHECK: "0" }, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+  await proc.exited;
+  return { code: proc.exitCode ?? -1, out: stdout + stderr };
+}
+
+const past = (ms: number) => new Date(Date.now() - ms).toISOString();
+
+describe("expired trust is kept, listed and renewable, but still refused (#79)", () => {
+  test("an expired entry survives later writes, stays unpaired at the handshake, and a local renew restores it", async () => {
+    const a = machine("alpha");
+    const b = machine("bravo");
+    const server = await serve(a);
+    try {
+      trustPeer({ key: b.identity.publicKey, name: "bravo", label: "bee", addr: "10.0.0.9:47890", terms: { expires_at: past(HOUR) } }, a.env);
+      // Other trust-store writes no longer drop it…
+      trustPeer({ key: generateIdentity().identity.publicKey, name: "other", label: "other" }, a.env);
+      notePeerAddress(b.identity.fingerprint, "10.0.0.66:1", a.env);
+      const kept = findPeer("bee", a.env)!;
+      expect(kept.fingerprint).toBe(b.identity.fingerprint);
+      // …and do not refresh it either.
+      expect(kept.addrs).toEqual(["10.0.0.9:47890"]);
+      expect(peerInactiveReason(kept)).toBe("expired");
+      // …but it grants nothing.
+      expect(findPeerByFingerprint(b.identity.fingerprint, a.env)).toBeNull();
+      expect(consumePeerUse(b.identity.fingerprint, a.env)).toBe(false);
+      const refused = await connectSecure({ host: "127.0.0.1", port: server.port }, b.identity,
+        { kind: "fingerprint", fingerprint: a.identity.fingerprint }, { listenPort: null });
+      expect(refused.paired).toBe(false);
+      refused.channel.send({ op: "who" });
+      expect(await refused.channel.receive(5000)).toEqual({ ok: false, error: "unpaired" });
+      refused.channel.close();
+      // Renewal is a local action on the machine that holds the trust; no re-pairing.
+      setPeerTerms(b.identity.fingerprint, { expires_at: new Date(Date.now() + HOUR).toISOString() }, a.env);
+      const renewed = await connectSecure({ host: "127.0.0.1", port: server.port }, b.identity,
+        { kind: "fingerprint", fingerprint: a.identity.fingerprint }, { listenPort: null });
+      expect(renewed.paired).toBe(true);
+      renewed.channel.close();
+      expect(findPeer("bee", a.env)?.paired_at).toBe(kept.paired_at);
+    } finally {
+      await server.close();
+    }
+  }, TC);
+
+  test("a used-up entry is kept too and stays inactive", () => {
+    const a = machine("alpha");
+    const used = generateIdentity().identity;
+    trustPeer({ key: used.publicKey, name: "used", label: "used", terms: { uses_left: 1 } }, a.env);
+    expect(consumePeerUse(used.fingerprint, a.env)).toBe(true);
+    trustPeer({ key: generateIdentity().identity.publicKey, name: "later", label: "later" }, a.env);
+    const kept = findPeer("used", a.env)!;
+    expect(peerInactiveReason(kept)).toBe("used-up");
+    expect(consumePeerUse(used.fingerprint, a.env)).toBe(false);
+    expect(findPeerByFingerprint(used.fingerprint, a.env)).toBeNull();
+  });
+
+  test("CLI on the machine whose trust expired: peers / who list it with the renew command; dm names the expiry", async () => {
+    const a = machine("alpha");
+    const b = machine("bravo");
+    // Nothing listens there: an expired peer must not even be contacted.
+    trustPeer({ key: b.identity.publicKey, name: "bravo", label: "bee", addr: "127.0.0.1:9", terms: { expires_at: past(HOUR) } }, a.env);
+    const peers = await cli(a, ["lan", "peers"]);
+    expect(peers.code).toBe(0);
+    expect(peers.out).toContain("expired at");
+    expect(peers.out).toContain("ocs lan trust bee --for 8h");
+    const json = JSON.parse((await cli(a, ["lan", "peers", "--json"])).out) as { label: string; active: boolean }[];
+    expect(json).toEqual([expect.objectContaining({ label: "bee", active: false })]);
+    const status = await cli(a, ["lan", "status"]);
+    expect(status.out).toContain("paired peers: 0");
+    expect(status.out).toContain("expired / used-up peers: 1");
+    const who = await cli(a, ["lan", "who"]);
+    expect(who.out).toContain("LAN bee: trust expired at");
+    expect(who.out).toContain("ocs lan trust bee --for 8h");
+    expect(who.out).not.toContain("offline");
+    const whoJson = JSON.parse((await cli(a, ["lan", "who", "--json"])).out) as { peers: { peer: string; error?: string }[] };
+    expect(whoJson.peers).toEqual([expect.objectContaining({ peer: "bee", error: "trust-expired" })]);
+    const dm = await cli(a, ["dm", "worker@bee", "hi", "--as", "me"]);
+    expect(dm.code).toBe(1);
+    expect(dm.out).toContain("trust for bee expired at");
+    expect(dm.out).toContain("ocs lan trust bee --for 8h");
+    expect(dm.out).not.toContain("not reachable");
+    const renew = await cli(a, ["lan", "trust", "bee", "--for", "8h"]);
+    expect(renew.code).toBe(0);
+    expect(peerActive(findPeer("bee", a.env)!)).toBe(true);
+    expect((await cli(a, ["lan", "peers"])).out).toContain("left (until");
+  }, TC);
+
+  test("CLI on the refused machine: the hint says to fix it on the other machine, without claiming why", async () => {
+    const a = machine("alpha");
+    const b = machine("bravo");
+    const server = await serve(a);
+    try {
+      trustPeer({ key: b.identity.publicKey, name: "bravo", label: "bee", terms: { expires_at: past(HOUR) } }, a.env);
+      trustPeer({ key: a.identity.publicKey, name: "alpha", label: "alpha", addr: `127.0.0.1:${server.port}`,
+        terms: { expires_at: new Date(Date.now() + 8 * HOUR).toISOString() } }, b.env);
+      for (const args of [["lan", "who"], ["dm", "worker@alpha", "hi", "--as", "me"]]) {
+        const res = await cli(b, args);
+        expect(res.out).toContain("alpha no longer accepts this machine");
+        expect(res.out).toContain("Fix it on alpha, not here");
+        expect(res.out).toContain("normally bravo");
+        expect(res.out).not.toContain("not reachable");
+      }
+      const whoJson = JSON.parse((await cli(b, ["lan", "who", "--json"])).out) as { peers: { peer: string; error?: string }[] };
+      expect(whoJson.peers).toEqual([expect.objectContaining({ peer: "alpha", error: "rejected" })]);
+    } finally {
+      await server.close();
+    }
+  }, TC);
+
+  test("trust ending within 30 minutes is noted once by who and dm; not when further away", async () => {
+    const a = machine("alpha");
+    const b = machine("bravo");
+    const server = await serve(a);
+    try {
+      trustPeer({ key: b.identity.publicKey, name: "bravo", label: "bee" }, a.env);
+      trustPeer({ key: a.identity.publicKey, name: "alpha", label: "alpha", addr: `127.0.0.1:${server.port}`,
+        terms: { expires_at: new Date(Date.now() + 10 * 60_000).toISOString() } }, b.env);
+      const who = await cli(b, ["lan", "who"]);
+      expect(who.out.split("trust for alpha ends in").length - 1).toBe(1);
+      expect(who.out).toContain("ocs lan trust alpha --for 8h");
+      const dm = await cli(b, ["dm", "nobody-here@alpha", "hi", "--as", "me"]);
+      expect(dm.out.split("trust for alpha ends in").length - 1).toBe(1);
+      setPeerTerms(a.identity.fingerprint, { expires_at: new Date(Date.now() + 2 * HOUR).toISOString() }, b.env);
+      expect((await cli(b, ["lan", "who"])).out).not.toContain("ends in");
+    } finally {
+      await server.close();
+    }
+  }, TC);
+
+  test("help marks --forever as exclusive with --once / --for (en + zh)", () => {
+    for (const lang of ["en", "zh"] as const) {
+      const L = lanMessages(lang);
+      expect(L.help).toContain("[--forever | [--once] [--for <30m|8h|7d>]]");
+      expect(L.help).toContain("--forever | [--once] [--for <");
+      expect(L.trustUsage).toContain("--forever | [--once] [--for <30m|8h|7d>]");
+    }
   });
 });
