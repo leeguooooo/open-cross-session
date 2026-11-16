@@ -20,12 +20,20 @@ import { isAbsolute, join } from "node:path";
 const OCS_PI_EXTENSION_VERSION = 1;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_FRAME_BYTES = 16 * 1024;
+// While the TUI is alive, check this often that its registration and inbox still exist and
+// recreate whichever is gone (#76). Two stat calls and one small read; the timer is unref'd.
+// OCS_PI_HEAL_INTERVAL_MS only exists so tests need not wait 30s.
+const HEAL_INTERVAL_MS = Number(process.env.OCS_PI_HEAL_INTERVAL_MS) > 0 ? Number(process.env.OCS_PI_HEAL_INTERVAL_MS) : 30 * 1000;
 // Native Windows Node cannot listen on a filesystem .sock path (EACCES); local IPC there is a
 // named pipe. The name carries 128 random bits so nobody can create it first, libuv opens the
 // first instance exclusively, and the default pipe DACL keeps other accounts from adding
 // instances. The per-runtime token still authenticates every frame.
 const WINDOWS = process.platform === "win32";
 const BS = "\\\\";
+// Pi caches the extension factory per process, so this module can also see session events from
+// a second, non-TUI AgentSession created in the same process. The runtime remembers the
+// extension API object (one per runner) that started it: only that owner's events may stop or
+// rewrite it, and a non-TUI session_start never touches it (#76).
 let runtime = null;
 
 function ocsHome() {
@@ -51,6 +59,13 @@ function atomicWrite(path, value) {
   }
 }
 
+function ensureDirs(current) {
+  mkdirSync(current.sessionsDir, { recursive: true, mode: 0o700 });
+  mkdirSync(current.inboxDir, { recursive: true, mode: 0o700 });
+  chmodSync(current.sessionsDir, 0o700);
+  chmodSync(current.inboxDir, 0o700);
+}
+
 function registration(current) {
   return {
     v: 1,
@@ -61,7 +76,7 @@ function registration(current) {
     name: current.name,
     pid: process.pid,
     cwd: current.cwd,
-    socket_path: current.socketPath,
+    socket_path: current.inbox.path,
     token: current.token,
     registered_at: current.registeredAt,
   };
@@ -71,69 +86,48 @@ function writeRegistration(current) {
   atomicWrite(current.registryPath, registration(current));
 }
 
-function removeRegistration(current) {
+function ownRegistration(current) {
   try {
     const saved = JSON.parse(readFileSync(current.registryPath, "utf8"));
-    if (saved.token === current.token && saved.pid === process.pid) unlinkSync(current.registryPath);
-  } catch {}
+    return saved.token === current.token && saved.pid === process.pid;
+  } catch {
+    return false;
+  }
 }
 
-async function stop() {
-  const current = runtime;
-  runtime = null;
-  if (current === null) return;
-  if (process.env.OCS_PI_SESSION_ID === current.sessionId) delete process.env.OCS_PI_SESSION_ID;
-  removeRegistration(current);
-  for (const socket of current.sockets) socket.destroy();
-  await new Promise((resolve) => current.server.close(() => resolve()));
-  if (!WINDOWS) try { unlinkSync(current.socketPath); } catch {}
+function removeRegistration(current) {
+  // Only the file this runtime wrote: a newer runtime may have taken the same path.
+  if (ownRegistration(current)) try { unlinkSync(current.registryPath); } catch {}
+}
+
+function setStatus(current, text) {
+  try { current.ui.setStatus("ocs", text); } catch {}
+}
+
+function notify(current, text, level) {
+  try { current.ui.notify(text, level); } catch {}
 }
 
 function reply(socket, value) {
   socket.end(JSON.stringify(value) + "\\n");
 }
 
-async function start(pi, ctx) {
-  await stop();
-  if (ctx.mode !== "tui") return;
-  const sessionId = String(ctx.sessionManager.getSessionId()).toLowerCase();
-  if (!UUID_RE.test(sessionId)) throw new Error("Pi returned a non-UUID session id");
-  const home = ocsHome();
-  const sessionsDir = join(home, "pi-sessions");
-  const inboxDir = join(home, "pi-inbox");
-  mkdirSync(sessionsDir, { recursive: true, mode: 0o700 });
-  mkdirSync(inboxDir, { recursive: true, mode: 0o700 });
-  chmodSync(sessionsDir, 0o700);
-  chmodSync(inboxDir, 0o700);
-  const socketKey = createHash("sha256").update(sessionId).digest("hex").slice(0, 24);
-  const socketPath = WINDOWS
-    ? BS + BS + "." + BS + "pipe" + BS + "ocs-pi-" + socketKey + "-" + process.pid + "-" + randomBytes(16).toString("hex")
-    : join(inboxDir, "pi-" + socketKey + "-" + process.pid + ".sock");
-  const registryPath = join(sessionsDir, sessionId + "." + process.pid + ".json");
-  if (!WINDOWS) {
-    try {
-      const stale = lstatSync(socketPath);
-      if (stale.isSocket() && !stale.isSymbolicLink()) unlinkSync(socketPath);
-      else throw new Error("refusing to replace non-socket Pi inbox path: " + socketPath);
-    } catch (error) {
-      if (error && error.code !== "ENOENT") throw error;
-    }
+// Every inbox gets a fresh random path. Closing a Unix server unlinks its path by name, so a
+// path shared with a newer listener (same session and pid) would take the newer socket with it.
+function newInboxPath(current) {
+  if (WINDOWS) {
+    return BS + BS + "." + BS + "pipe" + BS + "ocs-pi-" + current.socketKey + "-" + process.pid + "-" +
+      randomBytes(16).toString("hex");
   }
-  const current = {
-    server: null,
-    sockets: new Set(),
-    sessionId,
-    target: "pi-" + sessionId,
-    name: safeName(pi.getSessionName()),
-    cwd: ctx.cwd,
-    socketPath,
-    registryPath,
-    token: randomBytes(32).toString("hex"),
-    registeredAt: new Date().toISOString(),
-  };
+  return join(current.inboxDir, "pi-" + current.socketKey + "-" + process.pid + "-" + randomBytes(8).toString("hex") + ".sock");
+}
+
+async function openInbox(current) {
+  const path = newInboxPath(current);
+  const inbox = { server: null, sockets: new Set(), path, dev: 0, ino: 0 };
   const server = createServer((socket) => {
-    current.sockets.add(socket);
-    socket.once("close", () => current.sockets.delete(socket));
+    inbox.sockets.add(socket);
+    socket.once("close", () => inbox.sockets.delete(socket));
     socket.setTimeout(2000, () => socket.destroy());
     socket.setEncoding("utf8");
     let buffer = "";
@@ -156,6 +150,7 @@ async function start(pi, ctx) {
         return;
       }
       if (
+        current.stopped ||
         frame.v !== 1 ||
         frame.type !== "wake" ||
         frame.session_id !== current.sessionId ||
@@ -168,7 +163,7 @@ async function start(pi, ctx) {
         return;
       }
       try {
-        pi.sendMessage(
+        current.owner.sendMessage(
           {
             customType: "ocs",
             content: frame.note,
@@ -183,42 +178,174 @@ async function start(pi, ctx) {
       }
     });
   });
-  current.server = server;
+  inbox.server = server;
   await new Promise((resolve, reject) => {
     const onError = (error) => reject(error);
     server.once("error", onError);
-    server.listen(socketPath, () => {
+    server.listen(path, () => {
       server.off("error", onError);
       resolve();
     });
   });
-  server.on("error", (error) => ctx.ui.notify("ocs Pi inbox error: " + String(error), "warning"));
-  if (!WINDOWS) chmodSync(socketPath, 0o600);
+  server.on("error", (error) => notify(current, "ocs Pi inbox error: " + String(error), "warning"));
+  if (!WINDOWS) {
+    try {
+      chmodSync(path, 0o600);
+      const stat = lstatSync(path);
+      inbox.dev = stat.dev;
+      inbox.ino = stat.ino;
+    } catch (error) {
+      await closeInbox(inbox);
+      throw error;
+    }
+  }
+  return inbox;
+}
+
+function inboxIntact(inbox) {
+  if (!inbox.server.listening) return false;
+  if (WINDOWS) return true;
+  try {
+    const stat = lstatSync(inbox.path);
+    return stat.isSocket() && !stat.isSymbolicLink() && stat.dev === inbox.dev && stat.ino === inbox.ino;
+  } catch {
+    return false;
+  }
+}
+
+async function closeInbox(inbox) {
+  if (inbox === null) return;
+  for (const socket of inbox.sockets) socket.destroy();
+  await new Promise((resolve) => inbox.server.close(() => resolve()));
+  if (WINDOWS) return;
+  // server.close() normally unlinks the path already; remove it only if it is still our socket.
+  try {
+    const stat = lstatSync(inbox.path);
+    if (stat.isSocket() && stat.dev === inbox.dev && stat.ino === inbox.ino) unlinkSync(inbox.path);
+  } catch {}
+}
+
+async function stop(current) {
+  if (current === null) return;
+  if (runtime === current) runtime = null;
+  current.stopped = true;
+  if (current.timer !== null) clearInterval(current.timer);
+  if (process.env.OCS_PI_SESSION_ID === current.sessionId) delete process.env.OCS_PI_SESSION_ID;
+  removeRegistration(current);
+  await closeInbox(current.inbox);
+}
+
+// The TUI is alive but its registration or inbox is gone (deleted by hand, by an older copy of
+// this extension, or by a cleanup we do not know about): recreate it so the session stays
+// discoverable and wakeable, and keep the status line truthful when that fails (#76).
+async function heal(current) {
+  if (runtime !== current || current.healing) return;
+  current.healing = true;
+  try {
+    let repaired = false;
+    ensureDirs(current);
+    if (!inboxIntact(current.inbox)) {
+      const fresh = await openInbox(current);
+      if (current.stopped) {
+        await closeInbox(fresh);
+        return;
+      }
+      const previous = current.inbox;
+      current.inbox = fresh;
+      repaired = true;
+      closeInbox(previous).catch(() => {});
+    }
+    if (repaired || !ownRegistration(current)) {
+      writeRegistration(current);
+      repaired = true;
+    }
+    if (process.env.OCS_PI_SESSION_ID !== current.sessionId) process.env.OCS_PI_SESSION_ID = current.sessionId;
+    if (repaired || current.healError !== null) setStatus(current, "ocs: " + current.target);
+    current.healError = null;
+  } catch (error) {
+    const message = String(error);
+    setStatus(current, "ocs: not registered");
+    if (current.healError !== message) notify(current, "ocs could not restore Pi registration: " + message, "warning");
+    current.healError = message;
+  } finally {
+    current.healing = false;
+  }
+}
+
+async function start(pi, ctx) {
+  // A print/rpc session, or an SDK session created inside this TUI process, must leave the
+  // TUI's registration alone (#76).
+  if (ctx.mode !== "tui") return;
+  await stop(runtime);
+  const sessionId = String(ctx.sessionManager.getSessionId()).toLowerCase();
+  if (!UUID_RE.test(sessionId)) throw new Error("Pi returned a non-UUID session id");
+  const home = ocsHome();
+  const sessionsDir = join(home, "pi-sessions");
+  const current = {
+    owner: pi,
+    ui: ctx.ui,
+    inbox: null,
+    timer: null,
+    healing: false,
+    healError: null,
+    stopped: false,
+    sessionId,
+    target: "pi-" + sessionId,
+    name: safeName(pi.getSessionName()),
+    cwd: ctx.cwd,
+    sessionsDir,
+    inboxDir: join(home, "pi-inbox"),
+    socketKey: createHash("sha256").update(sessionId).digest("hex").slice(0, 24),
+    registryPath: join(sessionsDir, sessionId + "." + process.pid + ".json"),
+    token: randomBytes(32).toString("hex"),
+    registeredAt: new Date().toISOString(),
+  };
+  ensureDirs(current);
+  current.inbox = await openInbox(current);
   runtime = current;
   try {
     writeRegistration(current);
     process.env.OCS_PI_SESSION_ID = sessionId;
-    ctx.ui.setStatus("ocs", "ocs: " + current.target);
+    setStatus(current, "ocs: " + current.target);
   } catch (error) {
-    await stop();
+    await stop(current);
     throw error;
   }
+  current.timer = setInterval(() => { heal(current); }, HEAL_INTERVAL_MS);
+  if (typeof current.timer.unref === "function") current.timer.unref();
+}
+
+function owned(pi) {
+  return runtime !== null && runtime.owner === pi ? runtime : null;
 }
 
 export default function ocsPiExtension(pi) {
   pi.on("session_start", async (_event, ctx) => {
     try { await start(pi, ctx); }
-    catch (error) { ctx.ui.notify("ocs Pi integration failed: " + String(error), "error"); }
+    catch (error) {
+      try { ctx.ui.setStatus("ocs", undefined); } catch {}
+      ctx.ui.notify("ocs Pi integration failed: " + String(error), "error");
+    }
   });
   pi.on("session_info_changed", (_event, ctx) => {
-    if (runtime === null) return;
-    runtime.name = safeName(pi.getSessionName());
-    try { writeRegistration(runtime); }
+    const current = owned(pi);
+    if (current === null) return;
+    current.name = safeName(pi.getSessionName());
+    try { writeRegistration(current); }
     catch (error) { ctx.ui.notify("ocs could not update Pi registration: " + String(error), "warning"); }
   });
+  for (const event of ["agent_start", "agent_end"]) {
+    pi.on(event, async () => {
+      const current = owned(pi);
+      if (current !== null) await heal(current);
+    });
+  }
   pi.on("session_shutdown", async (_event, ctx) => {
-    ctx.ui.setStatus("ocs", undefined);
-    await stop();
+    // Only the session that started the inbox may take it down.
+    const current = owned(pi);
+    if (current === null) return;
+    try { ctx.ui.setStatus("ocs", undefined); } catch {}
+    await stop(current);
   });
 }
 `;

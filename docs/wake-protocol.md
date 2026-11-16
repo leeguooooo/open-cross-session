@@ -24,6 +24,9 @@ Claude 载体仍是 `~/.claude/sessions/<pid>.json` 指向的 UDS socket，帧�
 包装（attr 顺序与现状一致，接收端有逐字重序列化校验）。Pi 载体由 `ocs skill install`
 安装的扩展提供：每个 TUI 在 `$OCS_HOME/pi-sessions` 登记一个带随机令牌的本机 UDS，扩展收到
 同一份 note 后调用 `pi.sendMessage`，空闲时触发新一轮，忙碌时以 `followUp` 排队。
+每次监听都用新的随机 socket 路径（关闭旧监听会按路径删文件，共用路径会连带删掉新的）；
+只有启动这份登记的那个 TUI 会话能撤掉它，同进程里的非 TUI 会话碰不到；登记或 socket
+被删时，扩展在下一次 agent 事件或 30 秒内自己补回（#76）。
 
 包装内的正文（note）骨架，行序固定：
 
