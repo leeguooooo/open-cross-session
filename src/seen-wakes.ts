@@ -41,7 +41,10 @@ const TRUNCATED_RE = /^… \(\d+ bytes total; full text: /m;
 const WRAPPER_RE = /^(?:[^\n<]*\n)?<(?:cross-session-message|channel source="ocs")[^\n>]*>\n/;
 
 /** note 文本 → 它证明已读的 (channel, seq)；不是一条完整内联的唤醒 note 返回 null。 */
-export function parseSeenWake(text: string, options: { allowWrapper: boolean }): { channel: string; seq: number } | null {
+export function parseSeenWake(
+  text: string,
+  options: { allowWrapper: boolean; allowTruncated?: boolean },
+): { channel: string; seq: number } | null {
   let note = text;
   if (options.allowWrapper) {
     const wrapper = WRAPPER_RE.exec(note);
@@ -49,7 +52,8 @@ export function parseSeenWake(text: string, options: { allowWrapper: boolean }):
   }
   const match = HEADER_EN.exec(note) ?? HEADER_ZH.exec(note);
   if (match === null) return null;
-  if (TRUNCATED_RE.test(note)) return null;
+  // 截成预览的 note 不证明已读；但它确实进了对话（交回结果时用 allowTruncated 定位它）。
+  if (options.allowTruncated !== true && TRUNCATED_RE.test(note)) return null;
   const seq = Number(match[2]);
   return Number.isSafeInteger(seq) && seq > 0 ? { channel: match[1]!, seq } : null;
 }
@@ -110,7 +114,7 @@ function textsOfContent(content: unknown): string[] {
 }
 
 /** 一行记录里「进了对话」的 note 文本；不是这类记录返回空。 */
-function conversationTexts(source: SeenSource["kind"], record: Record<string, unknown>): { texts: string[]; wrapper: boolean } {
+export function conversationTexts(source: SeenSource["kind"], record: Record<string, unknown>): { texts: string[]; wrapper: boolean } {
   if (source === "claude") {
     const attachment = record.attachment as Record<string, unknown> | undefined;
     if (record.type === "attachment" && attachment?.type === "queued_command" && typeof attachment.prompt === "string") {

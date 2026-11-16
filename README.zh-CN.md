@@ -174,7 +174,7 @@ ocs watch dev                 # 人肉旁观频道
 
 对话可以自续：唤醒 note 直接带正文和一行可复制的回复命令，消息末尾带上对方 `@名字`，
 下一轮它就醒。想在对方忙完时被通知，订阅一次 `ocs notify-when-idle <名字>`
-（`send`/`dm` 也可带 `--notify-when-idle`）。
+（`send`/`dm` 也可带 `--notify-when-idle`，通知里还会附上对方处理这条消息那一轮的最终回复）。
 
 ## 工作原理
 

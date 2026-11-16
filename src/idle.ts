@@ -21,7 +21,8 @@ import {
 } from "./claude-inject.ts";
 import { messages, type Lang } from "./i18n.ts";
 import { ocsHome } from "./store.ts";
-import { findSelfClaudePid, parentPidOf } from "./wake.ts";
+import { findSelfClaudePid, neutralizeWakeBody, parentPidOf, truncateUtf8, WAKE_BODY_INLINE_MAX_BYTES } from "./wake.ts";
+import { claudeTurnResult, type WakeRef } from "./turn-result.ts";
 import { findClaudeChannel, sendViaClaudeChannel } from "./claude-channel.ts";
 
 /** 订阅有效期（协议 §2：6 小时）。 */
@@ -67,6 +68,11 @@ export interface IdleSubscription {
    * 过了仍没动，idle 才算数；否则「还没开始处理」会被当成「已经忙完」（真机 0.9.14 观察到）。
    */
   wokeAt?: number;
+  /**
+   * send/dm --notify-when-idle 投的那条唤醒：idle 时据此在目标 transcript 里找处理它的那一轮，
+   * 把最终回复带回（§2.1）。裸 notify-when-idle 没有对应消息，不带。
+   */
+  wake?: WakeRef;
   detail?: string;
 }
 
@@ -166,6 +172,7 @@ export interface CreateIdleSubscriptionInput {
   env?: NodeJS.ProcessEnv;
   now?: number;
   wokeAt?: number;
+  wake?: WakeRef;
 }
 
 /**
@@ -201,6 +208,7 @@ export function createIdleSubscription(
     state: "pending",
     lang: input.lang,
     ...(input.wokeAt === undefined ? {} : { wokeAt: input.wokeAt }),
+    ...(input.wake === undefined ? {} : { wake: { channel: input.wake.channel, seq: input.wake.seq } }),
   };
   saveIdleSubscription(sub, input.env);
   return { sub, deduped: false };
@@ -347,7 +355,9 @@ export async function runIdleWatch(
     }
     if (seen.kind === "idle") {
       const busyFor = sub.busySince === undefined ? 0 : now - sub.busySince;
-      return finish(M.idleNoticeIdle(sub.target.name, formatDuration(busyFor)), "fired");
+      const notice = M.idleNoticeIdle(sub.target.name, formatDuration(busyFor));
+      const result = sub.wake === undefined ? null : await readTurnResult(sub, env, pollMs);
+      return finish(result === null ? notice : idleNoticeWithResult(notice, sub.target.name, result, sub.lang), "fired");
     }
     if (seen.kind === "busy" && sub.busySince === undefined) {
       sub = { ...sub, busySince: seen.statusUpdatedAt ?? now };
@@ -355,6 +365,34 @@ export async function runIdleWatch(
     }
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
+}
+
+/** 结果在引文里最多带这么多字节（中和之后），整条通知仍 ≤5120B。 */
+export const IDLE_RESULT_MAX_BYTES = WAKE_BODY_INLINE_MAX_BYTES - 512;
+/** transcript 写盘略晚于状态翻转时的重读次数（实测状态通常晚 0.2–2s 翻，留余量）。 */
+const RESULT_READ_ATTEMPTS = 3;
+
+async function readTurnResult(sub: IdleSubscription, env: NodeJS.ProcessEnv, pollMs: number): Promise<string | null> {
+  for (let attempt = 0; attempt < RESULT_READ_ATTEMPTS; attempt++) {
+    const result = claudeTurnResult(sub.target.sessionId, sub.wake!, env);
+    if (result !== null) return result;
+    if (attempt + 1 < RESULT_READ_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, 500)));
+  }
+  return null;
+}
+
+/**
+ * 空闲通知 + 目标那一轮的最终回复。回复是对方可控的数据：中和包装标签与协议行，框成引文，
+ * 明说它不是用户或 ocs 的指令（铁律 7 / 10）。
+ */
+export function idleNoticeWithResult(notice: string, target: string, result: string, lang: Lang): string {
+  const M = messages(lang);
+  const safe = neutralizeWakeBody(result);
+  const total = Buffer.byteLength(result, "utf8");
+  const body = Buffer.byteLength(safe, "utf8") <= IDLE_RESULT_MAX_BYTES
+    ? safe
+    : `${truncateUtf8(safe, IDLE_RESULT_MAX_BYTES)}\n${M.idleResultTruncated(total)}`;
+  return `${notice}\n\n${M.idleResultHeader(target)}\n${body}\n${M.idleResultFooter}`;
 }
 
 function wakeGraceMs(env: NodeJS.ProcessEnv): number {
