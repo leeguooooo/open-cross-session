@@ -71,7 +71,7 @@ export function trustedDaemonSocket(path: string): string | null {
 }
 
 /** 最小 WebSocket 客户端（只做文本帧 + ping/close），跑在 UDS 上。 */
-class DaemonConnection {
+export class DaemonConnection {
   private buffer = Buffer.alloc(0);
   private upgraded = false;
   private fragments: Buffer[] = [];

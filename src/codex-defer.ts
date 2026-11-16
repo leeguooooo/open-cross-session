@@ -30,6 +30,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, sta
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { codexRolloutPath, codexThreadLivePid } from "./codex-queue.ts";
+import { primeCodexDaemon } from "./codex-daemon.ts";
 import { isCodexThreadId } from "./codex-sessions.ts";
 import { identityCursorConsumer } from "./inbox.ts";
 import { listOcsNames } from "./names.ts";
@@ -359,7 +360,7 @@ export interface CodexWakeWatchOptions {
   deliver: CoalescedDeliver;
   /** 测试注入。 */
   isBusy?: (threadId: string, env: NodeJS.ProcessEnv) => boolean;
-  isLive?: (threadId: string, env: NodeJS.ProcessEnv) => boolean;
+  isLive?: (threadId: string, env: NodeJS.ProcessEnv) => boolean | Promise<boolean>;
   now?: () => number;
 }
 
@@ -391,7 +392,12 @@ export async function runCodexWakeWatch(
   const raw = Number(env[CODEX_WAKE_POLL_MS_ENV]);
   const pollMs = options.pollMs ?? (Number.isInteger(raw) && raw >= 10 ? raw : CODEX_WAKE_POLL_DEFAULT_MS);
   const isBusy = options.isBusy ?? codexThreadBusy;
-  const isLive = options.isLive ?? ((id: string, e: NodeJS.ProcessEnv) => codexThreadLivePid(id, e) !== null);
+  // 长驻进程：lsof 没证据时重拍守护进程快照（rollout 由守护进程托管的会话，codex-daemon.ts）。
+  const isLive = options.isLive ?? (async (id: string, e: NodeJS.ProcessEnv) => {
+    if (codexThreadLivePid(id, e) !== null) return true;
+    await primeCodexDaemon(e);
+    return codexThreadLivePid(id, e) !== null;
+  });
   const now = options.now ?? Date.now;
   let gone = 0;
   for (;;) {
@@ -408,7 +414,7 @@ export async function runCodexWakeWatch(
       if (done) return;
       continue;
     }
-    if (!isLive(tid, env)) {
+    if (!(await isLive(tid, env))) {
       gone += 1;
       if (gone >= CODEX_WAKE_GONE_CONFIRMATIONS) {
         withRecordLock(tid, channel, env, () => removeRecord(tid, channel, env));

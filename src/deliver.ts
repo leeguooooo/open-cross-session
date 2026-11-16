@@ -15,6 +15,7 @@ import { detectLang } from "./i18n.ts";
 import { codexActiveTurnId, deferCodexWakeIfBusy, loadDeferredCodexWake } from "./codex-defer.ts";
 import { steerCodexTurn } from "./codex-steer.ts";
 import { codexHosts, codexThreadLivePid, psTable, queueCodexThread } from "./codex-queue.ts";
+import { primeCodexDaemon } from "./codex-daemon.ts";
 import type { messages } from "./i18n.ts";
 import { hermesTargetName, wakeHermesSession, type HermesWakeResult } from "./hermes.ts";
 import { listPiSessions, wakePiSession, type PiSessionRegistration } from "./pi-sessions.ts";
@@ -239,7 +240,12 @@ async function deliverToCodexTaskImpl(
     return true;
   }
   const ps = psTable(env);
-  const livePid = codexThreadLivePid(targetThreadId, env, ps);
+  let livePid = codexThreadLivePid(targetThreadId, env, ps);
+  // lsof 没证据时问一次 Codex 守护进程（新会话第一轮前没有 rollout，codex-daemon.ts）。
+  if (livePid === null) {
+    await primeCodexDaemon(env);
+    livePid = codexThreadLivePid(targetThreadId, env, ps);
+  }
   // 载体按宿主选，不是一律 queue：
   //   * Desktop 托管的 task —— 先走 Desktop IPC。两条路都能送达并触发新 turn，但 IPC 在
   //     rollout 里留的是 `send_message_to_thread` + `<codex_delegation><source_thread_id>`
@@ -292,6 +298,7 @@ async function deliverToCodexTaskImpl(
     const queued = queueCodexThread({
       threadId: targetThreadId,
       livePid,
+      env,
       prompt: wakeNote({
         ...wakeInput,
         receiver: `codex-${targetThreadId.slice(0, 8)}`,
@@ -333,6 +340,7 @@ async function deliverToCodexTaskImpl(
     const queued = queueCodexThread({
       threadId: targetThreadId,
       livePid,
+      env,
       prompt: wakeNote({
         ...wakeInput,
         receiver: `codex-${targetThreadId.slice(0, 8)}`,
