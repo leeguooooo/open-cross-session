@@ -66,6 +66,7 @@ await first.emit("session_start", tui);
 
 let envAfterForeign: string | null = null;
 let finalOwner = first;
+let registeredBeforeOldShutdown: string[] = [];
 if (scenario === "foreign") {
   const sibling = makeApi();
   moduleA.default(sibling.api);
@@ -79,6 +80,15 @@ if (scenario === "foreign") {
   const second = makeApi();
   moduleB.default(second.api);
   await second.emit("session_start", tui);
+  // both instances are live: the old one's check (on agent events and its timer) must not take
+  // the registration back
+  await first.emit("agent_end", tui);
+  const { readdirSync, readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const dir = join(process.env.OCS_HOME!, "pi-sessions");
+  registeredBeforeOldShutdown = readdirSync(dir)
+    .filter((file) => file.endsWith(".json"))
+    .map((file) => (JSON.parse(readFileSync(join(dir, file), "utf8")) as { socket_path: string }).socket_path);
   await first.emit("session_shutdown", tui);
   finalOwner = second;
 }
@@ -97,5 +107,5 @@ const deadline = Date.now() + 8_000;
 while (sent.length === 0 && Date.now() < deadline) await Bun.sleep(10);
 const envAtWake = process.env.OCS_PI_SESSION_ID ?? null;
 await finalOwner.emit("session_shutdown", tui);
-console.log(JSON.stringify({ sent, notices, statuses, envAfterForeign, envAtWake }));
+console.log(JSON.stringify({ sent, notices, statuses, envAfterForeign, envAtWake, registeredBeforeOldShutdown }));
 process.exit(sent.length === 1 ? 0 : 1);

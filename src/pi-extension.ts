@@ -95,6 +95,17 @@ function ownRegistration(current) {
   }
 }
 
+// "other" = another live instance of this extension in this process registered the session
+// after us (an extension reload whose old instance was never shut down): leave it to that one.
+function registrationOwner(current) {
+  let saved;
+  try { saved = JSON.parse(readFileSync(current.registryPath, "utf8")); }
+  catch { return "missing"; }
+  if (saved === null || typeof saved !== "object" || saved.pid !== process.pid) return "missing";
+  if (saved.token === current.token) return "own";
+  return typeof saved.token === "string" ? "other" : "missing";
+}
+
 function removeRegistration(current) {
   // Only the file this runtime wrote: a newer runtime may have taken the same path.
   if (ownRegistration(current)) try { unlinkSync(current.registryPath); } catch {}
@@ -242,6 +253,7 @@ async function heal(current) {
   if (runtime !== current || current.healing) return;
   current.healing = true;
   try {
+    if (registrationOwner(current) === "other") return;
     let repaired = false;
     ensureDirs(current);
     if (!inboxIntact(current.inbox)) {
@@ -255,7 +267,7 @@ async function heal(current) {
       repaired = true;
       closeInbox(previous).catch(() => {});
     }
-    if (repaired || !ownRegistration(current)) {
+    if (repaired || registrationOwner(current) !== "own") {
       writeRegistration(current);
       repaired = true;
     }

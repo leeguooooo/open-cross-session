@@ -328,6 +328,7 @@ describe("installed Pi extension keeps a live TUI registered (#76)", () => {
     statuses: Array<string | null>;
     envAfterForeign: string | null;
     envAtWake: string | null;
+    registeredBeforeOldShutdown: string[];
   }
 
   function spawnLifecycle(scenario: string, extra: Record<string, string> = {}) {
@@ -401,6 +402,8 @@ describe("installed Pi extension keeps a live TUI registered (#76)", () => {
       expect(readdirSync(join(home, "pi-inbox"))).toEqual([basename(live!.socket_path)]);
       expect(await wakePiSession(live!, "[ocs wake] after reload")).toEqual({ ok: true, sessionId: SESSION_ID, delivery: "queued" });
       const output = await finish(host);
+      // while both instances were live, the newer registration stayed in place
+      expect(output.registeredBeforeOldShutdown).toEqual([live!.socket_path]);
       expect(output.sent).toHaveLength(1);
       expect(listPiSessions({ OCS_HOME: home })).toEqual([]);
       expect(readdirSync(join(home, "pi-inbox"))).toEqual([]);
