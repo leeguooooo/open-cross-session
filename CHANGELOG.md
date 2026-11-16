@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.21
+
 - `ocs dm <address>` without `@<peer>` for an agent that lives on a paired LAN computer no longer stores the message in a new local channel nobody reads. When the address is not a local session, ocs asks the paired peers (3 s total) and, if one lists that exact address, refuses before writing anything and tells you to use `<address>@<peer>`. It does not forward automatically: a name a peer reports is only a hint. The `ocs who` LAN hint now also says to address those agents as `<address>@<peer>` (#78)
 
 ## 0.9.20
