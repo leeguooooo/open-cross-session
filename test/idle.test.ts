@@ -266,6 +266,26 @@ describe("notify-when-idle watcher", () => {
     }
   });
 
+  test("a target that turns busy while the result is looked up is not reported idle yet", async () => {
+    const f = fixture(TGT_SESSION);
+    try {
+      const env = writeTranscript(f, [{ type: "user", message: { role: "user", content: "unrelated" } }]);
+      f.setTarget("idle");
+      const { sub } = subscribeWithWake(f, env);
+      const watcher = runIdleWatch(sub.id, { env, pollMs: 150 });
+      await sleep(60);
+      f.setTarget("busy");
+      await sleep(600);
+      expect(f.frames.length).toBe(0);
+      expect(loadIdleSubscription(sub.id, env)?.state).toBe("pending");
+      f.setTarget("idle");
+      expect(content(await f.nextFrame())).toContain("worker-b is now idle.");
+      expect((await watcher)?.state).toBe("fired");
+    } finally {
+      f.close();
+    }
+  });
+
   test("订阅时已 idle → 立即触发", async () => {
     const f = fixture();
     try {

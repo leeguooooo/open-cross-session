@@ -79,6 +79,13 @@ describe("claudeTurnResultInLines", () => {
     ), WAKE)).toBeNull();
   });
 
+  test("a record holding the wake plus human text is human input, whatever the block order", () => {
+    const mixed = (first: string, second: string) => ({ type: "user", message: { role: "user", content: [text(first), text(second)] } });
+    for (const record of [mixed(note(4), "and also do X"), mixed("and also do X", note(4))]) {
+      expect(claudeTurnResultInLines(lines(record, assistant("m1", "end_turn", text("did X"))), WAKE)).toBeNull();
+    }
+  });
+
   test("host-generated meta input and another wake do not end the evidence", () => {
     expect(claudeTurnResultInLines(lines(
       wakeTurn(),

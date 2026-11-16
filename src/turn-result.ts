@@ -36,7 +36,9 @@ function classifyInput(rec: Record<string, unknown>, wake: WakeRef): "match" | "
     }
   }
   if (all.length === 0) return "none";
+  // 先看完所有文本块：同一条记录里只要有一块真人输入，就是 "other"，不管匹配块排在前后。
   let sawWake = false;
+  let matched = false;
   for (const text of all) {
     const hit = parseSeenWake(text, { allowWrapper: wrapper || rec.type === "user", allowTruncated: true });
     // 宿主自己生成的 isMeta 输入（钩子、系统提示）不是真人输入。
@@ -44,10 +46,10 @@ function classifyInput(rec: Record<string, unknown>, wake: WakeRef): "match" | "
       if (rec.isMeta === true) continue;
       return "other";
     }
-    if (hit.channel === wake.channel && hit.seq === wake.seq) return "match";
-    sawWake = true;
+    if (hit.channel === wake.channel && hit.seq === wake.seq) matched = true;
+    else sawWake = true;
   }
-  return sawWake ? "wake" : "none";
+  return matched ? "match" : sawWake ? "wake" : "none";
 }
 
 /** transcript 行 → 处理这条唤醒的那一轮的最终回复文本；证据不足返回 null。 */

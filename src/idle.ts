@@ -357,6 +357,10 @@ export async function runIdleWatch(
       const busyFor = sub.busySince === undefined ? 0 : now - sub.busySince;
       const notice = M.idleNoticeIdle(sub.target.name, formatDuration(busyFor));
       const result = sub.wake === undefined ? null : await readTurnResult(sub, env, pollMs);
+      if (result === null && sub.wake !== undefined && observeIdleTarget(sub.target, env).kind !== "idle") {
+        // 等 transcript 的那几百毫秒里目标又忙起来了（或读不到了）：这次 idle 不算，接着盯。
+        continue;
+      }
       return finish(result === null ? notice : idleNoticeWithResult(notice, sub.target.name, result, sub.lang), "fired");
     }
     if (seen.kind === "busy" && sub.busySince === undefined) {
