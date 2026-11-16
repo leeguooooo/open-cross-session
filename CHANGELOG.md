@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.19
+
 - Waking a Codex session whose last turn was interrupted (or hit its budget) now says so: Codex holds queued messages until someone types in that session, so the wake runs after that input, not now. The result is still `queued` (not lost — do not resend); before, nothing explained why the target stayed quiet. See docs/wake-protocol.md §1.1
 
 ## 0.9.18
