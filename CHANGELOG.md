@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `ocs dm <address>` without `@<peer>` for an agent that lives on a paired LAN computer no longer stores the message in a new local channel nobody reads. When the address is not a local session, ocs asks the paired peers (3 s total) and, if one lists that exact address, refuses before writing anything and tells you to use `<address>@<peer>`. It does not forward automatically: a name a peer reports is only a hint. The `ocs who` LAN hint now also says to address those agents as `<address>@<peer>` (#78)
+
 ## 0.9.20
 
 - `send` / `dm --notify-when-idle` now hands back the result: when the Claude target goes idle, the idle notice also carries the final reply of the turn that handled your message, quoted as data. ocs reads it from the target's own transcript (no hooks, no settings changes) and leaves it out whenever it cannot prove that turn handled your message — held or refused wakes, a person typing in between, an interrupted turn. See docs/wake-protocol.md §2.1

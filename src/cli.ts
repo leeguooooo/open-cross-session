@@ -54,7 +54,7 @@ import {
 import { detectLang, messages } from "./i18n.ts";
 import { lanMessages } from "./i18n-lan.ts";
 import { LAN_DAEMON_COMMAND, runLanDaemon } from "./lan-daemon.ts";
-import { cmdLan, doctorLanSection, lanDm, lanPeerCount, lanWhoJson, printLanWho, type LanCliContext, type LanDmSender } from "./lan-cli.ts";
+import { cmdLan, doctorLanSection, findLanAgents, lanDm, lanPeerCount, lanWhoJson, printLanWho, type LanCliContext, type LanDmSender } from "./lan-cli.ts";
 import {
   identityCursorConsumer,
   inboxCursorState,
@@ -822,6 +822,12 @@ function lanDmSender(parsed: Parsed, from: string): LanDmSender {
   return { display: from, key: from, logFrom: from, identity: selfIdentity(from) };
 }
 
+/** 解析落到「本机不认识的名字」（会被当作离线 Claude 名字停靠）的情形。 */
+export function isUnknownLocalDmTarget(resolved: NonNullable<ReturnType<typeof resolveDmTarget>>): boolean {
+  return resolved.kind === "claude" && resolved.claude === undefined && resolved.via === undefined &&
+    resolved.workspaceAlias === undefined && resolved.workspaceIdentity === undefined;
+}
+
 async function cmdDm(parsed: Parsed): Promise<void> {
   const [target, ...bodyParts] = parsed.positional;
   if (target === undefined) fail(M.failDmUsage);
@@ -856,6 +862,12 @@ async function cmdDm(parsed: Parsed): Promise<void> {
   }
   if (resolved.ambiguousNameTargets !== undefined) {
     fail(M.dmNameAmbiguous(target, resolved.ambiguousNameTargets));
+  }
+  // #78：本机既没有这个活会话、也不是 ocs 名字 / 工作区别名——原来会新建一个本机孤儿频道。
+  // 局域网对端上有同地址的 agent 时，在任何写入之前拒绝，并给出 `<地址>@<对端>`。
+  if (isUnknownLocalDmTarget(resolved)) {
+    const remote = await findLanAgents(target);
+    if (remote.length > 0) fail(L.dmOnLanPeer(target, remote));
   }
   if (resolved.via !== undefined) {
     if (resolved.name !== target) console.log(M.dmNameResolved(target, resolved.name));
