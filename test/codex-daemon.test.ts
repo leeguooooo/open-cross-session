@@ -261,6 +261,26 @@ describe("投递：lsof 没证据时按需问守护进程（客户原样用完�
     expect(w.daemon.seen).toContain("thread/loaded/list");
   });
 
+  test("上一轮被中断：照常 queue，但提示 Codex 会扣住、要等用户输入（不重发）", async () => {
+    const w = world(typical);
+    const day = join(w.env.CODEX_HOME!, "sessions", "2026", "11", "16");
+    mkdirSync(day, { recursive: true });
+    writeFileSync(
+      join(day, `rollout-2026-11-16T13-00-00-${FRESH}.jsonl`),
+      `{"type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}\n` +
+        `{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t1","reason":"interrupted"}}\n`,
+    );
+    const sink = collectingSink();
+    try {
+      await deliverToCodexTask(FRESH, wake, messages("en"), sink, undefined, w.env, { parkOffline: true, defer: false });
+    } finally {
+      resetCodexCliProbeCache();
+    }
+    expect(sink.outcome()).toBe("ok");
+    expect(await Bun.file(w.argsLog).text()).toContain(`queue --thread ${FRESH}`);
+    expect(sink.lines.some((line) => line.includes("holds queued messages") && line.includes("interrupted"))).toBe(true);
+  });
+
   test("守护进程里没有 → 停靠 inbox，一个字都不 queue", async () => {
     const w = world(({ method }) => (method === "thread/loaded/list" ? { result: { data: [], nextCursor: null } } : undefined));
     const sink = collectingSink();
