@@ -2,11 +2,12 @@
 
 ## Unreleased
 
+- LAN trust that runs out no longer makes the peer vanish (#79). `ocs lan peers` and `ocs who --lan` keep listing it as `trust expired at <time>` with the renew command, and `ocs lan trust <peer> --for 8h | --forever` renews it without pairing again; the handshake still refuses it until then. `ocs lan status` and `ocs doctor` count such peers and point at `ocs lan peers`. `ocs dm x@peer` to an expired peer names the expiry. The machine that gets refused is now told to fix it on the other machine (renew there, or pair again if it is not listed) instead of only "pair again". `ocs who --lan` and `ocs dm …@peer` note once when this machine's trust for a peer ends within 30 minutes. Help shows that `--forever` cannot be combined with `--once` / `--for`. See docs/lan.md
+
 ## 0.9.22
 
 - A live Pi TUI no longer silently drops out of `ocs who` while its status line still says `ocs: pi-…` (#76). The Pi extension only lets the session that registered take its registration down: a second, non-TUI session in the same Pi process could remove the TUI's registration, inbox and `OCS_PI_SESSION_ID` (so `--as` was needed). Each inbox now listens on its own random socket path, so an old extension instance closing late cannot delete a newer socket. If the registration or socket disappears anyway, the extension restores both, and the session identity, on its next turn or within 30 seconds. After upgrading, run `ocs skill install` (or `ocs doctor --fix`), then `/reload` each open Pi to pick this up
 - `ocs doctor` lists Pi processes on a terminal that have no ocs registration, so a session missing from `ocs who` is reported instead of passing silently (#76)
-- LAN trust that runs out no longer makes the peer vanish (#79). `ocs lan peers` and `ocs who --lan` keep listing it as `trust expired at <time>` with the renew command, and `ocs lan trust <peer> --for 8h | --forever` renews it without pairing again; the handshake still refuses it until then. `ocs lan status` and `ocs doctor` count such peers and point at `ocs lan peers`. `ocs dm x@peer` to an expired peer names the expiry. The machine that gets refused is now told to fix it on the other machine (renew there, or pair again if it is not listed) instead of only "pair again". `ocs who --lan` and `ocs dm …@peer` note once when this machine's trust for a peer ends within 30 minutes. Help shows that `--forever` cannot be combined with `--once` / `--for`. See docs/lan.md
 
 ## 0.9.21
 
