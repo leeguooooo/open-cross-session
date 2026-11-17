@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.23
+
 - LAN trust that runs out no longer makes the peer vanish (#79). `ocs lan peers` and `ocs who --lan` keep listing it as `trust expired at <time>` with the renew command, and `ocs lan trust <peer> --for 8h | --forever` renews it without pairing again; the handshake still refuses it until then. `ocs lan status` and `ocs doctor` count such peers and point at `ocs lan peers`. `ocs dm x@peer` to an expired peer names the expiry. The machine that gets refused is now told to fix it on the other machine (renew there, or pair again if it is not listed) instead of only "pair again". `ocs who --lan` and `ocs dm …@peer` note once when this machine's trust for a peer ends within 30 minutes. Help shows that `--forever` cannot be combined with `--once` / `--for`. See docs/lan.md
 
 ## 0.9.22
