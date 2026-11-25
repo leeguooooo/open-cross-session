@@ -22,7 +22,7 @@ import { trafficStats, writeTraffic, type TrafficEvent, type TrafficOutcome } fr
 import { entryCapabilities } from "./capabilities.ts";
 import { findAgyWorker, stopAgyWorker } from "./agy.ts";
 import { grokSessionIdFromTarget, listGrokSessions } from "./grok.ts";
-import { agyConversationIdFromTarget, agyWindowShortId, listAgyWindows, registerSelfAgyWindow } from "./agy-session.ts";
+import { AGY_SHORT_TARGET_RE, agyConversationIdFromTarget, agyWindowShortId, listAgyWindows, registerSelfAgyWindow } from "./agy-session.ts";
 import { AGY_WORKER_COMMAND, parseAgyOptions, runAgyWorker, startAgyWorker } from "./agy-worker.ts";
 import { agyMessages } from "./i18n-agy.ts";
 import { homedir } from "node:os";
@@ -741,13 +741,20 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     await deliverDm({ resolved: resolveDmTarget(target)!, target, channel,
       firstMessage: message.seq === 1, stableChannel: false, wakeInput, dmReplyTarget: null }, M, CLI_SINK);
   }
+  // A reserved agy-<8hex> left unexpanded had no live (or a single) window: report it, never let it
+  // fall through to a Claude session that happens to carry the same name.
+  const agyShortUnresolved = claudeNames.filter((name) => agyConversationIdFromTarget(name) === null && AGY_SHORT_TARGET_RE.test(name));
+  for (const target of agyShortUnresolved) {
+    CLI_SINK.log(M.agyWindowWakeFailed(target, "not-open", "no single live agy window matches this short address"));
+    CLI_SINK.fail("failed");
+  }
   const agyMention = claudeNames.some((name) => name.toLowerCase() === "agy");
   if (agyMention) {
     await deliverDm({ resolved: resolveDmTarget("agy")!, target: "agy", channel,
       firstMessage: message.seq === 1, stableChannel: false, wakeInput, dmReplyTarget: null }, M, CLI_SINK);
   }
-  const wakeNames = claudeNames.filter((name) => !openCodeMentions.includes(name) && name.toLowerCase() !== "agy" && grokSessionIdFromTarget(name) === null && !agyWindowMentions.includes(name));
-  if (wakeNames.length === 0 && codexTargets.length === 0 && piTargets.length === 0 && hermesTargets.length === 0 && !agyMention && grokMentions.length === 0 && agyWindowMentions.length === 0 && openCodeMentions.length === 0) {
+  const wakeNames = claudeNames.filter((name) => !openCodeMentions.includes(name) && name.toLowerCase() !== "agy" && grokSessionIdFromTarget(name) === null && !agyWindowMentions.includes(name) && !agyShortUnresolved.includes(name));
+  if (wakeNames.length === 0 && codexTargets.length === 0 && piTargets.length === 0 && hermesTargets.length === 0 && !agyMention && grokMentions.length === 0 && agyWindowMentions.length === 0 && agyShortUnresolved.length === 0 && openCodeMentions.length === 0) {
     // #36：一个人都没叫醒时必须明说，不能只留一行 stored 让发送方以为送到了。
     const dm = channel.startsWith("dm-");
     console.log(M.sendNoWakeTarget(dm));

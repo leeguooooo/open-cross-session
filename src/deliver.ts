@@ -666,6 +666,7 @@ async function deliverDmImpl(
   if (resolved.kind === "grok" && resolved.grokSessionId !== undefined) {
     if (selfGrokSessionId(env) === resolved.grokSessionId || input.wakeInput.from === resolved.name) {
       sink.log(M.grokWakeSelfSkipped(resolved.name));
+      sink.skipped?.();
       return null;
     }
     await deliverToGrok(resolved.grokSessionId, { receiver: resolved.name, label: resolved.name },
@@ -675,6 +676,7 @@ async function deliverDmImpl(
   if (resolved.kind === "antigravity" && resolved.agyConversationId !== undefined) {
     if (selfAgyConversationId(env) === resolved.agyConversationId || input.wakeInput.from === resolved.name) {
       sink.log(M.agyWindowWakeSelfSkipped(resolved.name));
+      sink.skipped?.();
       return null;
     }
     reportAgyWindowWake(resolved.name, wakeAgyWindow(resolved.agyConversationId,

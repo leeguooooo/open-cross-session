@@ -196,7 +196,9 @@ export function selfAgyConversationId(env: NodeJS.ProcessEnv = process.env, deps
   // The headless receiver's jobs are `agy -p` children with OCS_NAME=agy: they are the receiver.
   if (env.ANTIGRAVITY_AGENT !== "1" || typeof id !== "string" || !UUID.test(id) || env.OCS_NAME === "agy") return null;
   if ((deps.platform ?? process.platform) === "win32") return null;
-  return nearestAgyAncestor(deps.proc ?? defaultProc, env, start, deps.ancestors) === null ? null : id.toLowerCase();
+  // Same exclusions as discovery: an `agy -p` job or a subcommand is not a window and cannot take window DMs.
+  const host = nearestAgyAncestor(deps.proc ?? defaultProc, env, start, deps.ancestors);
+  return host === null || !isInteractiveAgy(host) ? null : id.toLowerCase();
 }
 
 /**
@@ -258,7 +260,10 @@ export function listAgyWindows(deps: AgyWindowDeps = {}): { windows: AgyWindow[]
     const p = procs.get(pid)!;
     if (p === null || !isInteractiveAgy(p)) continue;
     const reg = readRegistration(pid, env);
-    windows.push({ conversationId: id, pid, cwd: (deps.cwdOf ?? defaultCwd)(pid), registered: reg !== null && reg.start === p.start });
+    // DM-able only while the registered server still listens: `who` must not promise what the send-time check refuses.
+    const registered = reg !== null && reg.start === p.start &&
+      (deps.listener ?? defaultListener)(pid, Number(LS_ADDRESS_RE.exec(reg.lsAddress)![1]));
+    windows.push({ conversationId: id, pid, cwd: (deps.cwdOf ?? defaultCwd)(pid), registered });
   }
   pruneRegistrations(new Set(windows.map((w) => w.pid)), env, alive);
   return { windows };
@@ -284,15 +289,19 @@ export type AgyWindowWakeResult = { ok: true } |
 export function wakeAgyWindow(conversationId: string, note: string, deps: AgyWindowDeps = {}): AgyWindowWakeResult {
   const env = deps.env ?? process.env;
   const id = conversationId.toLowerCase();
-  const bytes = Buffer.byteLength(note, "utf8");
+  // Measure what is actually sent: neutralizing turns "<" (1 byte) into "‹" (3 bytes).
+  const safeNote = neutralizeAgyNote(note);
+  const bytes = Buffer.byteLength(safeNote, "utf8");
   if (!UUID.test(id) || bytes === 0 || bytes > NOTE_MAX_BYTES) return { ok: false, reason: "failed", detail: "invalid agy conversation or wake payload" };
   if ((deps.platform ?? process.platform) === "win32") return { ok: false, reason: "unavailable", detail: "interactive agy windows are not supported on Windows" };
   const listed = listAgyWindows(deps);
   const window = listed.windows.find((w) => w.conversationId === id);
   if (window === undefined) return { ok: false, reason: listed.reason === undefined ? "not-open" : "unavailable", ...(listed.reason ? { detail: listed.reason } : {}) };
-  if (!window.registered) return { ok: false, reason: "unregistered" };
   const p = (deps.proc ?? defaultProc)(window.pid);
   const reg = readRegistration(window.pid, env);
+  if (!window.registered) return reg !== null && p !== null && reg.start === p.start
+    ? { ok: false, reason: "unavailable", detail: "window's local server is not listening on its registered port" }
+    : { ok: false, reason: "unregistered" };
   if (p === null || reg === null || reg.start !== p.start || !isInteractiveAgy(p)) return { ok: false, reason: "unavailable", detail: "window changed since discovery" };
   const port = Number(LS_ADDRESS_RE.exec(reg.lsAddress)![1]);
   if (!(deps.listener ?? defaultListener)(window.pid, port)) return { ok: false, reason: "unavailable", detail: "window's local server is not listening on its registered port" };
@@ -301,7 +310,7 @@ export function wakeAgyWindow(conversationId: string, note: string, deps: AgyWin
   // Only the address and token: the child must not inherit this shell's identity variables.
   const childEnv: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: env.HOME ?? homedir(),
     ANTIGRAVITY_LS_ADDRESS: reg.lsAddress, ANTIGRAVITY_CSRF_TOKEN: reg.token };
-  const r = (deps.run ?? defaultRun)(exe, ["agentapi", "send-message", "--title=ocs", id, neutralizeAgyNote(note)], childEnv, AGY_WINDOW_WAKE_TIMEOUT_MS);
+  const r = (deps.run ?? defaultRun)(exe, ["agentapi", "send-message", "--title=ocs", id, safeNote], childEnv, AGY_WINDOW_WAKE_TIMEOUT_MS);
   if (!r.started) return { ok: false, reason: "unavailable", detail: r.error ?? "agy did not start" };
   type Reply = { response?: { sendMessage?: { recipientId?: unknown } }; error?: unknown } | null;
   const parse = (text: string): Reply => { try { return JSON.parse(text.slice(text.indexOf("{"))) as Reply; } catch { return null; } };
