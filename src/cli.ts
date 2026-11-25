@@ -22,6 +22,7 @@ import { trafficStats, writeTraffic, type TrafficEvent, type TrafficOutcome } fr
 import { entryCapabilities } from "./capabilities.ts";
 import { findAgyWorker, stopAgyWorker } from "./agy.ts";
 import { grokSessionIdFromTarget, listGrokSessions } from "./grok.ts";
+import { AGY_SHORT_TARGET_RE, agyConversationIdFromTarget, agyWindowShortId, listAgyWindows, registerSelfAgyWindow } from "./agy-session.ts";
 import { AGY_WORKER_COMMAND, parseAgyOptions, runAgyWorker, startAgyWorker } from "./agy-worker.ts";
 import { agyMessages } from "./i18n-agy.ts";
 import { homedir } from "node:os";
@@ -522,6 +523,7 @@ function noticeSender(): NoticeSender | null {
   if (owner.kind === "opencode") return { kind: "opencode", sessionId: owner.id };
   if (owner.kind === "hermes") return { kind: "hermes", sessionKey: owner.id };
   if (owner.kind === "grok") return { kind: "grok", sessionId: owner.id };
+  if (owner.kind === "antigravity") return { kind: "antigravity", conversationId: owner.id };
   return { kind: "pi", sessionId: owner.id };
 }
 
@@ -734,13 +736,25 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     await deliverDm({ resolved: resolveDmTarget(target)!, target, channel,
       firstMessage: message.seq === 1, stableChannel: false, wakeInput, dmReplyTarget: null }, M, CLI_SINK);
   }
+  const agyWindowMentions = claudeNames.filter((name) => agyConversationIdFromTarget(name) !== null);
+  for (const target of agyWindowMentions) {
+    await deliverDm({ resolved: resolveDmTarget(target)!, target, channel,
+      firstMessage: message.seq === 1, stableChannel: false, wakeInput, dmReplyTarget: null }, M, CLI_SINK);
+  }
+  // A reserved agy-<8hex> left unexpanded had no live (or a single) window: report it, never let it
+  // fall through to a Claude session that happens to carry the same name.
+  const agyShortUnresolved = claudeNames.filter((name) => agyConversationIdFromTarget(name) === null && AGY_SHORT_TARGET_RE.test(name));
+  for (const target of agyShortUnresolved) {
+    CLI_SINK.log(M.agyWindowWakeFailed(target, "not-open", "no single live agy window matches this short address"));
+    CLI_SINK.fail("failed");
+  }
   const agyMention = claudeNames.some((name) => name.toLowerCase() === "agy");
   if (agyMention) {
     await deliverDm({ resolved: resolveDmTarget("agy")!, target: "agy", channel,
       firstMessage: message.seq === 1, stableChannel: false, wakeInput, dmReplyTarget: null }, M, CLI_SINK);
   }
-  const wakeNames = claudeNames.filter((name) => !openCodeMentions.includes(name) && name.toLowerCase() !== "agy" && grokSessionIdFromTarget(name) === null);
-  if (wakeNames.length === 0 && codexTargets.length === 0 && piTargets.length === 0 && hermesTargets.length === 0 && !agyMention && grokMentions.length === 0 && openCodeMentions.length === 0) {
+  const wakeNames = claudeNames.filter((name) => !openCodeMentions.includes(name) && name.toLowerCase() !== "agy" && grokSessionIdFromTarget(name) === null && !agyWindowMentions.includes(name) && !agyShortUnresolved.includes(name));
+  if (wakeNames.length === 0 && codexTargets.length === 0 && piTargets.length === 0 && hermesTargets.length === 0 && !agyMention && grokMentions.length === 0 && agyWindowMentions.length === 0 && agyShortUnresolved.length === 0 && openCodeMentions.length === 0) {
     // #36：一个人都没叫醒时必须明说，不能只留一行 stored 让发送方以为送到了。
     const dm = channel.startsWith("dm-");
     console.log(M.sendNoWakeTarget(dm));
@@ -766,7 +780,7 @@ async function cmdSend(parsed: Parsed): Promise<void> {
     const hint = selection.excludedSelf.length > 0 ? M.wakeSelfSkipped : "";
     console.log(`${M.wakeNoMatch(wakeNames.join(" @"))}${hint}`);
     if (selection.unmatchedNames.length > 0) markStoredDeliveryFailure("failed");
-    else if (codexTargets.length === 0 && piTargets.length === 0 && hermesTargets.length === 0 && grokMentions.length === 0 && !agyMention) markNoWakeTarget();
+    else if (codexTargets.length === 0 && piTargets.length === 0 && hermesTargets.length === 0 && grokMentions.length === 0 && agyWindowMentions.length === 0 && !agyMention) markNoWakeTarget();
     if (idleSubscriber !== null) subscribeIdle(idleSubscriber, []);
     return;
   }
@@ -1080,7 +1094,8 @@ async function cmdWho(parsed: Parsed): Promise<void> {
 async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lanWhoJson>>): Promise<void> {
   const hermes = await listHermesSessions();
   const grok = await listGrokSessions();
-  const roster = buildRoster(process.env, hermes.available ? hermes.sessions : [], grok.sessions);
+  const agyWindows = listAgyWindows();
+  const roster = buildRoster(process.env, hermes.available ? hermes.sessions : [], grok.sessions, agyWindows.windows);
   const json = parsed.flags.has("json");
   if (roster.entries.length === 0 && !json) {
     console.log(M.whoEmpty);
@@ -1117,17 +1132,19 @@ async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lan
   const openCodeEntries = relevantFirst(roster.entries.filter((e) => e.kind === "opencode"));
   const grokEntries = roster.entries.filter((e) => e.kind === "grok");
   const agyEntries = roster.entries.filter((e) => e.kind === "agy");
+  const agyWindowEntries = relevantFirst(roster.entries.filter((e) => e.kind === "antigravity"));
   const cmux = roster.entries.filter((e) => e.kind === "cmux");
   if (json) {
     console.log(JSON.stringify({
       ...roster,
-      entries: [...claude, ...codex, ...pi, ...openCodeEntries, ...hermesEntries, ...grokEntries, ...agyEntries, ...cmux].map((entry) => ({
+      entries: [...claude, ...codex, ...pi, ...openCodeEntries, ...hermesEntries, ...grokEntries, ...agyEntries, ...agyWindowEntries, ...cmux].map((entry) => ({
         ...entry, capabilities: entryCapabilities(entry, roster, entry.kind === "codex-task" && codexOwners[entry.threadId] !== undefined),
         ...(entry.kind === "claude" && hasClaudeChannel(entry.pid) ? { carrier: "channel" } : {}),
       })),
       hermes: hermes.available,
       grok: grok.sessions.length > 0,
       ...(grok.reason === undefined ? {} : { grokDiagnostic: grok.reason }),
+      ...(agyWindows.reason === undefined ? {} : { agyWindowDiagnostic: agyWindows.reason }),
       ...(peers === undefined ? {} : { peers }),
     }, null, 2));
     return;
@@ -1210,6 +1227,13 @@ async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lan
     for (const e of grokEntries) console.log(`  ${e.ocsName === undefined ? "" : `${e.ocsName}  `}${e.target}  ${e.title ?? ""}  ${e.status}${verbose ? `  cwd=${e.cwd}` : ""}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`);
   }
   if (grok.reason !== undefined) console.log(M.doctorGrok(grok.sessions.length, grok.reason));
+  if (agyWindowEntries.length > 0) {
+    console.log(M.whoAgyWindowHeader);
+    for (const e of agyWindowEntries) {
+      if (e.kind !== "antigravity") continue;
+      console.log(`  ${e.ocsName === undefined ? "" : `${e.ocsName}  `}${e.shortId}  ${e.registered ? M.whoAgyWindowDm : M.whoAgyWindowIdentifyOnly}${verbose ? `  ${e.target}  pid=${e.pid}  cwd=${e.cwd ?? "?"}` : ""}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`);
+    }
+  }
   if (roster.cmux) {
     if (cmux.length > 0) {
       console.log(M.whoCmuxHeader);
@@ -1276,6 +1300,7 @@ function cmdWhoami(parsed: Parsed): void {
   }
   if (owner === null) fail(M.whoamiUnknown);
   if (owner.kind === "pi") warnIfUnregisteredPi(piTargetName(owner.id));
+  if (owner.kind === "antigravity" && selfAgyRegistration === null) console.error(M.agyWindowNotRegistered);
   const name = ocsNameFor(owner, listOcsNames())?.name ?? null;
   const id = owner.kind === "claude" ? claudeShortId(owner.session.sessionId) : ownerShortId(owner);
   const session = owner.kind === "claude" ? owner.session.name : null;
@@ -1285,7 +1310,9 @@ function cmdWhoami(parsed: Parsed): void {
   // Codex 短 id 取 thread id 前 8 位，而 thread id 是 UUIDv7（时间戳打头），一分钟内建的线程
   // 短 id 会撞；只在 codex 上追加完整 threadId，Claude/Pi/Hermes 的输出保持逐字不变。
   if (owner.kind === "opencode") addresses.push(openCodeShortId(owner.id));
-  const full = owner.kind === "codex" ? { threadId: owner.id } : owner.kind === "opencode" ? { sessionId: owner.id } : {};
+  if (owner.kind === "antigravity") addresses.push(agyWindowShortId(owner.id));
+  const full = owner.kind === "codex" ? { threadId: owner.id } : owner.kind === "opencode" ? { sessionId: owner.id }
+    : owner.kind === "antigravity" ? { conversationId: owner.id, deliverable: selfAgyRegistration !== null } : {};
   console.log(JSON.stringify({ host: owner.kind, id, name, session, addresses, ...full }));
 }
 
@@ -1601,6 +1628,8 @@ async function cmdDoctor(parsed: Parsed): Promise<void> {
   else console.log(`  ｰ  ${M.doctorHermesNoHost(hermes.reason)}`);
   const grok = await listGrokSessions();
   console.log(M.doctorGrok(grok.sessions.length, grok.reason ?? ""));
+  const agyWindows = listAgyWindows();
+  console.log(M.doctorAgyWindows(agyWindows.windows.filter((w) => w.registered).length, agyWindows.windows.length, agyWindows.reason ?? ""));
   const selfHermes = selfHermesSessionKey();
   if (selfHermes !== null) {
     const open = hermes.available && hermes.sessions.some((session) => session.key === selfHermes);
@@ -1744,6 +1773,11 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
   Incoming messages use OpenCode's durable native queue with \`delivery: "queue"\`,
   preserving the active turn. An accepted queue item is not a read/completion receipt.
   V1's plugin API is not supported; upgrade OpenCode before installing this plugin.
+- Interactive Antigravity CLI (\`agy\`) windows appear in \`ocs who\` as \`agy-<8hex>\`
+  (full form \`agy-<conversation-id>\`). A window becomes DM-able once its agent runs
+  any ocs command there (e.g. ask it to run \`ocs whoami\`); until then it is listed
+  as identify-only. Messages arrive as agy agent messages; a busy window takes them
+  into its current turn without cancelling it. macOS/Linux only. \`agy\` alone is still the headless receiver.
 - Grok Build sessions started with \`grok --leader\` appear in \`ocs who\` as
   \`grok-<full-session-uuid>\`. DM, @mentions, rename and paired LAN replies use
   the same address. Grok's \`GROK_SESSION_ID\` identifies replies automatically.
@@ -2049,6 +2083,8 @@ function signalNumber(signal: NodeJS.Signals): number | null {
 const CODEX_DAEMON_PRIME_COMMANDS = new Set(["who", "doctor", "notify-when-idle"]);
 const CODEX_SHORT_IN_TEXT_RE = /(?:^|[^0-9a-z-])codex-[0-9a-f]{8}(?![0-9a-f-])/i;
 
+let selfAgyRegistration: ReturnType<typeof registerSelfAgyWindow> = null;
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   // 人在 shell 中常把身份覆盖写在子命令前；仍由目标命令的 schema 校验，
@@ -2065,6 +2101,8 @@ async function main(): Promise<void> {
     await cmdClaude(rest);
     return;
   }
+  // #89: any ocs run by an interactive agy window's agent makes that window DM-able.
+  try { selfAgyRegistration = registerSelfAgyWindow(); } catch { selfAgyRegistration = null; }
   // 参数错误也要走 JSON：看到 --json 就先接管 stdout，再解析。
   if ((command === "send" || command === "dm") && rest.includes("--json")) startJsonRun(command);
   if (leadingAs.length > 0 && (leadingAs[1] === undefined || leadingAs[1].startsWith("--"))) {

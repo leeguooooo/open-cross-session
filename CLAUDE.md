@@ -38,6 +38,8 @@ bun src/cli.ts <cmd>   # 本地跑 CLI（who/dm/send/read/notify-when-idle/sessi
 
 16. **Claude channel（`src/claude-channel.ts`，实验性，docs/claude-channel.md）**：只在目标会话由 `ocs claude` 启动、登记有效（同 uid 非符号链接、server 活着且父进程就是目标 Claude）时走。channel 无确认：成功只叫「已交给 channel」，不许清欠账；请求写出后无应答 = unknown，绝不回落收件箱重投，只有「什么都没写出」才回落。`initialize` 必须回旧协议号（modern 连接宿主不注册 channel）；`notifications/initialized` 之前拒收。启动器只传 dev flag，并剥掉外层会话身份环境变量。权限转发（`claude/channel/permission`）不做给 agent。`test/claude-channel.test.ts` 守着，改之前先跑变异自检。
 
+17. **交互式 Antigravity 窗口（`src/agy-session.ts`，#89，docs/agy.md）**：发现靠 `presence/<会话id>.lock` 的持有者，且必须是有 tty 的交互式 `agy`（`-p`/`--print`/子命令/无 tty 一律排除）；地址 `agy-<完整会话id>`，`agy-<8hex>` 只按活窗口展开，裸 `agy` 仍是 headless 接收端。投递只走**目标窗口自己**的本地服务（别的窗口的服务对任意 id 都回显成功、实际丢弃）；地址和 CSRF token 只来自窗口工具 shell 里跑的 ocs，登记按 pid + 进程启动时间、0600，登记前核对该 pid 持有这个会话的锁并监听该端口。**agentapi 的回显不证明存活**：每次发送前重新证明 pid（同启动时间）持锁、监听登记的 loopback 端口，任何一项不成立 = unavailable、零字节；子进程环境只给地址和 token。exit 0 且回显匹配只叫 accepted，超时/异常回复 = unknown，绝不重发。宿主把正文包进不转义的 `<SYSTEM_MESSAGE>`，所以整条 note 过 `neutralizeAgyNote`。Windows 不支持。`test/agy-session.test.ts` 守着，改之前先跑变异自检。
+
 ## 路线（owner 已拍板）
 
 2026-10：AgentParty 停止维护，原定「主仓抽 MIT 的 `packages/cross-session-core`、本仓转为单向 sync 镜像」的路线作废。本仓是唯一正本；跨网络靠虚拟局域网 + `ocs lan`。

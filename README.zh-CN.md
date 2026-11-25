@@ -220,6 +220,10 @@ ocs agy stop
 它使用 agy 现有登录和权限配置；Windows 也能运行接收端；已配对的局域网客户端可向它派任务。
 详见[接收端安装及送达语义](docs/agy.md)。
 
+你自己打开的 `agy` 窗口（macOS / Linux）在 `ocs who` 里显示为 `agy-<8位hex>`。
+让窗口里的 agent 运行一次 `ocs whoami`，之后 `ocs dm agy-<8位hex> "…"` 就能发进这个窗口已有的对话。
+详见[交互式窗口](docs/agy.md#interactive-windows-89)。
+
 ## 能唤醒谁
 
 `ocs who` 列出已有发现/唤醒适配的活会话，不扫描所有已安装的 AI 应用。

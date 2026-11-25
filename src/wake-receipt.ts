@@ -36,6 +36,7 @@ export type NoticeSender =
   | { kind: "opencode"; sessionId: string }
   | { kind: "pi"; sessionId: string }
   | { kind: "grok"; sessionId: string }
+  | { kind: "antigravity"; conversationId: string }
   | { kind: "hermes"; sessionKey: string };
 
 export interface WakeJob {
@@ -95,6 +96,7 @@ function isNoticeSender(value: unknown): value is NoticeSender {
   if (r.kind === "opencode") return typeof r.sessionId === "string";
   if (r.kind === "pi") return typeof r.sessionId === "string";
   if (r.kind === "grok") return typeof r.sessionId === "string";
+  if (r.kind === "antigravity") return typeof r.conversationId === "string";
   if (r.kind === "hermes") return typeof r.sessionKey === "string";
   return false;
 }

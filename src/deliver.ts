@@ -10,6 +10,7 @@ import { startDeliveryObservation, type TrafficOutcome } from "./traffic.ts";
 import { resolveSessionSocketByPid, type InjectResult, type NativeClaudeSession } from "./claude-inject.ts";
 import { wakeAgy } from "./agy.ts";
 import { grokTargetName, selfGrokSessionId, wakeGrokSession, type GrokWakeResult } from "./grok.ts";
+import { agyWindowTargetName, selfAgyConversationId, wakeAgyWindow, type AgyWindowWakeResult } from "./agy-session.ts";
 import { agyMessages } from "./i18n-agy.ts";
 import { detectLang } from "./i18n.ts";
 import { codexActiveTurnId, deferCodexWakeIfBusy, loadDeferredCodexWake, codexQueueHoldReason } from "./codex-defer.ts";
@@ -437,6 +438,12 @@ export function reportTrackedWake(
 /** 会话环境变量：通知发给「派出 helper 的那个会话」自己，不能让自我唤醒防回环把它吞掉。 */
 const SELF_ENV_KEYS = [
   "GROK_SESSION_ID",
+  "ANTIGRAVITY_AGENT",
+  "ANTIGRAVITY_CONVERSATION_ID",
+  "ANTIGRAVITY_TRAJECTORY_ID",
+  "ANTIGRAVITY_SOURCE_METADATA",
+  "ANTIGRAVITY_LS_ADDRESS",
+  "ANTIGRAVITY_CSRF_TOKEN",
   "CLAUDE_CODE_SESSION_ID",
   "CLAUDE_CODE_MESSAGING_SOCKET",
   "CODEX_THREAD_ID",
@@ -448,6 +455,14 @@ const SELF_ENV_KEYS = [
   "HERMES_SESSION_ID",
   "HERMES_SESSION_SOURCE",
 ];
+
+function reportAgyWindowWake(label: string, result: AgyWindowWakeResult, M: Catalog, sink: DeliverySink): void {
+  if (result.ok) sink.log(M.agyWindowWakeAccepted(label));
+  else {
+    sink.log(M.agyWindowWakeFailed(label, result.reason, result.detail ?? ""));
+    sink.fail(result.reason === "unknown-outcome" ? "unknown" : "failed");
+  }
+}
 
 function reportGrokWake(label: string, result: GrokWakeResult, M: Catalog, sink: DeliverySink): void {
   if (result.ok) sink.log(M.grokWakeAccepted(label, result.delivery));
@@ -514,6 +529,11 @@ export async function deliverNotice(
   if (target.kind === "grok") {
     const name = grokTargetName(target.sessionId);
     await deliverToGrok(target.sessionId, { receiver: name, label: name }, input, M, sink, clean);
+    return;
+  }
+  if (target.kind === "antigravity") {
+    const name = agyWindowTargetName(target.conversationId);
+    reportAgyWindowWake(name, wakeAgyWindow(target.conversationId, wakeNote({ ...input, receiver: name, implicitReceiver: true }), { env: clean }), M, sink);
     return;
   }
   const session = listPiSessions(clean).find((candidate) => candidate.session_id.toLowerCase() === target.sessionId.toLowerCase());
@@ -646,10 +666,21 @@ async function deliverDmImpl(
   if (resolved.kind === "grok" && resolved.grokSessionId !== undefined) {
     if (selfGrokSessionId(env) === resolved.grokSessionId || input.wakeInput.from === resolved.name) {
       sink.log(M.grokWakeSelfSkipped(resolved.name));
+      sink.skipped?.();
       return null;
     }
     await deliverToGrok(resolved.grokSessionId, { receiver: resolved.name, label: resolved.name },
       { ...input.wakeInput, ...anyReply }, M, sink, env);
+    return null;
+  }
+  if (resolved.kind === "antigravity" && resolved.agyConversationId !== undefined) {
+    if (selfAgyConversationId(env) === resolved.agyConversationId || input.wakeInput.from === resolved.name) {
+      sink.log(M.agyWindowWakeSelfSkipped(resolved.name));
+      sink.skipped?.();
+      return null;
+    }
+    reportAgyWindowWake(resolved.name, wakeAgyWindow(resolved.agyConversationId,
+      wakeNote({ ...input.wakeInput, ...anyReply, receiver: resolved.name, implicitReceiver: true }), { env }), M, sink);
     return null;
   }
   if (resolved.kind === "cmux" && resolved.cmuxRef !== undefined) {

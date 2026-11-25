@@ -194,6 +194,14 @@ interface Catalog {
   grokWakeAccepted: (target: string, delivery: string) => string;
   grokWakeFailed: (target: string, reason: string, detail: string) => string;
   grokWakeSelfSkipped: (target: string) => string;
+  whoAgyWindowHeader: string;
+  whoAgyWindowDm: string;
+  whoAgyWindowIdentifyOnly: string;
+  doctorAgyWindows: (registered: number, total: number, reason: string) => string;
+  agyWindowWakeAccepted: (target: string) => string;
+  agyWindowWakeFailed: (target: string, reason: string, detail: string) => string;
+  agyWindowWakeSelfSkipped: (target: string) => string;
+  agyWindowNotRegistered: string;
   whoCmuxHeader: string;
   whoSelfTag: string;
   /** `ocs claude` 启动、带 ocs channel 的 Claude 会话（docs/claude-channel.md）。 */
@@ -596,6 +604,14 @@ Details: https://github.com/leeguooooo/open-cross-session/blob/main/docs/lan.md`
   grokWakeAccepted: (target, delivery) => `wake(grok): ${delivery === "started" ? "admitted to a running turn" : "queued behind the current turn"} → ${target} (not a read or completion receipt)`,
   grokWakeFailed: (target, reason, detail) => `wake(grok): ${reason} → ${target}${detail ? `: ${detail}` : ""}${reason === "unknown-outcome" ? "; do not resend; inspect the original channel/seq" : "; message remains in the OCS channel"}`,
   grokWakeSelfSkipped: (target) => `wake(grok): self-wake skipped → ${target}`,
+  whoAgyWindowHeader: "Antigravity CLI windows (wake: ocs dm agy-<8hex>)",
+  whoAgyWindowDm: "dm",
+  whoAgyWindowIdentifyOnly: "identify-only (ask its agent to run `ocs whoami` to enable DM)",
+  doctorAgyWindows: (registered, total, reason) => `Antigravity CLI windows: ${total} open, ${registered} DM-able${reason ? `; ${reason}` : total > registered ? "; a window becomes DM-able after its agent runs any ocs command" : ""}`,
+  agyWindowWakeAccepted: (target) => `wake(agy): accepted by the window's agy server → ${target} (not a read or completion receipt)`,
+  agyWindowWakeFailed: (target, reason, detail) => `wake(agy): ${reason} → ${target}${detail ? `: ${detail}` : ""}${reason === "unknown-outcome" ? "; do not resend; inspect the original channel/seq" : reason === "unregistered" ? "; ask that window's agent to run `ocs whoami` once; message remains in the OCS channel" : "; message remains in the OCS channel"}`,
+  agyWindowWakeSelfSkipped: (target) => `wake(agy): self-wake skipped → ${target}`,
+  agyWindowNotRegistered: "note: this Antigravity window could not be registered for DM (not an interactive agy window, or its local server could not be verified); others can see it but messages stay stored-only",
   whoCmuxHeader: "cmux terminal surfaces (wake: ocs dm surface:N)",
   whoSelfTag: "  ← you",
   whoChannelTag: "  [channel]",
@@ -1002,6 +1018,14 @@ ${lanMessages("zh").help}
   grokWakeAccepted: (target, delivery) => `唤醒(grok)：${delivery === "started" ? "已接纳到运行回合" : "已排在当前回合之后"} → ${target}（不代表已读或任务完成）`,
   grokWakeFailed: (target, reason, detail) => `唤醒(grok)：${reason} → ${target}${detail ? `：${detail}` : ""}${reason === "unknown-outcome" ? "；不要重发，请查原频道和 seq" : "；消息仍在 OCS 频道里"}`,
   grokWakeSelfSkipped: (target) => `唤醒(grok)：已跳过自我唤醒 → ${target}`,
+  whoAgyWindowHeader: "Antigravity CLI 窗口（唤醒: ocs dm agy-<8位hex>）",
+  whoAgyWindowDm: "可私聊",
+  whoAgyWindowIdentifyOnly: "仅识别（请该窗口的 agent 运行一次 `ocs whoami` 以开启私聊）",
+  doctorAgyWindows: (registered, total, reason) => `Antigravity CLI 窗口：打开 ${total} 个，可私聊 ${registered} 个${reason ? `；${reason}` : total > registered ? "；窗口里的 agent 运行任意 ocs 命令后即可私聊" : ""}`,
+  agyWindowWakeAccepted: (target) => `唤醒(agy)：窗口的 agy 服务已接收 → ${target}（不代表已读或任务完成）`,
+  agyWindowWakeFailed: (target, reason, detail) => `唤醒(agy)：${reason} → ${target}${detail ? `：${detail}` : ""}${reason === "unknown-outcome" ? "；不要重发，请查原频道和 seq" : reason === "unregistered" ? "；请该窗口的 agent 运行一次 `ocs whoami`；消息仍在 OCS 频道里" : "；消息仍在 OCS 频道里"}`,
+  agyWindowWakeSelfSkipped: (target) => `唤醒(agy)：已跳过自我唤醒 → ${target}`,
+  agyWindowNotRegistered: "提示：当前 Antigravity 窗口未能登记私聊（不是交互式 agy 窗口，或无法核实它的本地服务）；别人能看到它，但发来的消息只会落盘",
   whoCmuxHeader: "cmux 终端 surface（唤醒: ocs dm surface:N）",
   whoSelfTag: "  ← 你自己",
   whoChannelTag: "  [channel]",

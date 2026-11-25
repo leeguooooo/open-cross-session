@@ -16,9 +16,10 @@ import { isCodexThreadId } from "./codex-sessions.ts";
 import { hermesSessionKeyFromTarget, hermesTargetName, isHermesSessionKey } from "./hermes.ts";
 import { isPiSessionId } from "./pi-sessions.ts";
 import { grokSessionIdFromTarget, grokTargetName, isGrokSessionId } from "./grok.ts";
+import { AGY_SHORT_TARGET_RE, agyConversationIdFromTarget, agyWindowTargetName, isAgyConversationId } from "./agy-session.ts";
 import { NAME_RE, ocsHome } from "./store.ts";
 
-export type NamedKind = "claude" | "codex" | "pi" | "hermes" | "grok" | "opencode";
+export type NamedKind = "claude" | "codex" | "pi" | "hermes" | "grok" | "opencode" | "antigravity";
 
 /**
  * Claude 以 sessionId 为主键，另记进程（pid + procStart）：`/clear` 会换 sessionId 但还是
@@ -26,7 +27,7 @@ export type NamedKind = "claude" | "codex" | "pi" | "hermes" | "grok" | "opencod
  */
 export type OcsNameEntry =
   | { v: 1; name: string; kind: "claude"; id: string; pid: number; procStart: string | null }
-  | { v: 1; name: string; kind: "codex" | "pi" | "hermes" | "grok" | "opencode"; id: string };
+  | { v: 1; name: string; kind: "codex" | "pi" | "hermes" | "grok" | "opencode" | "antigravity"; id: string };
 
 /** 这些形状是 ocs 自己的地址语法，给了名字就会遮蔽真实会话。 */
 const RESERVED_RE = /^(?:claude|codex|pi)-[0-9a-f]{8}$/i;
@@ -34,6 +35,7 @@ const RESERVED_RE = /^(?:claude|codex|pi)-[0-9a-f]{8}$/i;
 export function isReservedOcsName(name: string): boolean {
   return opencodeSessionIdFromTarget(name) !== null || /^oc-[0-9a-f]{8}$/i.test(name) || name.toLowerCase() === "agy" || RESERVED_RE.test(name) ||
     grokSessionIdFromTarget(name) !== null ||
+    agyConversationIdFromTarget(name) !== null || AGY_SHORT_TARGET_RE.test(name) ||
     isCodexThreadId(name) ||
     (name.toLowerCase().startsWith("pi-") && isPiSessionId(name.slice(3))) ||
     hermesSessionKeyFromTarget(name.toLowerCase()) !== null;
@@ -53,6 +55,7 @@ export function ownerShortId(owner: NameOwner): string {
   if (owner.kind === "opencode") return opencodeTargetName(owner.id);
   if (owner.kind === "hermes") return hermesTargetName(owner.id);
   if (owner.kind === "grok") return grokTargetName(owner.id);
+  if (owner.kind === "antigravity") return agyWindowTargetName(owner.id);
   return `${owner.kind}-${owner.id.slice(0, 8).toLowerCase()}`;
 }
 
@@ -61,6 +64,7 @@ export function entryShortId(entry: OcsNameEntry): string {
   if (entry.kind === "opencode") return opencodeTargetName(entry.id);
   if (entry.kind === "hermes") return hermesTargetName(entry.id);
   if (entry.kind === "grok") return grokTargetName(entry.id);
+  if (entry.kind === "antigravity") return agyWindowTargetName(entry.id);
   return `${entry.kind}-${entry.id.slice(0, 8).toLowerCase()}`;
 }
 
@@ -90,6 +94,7 @@ function parseEntry(value: unknown, key: string): OcsNameEntry | null {
   if (e.kind === "pi" && isPiSessionId(e.id)) return e as unknown as OcsNameEntry;
   if (e.kind === "hermes" && isHermesSessionKey(e.id)) return e as unknown as OcsNameEntry;
   if (e.kind === "grok" && isGrokSessionId(e.id)) return e as unknown as OcsNameEntry;
+  if (e.kind === "antigravity" && isAgyConversationId(e.id)) return e as unknown as OcsNameEntry;
   return null;
 }
 
@@ -142,6 +147,7 @@ export type NameOwner =
   | { kind: "opencode"; id: string }
   | { kind: "pi"; id: string }
   | { kind: "grok"; id: string }
+  | { kind: "antigravity"; id: string }
   | { kind: "hermes"; id: string };
 
 function entryMatchesOwner(entry: OcsNameEntry, owner: NameOwner): boolean {
