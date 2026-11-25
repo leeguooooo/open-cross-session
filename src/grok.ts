@@ -23,14 +23,14 @@ export function selfGrokSessionId(env: NodeJS.ProcessEnv = process.env): string 
   if (typeof id !== "string" || !UUID.test(id)) return null;
   // Nested agents inherit each other's env. Grok stamps this id per tool call;
   // when host markers conflict, prefer the nearest actual host process.
-  if (env.CODEX_THREAD_ID || env.CLAUDE_CODE_SESSION_ID || env.OCS_PI_SESSION_ID || env.PI_SESSION_ID || env.HERMES_SESSION_ID) {
+  if (env.CODEX_THREAD_ID || env.CLAUDE_CODE_SESSION_ID || env.OCS_PI_SESSION_ID || env.PI_SESSION_ID || env.HERMES_SESSION_ID || env.ANTIGRAVITY_CONVERSATION_ID) {
     const table = psTable(env);
     let pid = process.ppid;
     for (let depth = 0; depth < 64; depth++) {
       const p = table.get(pid); if (!p) return null;
       const name = basename(p.comm).replace(/\.exe$/i, "");
       if (/^grok(?:-\d[^/]*)?$/.test(name)) return id.toLowerCase();
-      if (/^(codex|claude|pi|hermes)$/.test(name) || /\/(?:ChatGPT|Claude)\.app\//.test(p.comm)) return null;
+      if (/^(codex|claude|pi|hermes|agy)$/.test(name) || /\/(?:ChatGPT|Claude)\.app\//.test(p.comm)) return null;
       if (p.ppid === pid) break;
       pid = p.ppid;
     }

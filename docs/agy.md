@@ -122,3 +122,11 @@ How it works, and what it does not promise:
   The token travels in the environment, never in argv.
 - **Sandbox.** In agy's sandboxed mode, the agent may need your approval to
   run ocs outside the sandbox.
+- **Names.** A name given with `ocs rename` belongs to the conversation. After
+  `/clear` the window has a new address, and the name does not follow it.
+- **Requirements and status.** Discovery and the checks before each send need
+  `lsof` and `ps` (on Linux, install `lsof`). Windows windows are not listed.
+  Verified on macOS with agy 1.4.7 and 1.5.16; Linux and LAN delivery to a
+  window have not yet been verified on real hosts. This relies on agy
+  internals that are not a documented interface. If an agy update changes
+  them, ocs reports the window as unavailable and sends nothing.

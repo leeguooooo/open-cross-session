@@ -9,7 +9,7 @@ import { listOpenCodeSessions, selfOpenCodeSessionId, opencodeTargetName, openco
 import { spawnSync } from "node:child_process";
 import { findAgyWorker } from "./agy.ts";
 import { grokSessionIdFromTarget, grokTargetName, selfGrokSessionId, type GrokSession } from "./grok.ts";
-import { AGY_SHORT_TARGET_RE, agyConversationIdFromTarget, agyWindowShortId, agyWindowTargetName, listAgyWindows, selfAgyConversationId, type AgyWindow } from "./agy-session.ts";
+import { AGY_SHORT_TARGET_RE, agyConversationIdFromTarget, agyWindowShortId, agyWindowTargetName, resolveAgyShortTarget, selfAgyConversationId, type AgyWindow } from "./agy-session.ts";
 import { createHash } from "node:crypto";
 import { readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -783,15 +783,11 @@ export function resolveDmTarget(
   if (agyId !== null) return { kind: "antigravity", name: agyWindowTargetName(agyId), identity: `antigravity:${agyId}`, agyConversationId: agyId };
   if (AGY_SHORT_TARGET_RE.test(target)) {
     // Short alias: only a live window can expand it; two windows sharing a prefix must be disambiguated.
-    const prefix = target.slice(4).toLowerCase();
-    const matches = listAgyWindows({ env }).windows.filter((w) => w.conversationId.startsWith(prefix));
-    if (matches.length > 1) return { kind: "antigravity", name: target.toLowerCase(), identity: `name:${target.toLowerCase()}`,
-      ambiguousNameTargets: matches.map((w) => `${agyWindowTargetName(w.conversationId)}(pid ${w.pid}, cwd ${w.cwd ?? "?"})`) };
-    if (matches.length === 1) {
-      const id = matches[0]!.conversationId;
-      return { kind: "antigravity", name: agyWindowTargetName(id), identity: `antigravity:${id}`, agyConversationId: id, via: "short-id" };
-    }
-    return null;
+    const short = resolveAgyShortTarget(target, { env });
+    if (short === null) return null;
+    if ("ambiguous" in short) return { kind: "antigravity", name: target.toLowerCase(), identity: `name:${target.toLowerCase()}`,
+      ambiguousNameTargets: short.ambiguous.map((w) => `${agyWindowTargetName(w.conversationId)}(pid ${w.pid}, cwd ${w.cwd ?? "?"})`) };
+    return { kind: "antigravity", name: agyWindowTargetName(short.id), identity: `antigravity:${short.id}`, agyConversationId: short.id, via: "short-id" };
   }
   const grokId = grokSessionIdFromTarget(target);
   if (grokId !== null) return { kind: "grok", name: grokTargetName(grokId), identity: `grok:${grokId}`, grokSessionId: grokId };

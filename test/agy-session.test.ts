@@ -7,7 +7,14 @@ import {
 } from "../src/agy-session.ts";
 import { resolveDmTarget, selfIdentity } from "../src/roster.ts";
 import { isReservedOcsName } from "../src/names.ts";
-import { LAN_DAEMON_ENV_STRIP } from "../src/lan-daemon.ts";
+import { handleLanDm, LAN_DAEMON_ENV_STRIP } from "../src/lan-daemon.ts";
+import { OCS_IDENTITY_RE } from "../src/store.ts";
+import { entryCapabilities, parseCapabilities } from "../src/capabilities.ts";
+import { selfGrokSessionId } from "../src/grok.ts";
+import { resolveAgyShortTarget } from "../src/agy-session.ts";
+import type { LanPeer } from "../src/lan-store.ts";
+import { existsSync } from "node:fs";
+const POSIX = process.platform !== "win32";
 import { autoCleanupTempDirs, tempDir } from "./tmp";
 autoCleanupTempDirs();
 
@@ -100,8 +107,10 @@ describe("agy interactive windows (#89)", () => {
     const reg = registerSelfAgyWindow(shellEnv, deps, 4242);
     expect(reg).toMatchObject({ conversationId: CONV, pid: PID, registered: true });
     const path = join(home, "agy-windows", PID + ".json");
-    expect(statSync(path).mode & 0o777).toBe(0o600);
-    expect(statSync(join(home, "agy-windows")).mode & 0o777).toBe(0o700);
+    if (POSIX) {
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(statSync(join(home, "agy-windows")).mode & 0o777).toBe(0o700);
+    }
     expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({ pid: PID, start: START, lsAddress: "localhost:54284", token: TOKEN });
     expect(listAgyWindows(deps).windows[0]!.registered).toBe(true);
     expect(selfAgyConversationId(shellEnv, deps, 4242)).toBe(CONV);
@@ -181,7 +190,7 @@ describe("agy interactive windows (#89)", () => {
     expect(outcome({ status: 1, started: true, stdout: JSON.stringify({ error: "rpc error: code = Internal" }) })).toBe("unknown-outcome");
   });
 
-  test("an unsafe registration file is ignored", () => {
+  test.skipIf(!POSIX)("an unsafe registration file is ignored", () => {
     const s = setup();
     registerSelfAgyWindow(s.shellEnv, s.deps, 4242);
     const path = join(s.home, "agy-windows", PID + ".json");
@@ -208,5 +217,54 @@ describe("agy interactive windows (#89)", () => {
     for (const key of ["ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_CSRF_TOKEN", "ANTIGRAVITY_LS_ADDRESS", "ANTIGRAVITY_AGENT"]) {
       expect(LAN_DAEMON_ENV_STRIP).toContain(key);
     }
+  });
+
+  test("store, capabilities and LAN accept the new identity and wake states", () => {
+    expect(OCS_IDENTITY_RE.test("antigravity:" + CONV)).toBe(true);
+    expect(OCS_IDENTITY_RE.test("antigravity:75e09adf")).toBe(false);
+    const entry = (registered: boolean) => ({ kind: "antigravity" as const, target: agyWindowTargetName(CONV), shortId: agyWindowShortId(CONV),
+      conversationId: CONV, pid: PID, cwd: null, registered, self: false });
+    expect(entryCapabilities(entry(true), { codexQueue: false })).toMatchObject({ wake: "available", busyDelivery: "host-controlled", deliveryReceipt: "none" });
+    const off = entryCapabilities(entry(false), { codexQueue: false });
+    expect(off.wake).toBe("unavailable");
+    expect(parseCapabilities(off)).toEqual(off);
+  });
+
+  test("short alias expands only to one live window", () => {
+    const { deps } = setup({ lockHolders: () => new Map([[CONV, [PID]], ["75e09adf-0000-4000-8000-000000000000", [PID]]]) });
+    expect(resolveAgyShortTarget("agy-75e09adf", deps)).toMatchObject({ ambiguous: [{ conversationId: CONV }, {}] });
+    expect(resolveAgyShortTarget("agy-0932de4b", deps)).toBeNull();
+    const single = setup();
+    expect(resolveAgyShortTarget("agy-75E09ADF", single.deps)).toEqual({ id: CONV });
+    expect(resolveAgyShortTarget("agy-" + CONV, single.deps)).toBeNull();
+  });
+
+  test("a remote DM to a window that is not open stores nothing", async () => {
+    const { env, home } = setup();
+    const peer = { fingerprint: "a".repeat(52), label: "other" } as LanPeer;
+    const r = await handleLanDm({ op: "dm", from: "reviewer", from_key: "reviewer", to: "agy-" + CONV, body: "must not store" } as never, peer, "en",
+      { ...env, CODEX_HOME: join(home, "codex"), OCS_CLAUDE_NATIVE_SESSIONS_DIR: join(home, "claude") });
+    expect(r).toMatchObject({ ok: false, error: "not-found" });
+    expect(existsSync(join(home, "channels"))).toBe(false);
+  });
+
+  test("success is read from stdout; stderr noise does not make it unknown", () => {
+    const outcome = (stdout: string, stderr: string, status = 0) => {
+      const s = setup({ run: () => ({ status, stdout, stderr, started: true }) });
+      registerSelfAgyWindow(s.shellEnv, s.deps, 4242);
+      const r = wakeAgyWindow(CONV, "hello", s.deps);
+      return r.ok ? "accepted" : r.reason;
+    };
+    const ok = JSON.stringify({ response: { sendMessage: { recipientId: CONV } } });
+    expect(outcome(ok, "W1125 warning: something {odd}")).toBe("accepted");
+    expect(outcome("", JSON.stringify({ error: "rpc error: code = Unauthenticated desc = invalid CSRF token" }), 1)).toBe("unavailable");
+    expect(outcome("", ok, 0)).toBe("unknown-outcome"); // an echo on stderr is not a success
+  });
+
+  test("an agy window's marker makes Grok check its ancestry instead of trusting GROK_SESSION_ID", () => {
+    const grokId = "12345678-1234-4567-8123-123456789abc";
+    expect(selfGrokSessionId({ GROK_SESSION_ID: grokId } as NodeJS.ProcessEnv)).toBe(grokId);
+    // This test process has no grok ancestor, so with a competing agy marker it must not claim Grok.
+    expect(selfGrokSessionId({ GROK_SESSION_ID: grokId, ANTIGRAVITY_CONVERSATION_ID: CONV } as NodeJS.ProcessEnv)).toBeNull();
   });
 });

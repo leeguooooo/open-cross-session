@@ -60,7 +60,7 @@ export interface AgyWindowDeps {
   ancestors?: () => ReadonlyMap<number, { ppid: number; comm: string }>;
   alive?: (pid: number) => boolean;
   run?: (exe: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs: number) =>
-    { status: number | null; stdout: string; error?: string; started: boolean };
+    { status: number | null; stdout: string; stderr?: string; error?: string; started: boolean };
 }
 
 function sysEnv(): NodeJS.ProcessEnv { return { PATH: process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin", LC_ALL: "C" }; }
@@ -126,7 +126,7 @@ function defaultRun(exe: string, args: string[], env: NodeJS.ProcessEnv, timeout
   const code = (r.error as NodeJS.ErrnoException | undefined)?.code;
   // ENOENT / EACCES: nothing started, so nothing was sent.
   const started = r.error === undefined || (code !== "ENOENT" && code !== "EACCES");
-  return { status: r.status, stdout: (r.stdout ?? "") + (r.stderr ?? ""),
+  return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "",
     ...(r.error !== undefined ? { error: String(code ?? r.error) } : r.signal !== null ? { error: "killed by " + r.signal } : {}), started };
 }
 
@@ -264,6 +264,15 @@ export function listAgyWindows(deps: AgyWindowDeps = {}): { windows: AgyWindow[]
   return { windows };
 }
 
+/** `agy-<8hex>` → the one live window with that prefix; several = ambiguous; none = null. */
+export function resolveAgyShortTarget(target: string, deps: AgyWindowDeps = {}): { id: string } | { ambiguous: AgyWindow[] } | null {
+  const m = AGY_SHORT_TARGET_RE.exec(target);
+  if (m === null) return null;
+  const matches = listAgyWindows(deps).windows.filter((w) => w.conversationId.startsWith(m[1]!.toLowerCase()));
+  if (matches.length > 1) return { ambiguous: matches };
+  return matches.length === 1 ? { id: matches[0]!.conversationId } : null;
+}
+
 /** The host wraps the text in <SYSTEM_MESSAGE> and does not escape it. */
 export function neutralizeAgyNote(note: string): string {
   return note.replace(/<(\/?)([A-Z][A-Z0-9_]*)(?=[\s>/]|$)/g, "‹$1$2");
@@ -294,10 +303,13 @@ export function wakeAgyWindow(conversationId: string, note: string, deps: AgyWin
     ANTIGRAVITY_LS_ADDRESS: reg.lsAddress, ANTIGRAVITY_CSRF_TOKEN: reg.token };
   const r = (deps.run ?? defaultRun)(exe, ["agentapi", "send-message", "--title=ocs", id, neutralizeAgyNote(note)], childEnv, AGY_WINDOW_WAKE_TIMEOUT_MS);
   if (!r.started) return { ok: false, reason: "unavailable", detail: r.error ?? "agy did not start" };
-  let reply: { response?: { sendMessage?: { recipientId?: unknown } }; error?: unknown } | null = null;
-  try { reply = JSON.parse(r.stdout.slice(r.stdout.indexOf("{"))); } catch { reply = null; }
+  type Reply = { response?: { sendMessage?: { recipientId?: unknown } }; error?: unknown } | null;
+  const parse = (text: string): Reply => { try { return JSON.parse(text.slice(text.indexOf("{"))) as Reply; } catch { return null; } };
+  // Success is read from stdout only: a stray stderr line must not turn an accepted send into unknown.
+  const reply = parse(r.stdout);
   if (r.error === undefined && r.status === 0 && reply?.error === undefined && reply?.response?.sendMessage?.recipientId === id) return { ok: true };
-  const error = typeof reply?.error === "string" ? reply.error : "";
+  const errorReply = reply?.error !== undefined ? reply : parse(r.stderr ?? "");
+  const error = typeof errorReply?.error === "string" ? errorReply.error : "";
   // Rejected before the handler ran: the request carried no message into the conversation.
   if (r.error === undefined && /Unauthenticated|connection refused|is not set|no such host/i.test(error)) return { ok: false, reason: "unavailable", detail: error.slice(0, 200) };
   return { ok: false, reason: "unknown-outcome", detail: (r.error ?? (error || "unexpected agentapi reply")).slice(0, 200) };
