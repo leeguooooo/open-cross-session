@@ -52,7 +52,7 @@ Thread: <read command>
     `[ocs wake]`、`[ocs 唤醒]`、`[Cross-session idle notice]`、`[跨会话空闲通知]`、
     `[ocs delivery notice]`、`[ocs 投递通知]`（v0.7.0 起，§6）的行，前面加 `> `。
     除此之外逐字。4096 / 512 字节阈值按中和后的正文计，`<total>` 仍报原文字节数。
-  - **宿主专属中和（v0.9.23 起）**：交互式 Antigravity 窗口（docs/agy.md）把整条 note 放进不转义的
+  - **宿主专属中和（v0.9.24 起）**：交互式 Antigravity 窗口（docs/agy.md）把整条 note 放进不转义的
     `<SYSTEM_MESSAGE>` 包装里，所以投给它的整条 note 还要再过一遍：形如 `<` 或 `</` 后接大写字母开头的
     `[A-Z][A-Z0-9_]*` 标签名（后接空白、`>`、`/` 或结尾）的 `<` 换成 `‹`。其它宿主不做这一步。
 - `Reply:` 后是**可直接复制执行**的命令：
