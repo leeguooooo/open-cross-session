@@ -31,6 +31,7 @@ AgentParty 已停止维护。原定抽取公共包、向 AgentParty 单向同步
 | Hermes | 本地宿主 WebSocket | 使用 queued:true；每次重读凭据并查询活动会话 |
 | Grok Build | 现有共享 leader 的原生 IPC | 完整会话 UUID 寻址；sendNow:false 排队；精确 prompt ID 接纳后才报 accepted，写出后无确认为 unknown |
 | Antigravity agy | 可选 headless 接收端 | SQLite 队列串行执行，每频道保存 conversation ID，最终结果自动回传 |
+| Antigravity 交互窗口 | 窗口自己的本地服务（`agy agentapi send-message`） | presence 锁发现；窗口内跑过 ocs 才登记可私聊，每次发送前重证存活；回显不证明送达 |
 | cmux | 可选终端 surface | 仅在精确匹配可验证时使用，不是硬依赖 |
 
 宿主接入失败时消息仍留在日志。未知结果不可重放；只在明确未投递时使用允许的降级路径。Desktop delegation 的载体任务可能不是实际发送者，真实来源始终保留在消息正文中。

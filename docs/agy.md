@@ -69,3 +69,56 @@ inspect the original channel and sequence before making another request.
 
 This carrier is opt-in and local by default. It neither starts LAN mode nor
 pairs computers; existing LAN authentication and trust limits still apply.
+
+
+## Interactive windows (#89)
+
+An `agy` window you opened yourself gets its own address, separate from the
+`agy` receiver above. macOS and Linux only.
+
+1. Ask the window's agent to run `ocs whoami` (or any ocs command). The output
+   is the window's address, `agy-<conversation-id>`; `ocs whoami --json` also
+   gives the short form `agy-<8hex>`, the native `conversationId`, and
+   `deliverable`. A `!` shell escape typed by a person does not work for this:
+   agy gives that shell none of the variables ocs needs.
+2. `ocs who` lists every open window under "Antigravity CLI windows". It marks
+   each one `dm` or `identify-only`; `ocs who --json` shows the same as
+   `capabilities.wake` (`available` / `unavailable`).
+3. `ocs dm agy-<8hex> "…"` (or `@agy-<8hex>` in `ocs send`) delivers into that
+   window's existing conversation. Its reply comes back through the normal
+   `Reply:` line, and `ocs rename` works as for other sessions.
+
+How it works, and what it does not promise:
+
+- **Discovery.** An open window's agy process holds
+  `~/.gemini/antigravity-cli/presence/<conversation-id>.lock`. ocs lists only
+  holders that are an interactive `agy` on a terminal: `agy -p` / `--print`,
+  subcommands, and processes without a tty are excluded. After `/clear`, the
+  window holds a new conversation id, and the old address stops resolving.
+- **Registration.** agy gives the window's tool shells the loopback address of
+  its own local server and a per-process token. When ocs runs there, it records
+  both in `$OCS_HOME/agy-windows/<pid>.json` (mode 0600), keyed by pid and
+  process start time. It records them only after checking that this pid holds
+  the conversation's lock and listens on that port. Until a window has
+  registered, it is identify-only, and DMs to it stay in the OCS channel.
+- **Delivery.** ocs runs `agy agentapi send-message` against that window's own
+  server. agentapi answers "sent" for any id, including one nobody has open, so
+  ocs does not trust that answer as proof. Before every send it checks again
+  that the same process (pid and start time) holds the lock and listens on the
+  registered port. If any check fails, nothing is sent. The child process gets
+  only the address and token. A busy window takes the message into its current
+  turn without cancelling it.
+- **Outcome.** `accepted` means the window's server took the message. It does
+  not mean the agent has read it. A run that times out or answers anything
+  unexpected is `unknown` and is never resent: inspect the original channel
+  and seq instead.
+- **Framing.** agy shows the message to the model as a `<SYSTEM_MESSAGE>` from
+  `sender=system` and does not escape the text. Before sending, ocs neutralizes
+  every uppercase pseudo-tag in the note (`<SYSTEM_MESSAGE>`, `<USER_REQUEST>`,
+  …) to `‹…` (docs/wake-protocol.md §1). The note's first line still names the
+  ocs sender.
+- **Exposure.** agentapi takes the message text only as a command-line
+  argument, so other local users can see it in `ps` while it is being sent.
+  The token travels in the environment, never in argv.
+- **Sandbox.** In agy's sandboxed mode, the agent may need your approval to
+  run ocs outside the sandbox.

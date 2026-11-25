@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Interactive Antigravity CLI windows now get their own address (#89). `ocs who` lists each open `agy` window as `agy-<8hex>` and says whether it can take a DM or is identify-only. After the window's agent runs any ocs command (for example `ocs whoami`), `ocs dm agy-<8hex>` and `@agy-<8hex>` deliver into that window's existing conversation, and replies from the window are identified automatically. `ocs whoami --json` inside a window also gives the native `conversationId`. Before every send, ocs checks that the window's own agy process still holds the conversation and serves the registered local port; if a check fails, nothing is sent. A send whose result is unknown is never retried. Supported on macOS and Linux. The plain `agy` address is still the headless receiver. See docs/agy.md
+
 ## 0.9.23
 
 - LAN trust that runs out no longer makes the peer vanish (#79). `ocs lan peers` and `ocs who --lan` keep listing it as `trust expired at <time>` with the renew command, and `ocs lan trust <peer> --for 8h | --forever` renews it without pairing again; the handshake still refuses it until then. `ocs lan status` and `ocs doctor` count such peers and point at `ocs lan peers`. `ocs dm x@peer` to an expired peer names the expiry. The machine that gets refused is now told to fix it on the other machine (renew there, or pair again if it is not listed) instead of only "pair again". `ocs who --lan` and `ocs dm …@peer` note once when this machine's trust for a peer ends within 30 minutes. Help shows that `--forever` cannot be combined with `--once` / `--for`. See docs/lan.md

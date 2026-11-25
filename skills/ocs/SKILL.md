@@ -88,6 +88,11 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
   Incoming messages use OpenCode's durable native queue with `delivery: "queue"`,
   preserving the active turn. An accepted queue item is not a read/completion receipt.
   V1's plugin API is not supported; upgrade OpenCode before installing this plugin.
+- Interactive Antigravity CLI (`agy`) windows appear in `ocs who` as `agy-<8hex>`
+  (full form `agy-<conversation-id>`). A window becomes DM-able once its agent runs
+  any ocs command there (e.g. ask it to run `ocs whoami`); until then it is listed
+  as identify-only. Messages arrive as agy agent messages; a busy window takes them
+  into its current turn without cancelling it. macOS/Linux only. `agy` alone is still the headless receiver.
 - Grok Build sessions started with `grok --leader` appear in `ocs who` as
   `grok-<full-session-uuid>`. DM, @mentions, rename and paired LAN replies use
   the same address. Grok's `GROK_SESSION_ID` identifies replies automatically.

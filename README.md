@@ -239,6 +239,11 @@ the final response back to the requester. It uses the agy CLI's existing login
 and permissions. Windows can run the receiver too; paired LAN clients can delegate to it.
 See [receiver setup and delivery semantics](docs/agy.md).
 
+Windows of `agy` you opened yourself (macOS / Linux) appear in `ocs who` as
+`agy-<8hex>`. Ask a window's agent to run `ocs whoami` once; after that,
+`ocs dm agy-<8hex> "…"` reaches that window's existing conversation. See
+[interactive windows](docs/agy.md#interactive-windows-89).
+
 ## Who can be woken
 
 `ocs who` lists live sessions with a supported discovery/wake carrier, not every

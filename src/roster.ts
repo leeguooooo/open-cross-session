@@ -9,6 +9,7 @@ import { listOpenCodeSessions, selfOpenCodeSessionId, opencodeTargetName, openco
 import { spawnSync } from "node:child_process";
 import { findAgyWorker } from "./agy.ts";
 import { grokSessionIdFromTarget, grokTargetName, selfGrokSessionId, type GrokSession } from "./grok.ts";
+import { AGY_SHORT_TARGET_RE, agyConversationIdFromTarget, agyWindowShortId, agyWindowTargetName, listAgyWindows, selfAgyConversationId, type AgyWindow } from "./agy-session.ts";
 import { createHash } from "node:crypto";
 import { readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -143,6 +144,8 @@ export function resolveSelfName(env: NodeJS.ProcessEnv = process.env): string | 
   if (typeof explicit === "string" && NAME_RE.test(explicit)) return explicit;
   const grokId = selfGrokSessionId(env);
   if (grokId !== null) return grokTargetName(grokId);
+  const agyId = selfAgyConversationId(env);
+  if (agyId !== null) return agyWindowTargetName(agyId);
   const piSessionId = env[OCS_PI_SESSION_ID_ENV];
   if (typeof piSessionId === "string" && isPiSessionId(piSessionId)) return piTargetName(piSessionId);
   const pid = findSelfClaudePid(env);
@@ -379,6 +382,8 @@ export type RosterEntry =
   | { kind: "opencode"; target: string; shortId: string; sessionId: string; name: string | null; pid: number; cwd: string; self: boolean; ocsName?: string }
   | { kind: "grok"; target: string; sessionId: string; cwd: string; title: string | null; status: string; self: boolean; ocsName?: string }
   | { kind: "agy"; target: "agy"; pid: number; cwd: string; status: string; self: boolean; ocsName: "agy" }
+  /** Interactive agy window (#89). registered=false: identify-only until its agent runs ocs once. */
+  | { kind: "antigravity"; target: string; shortId: string; conversationId: string; pid: number; cwd: string | null; registered: boolean; self: boolean; ocsName?: string }
   | { kind: "cmux"; ref: string; title: string };
 
 export interface Roster {
@@ -394,7 +399,8 @@ export interface Roster {
  * `hermes`：调用方先 await `listHermesSessions()` 拿到的活会话（要连 WebSocket，这里是同步的）。
  * 不传就不列 Hermes。
  */
-export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readonly HermesSession[] = [], grok: readonly GrokSession[] = []): Roster {
+export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readonly HermesSession[] = [], grok: readonly GrokSession[] = [],
+  agyWindows: readonly AgyWindow[] = []): Roster {
   const entries: RosterEntry[] = [];
   const agy = findAgyWorker(env);
   if (agy !== null) entries.push({ kind: "agy", target: "agy", pid: agy.pid, cwd: agy.cwd, status: agy.status, self: env.OCS_NAME === "agy", ocsName: "agy" });
@@ -506,6 +512,13 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
     entries.push({ kind: "grok", target: grokTargetName(s.id), sessionId: s.id, cwd: s.cwd, title: s.title, status: s.status,
       self: selfGrokSessionId(env) === s.id, ...(ocsName === undefined ? {} : { ocsName }) });
   }
+  const selfAgy = agyWindows.length === 0 ? null : selfAgyConversationId(env);
+  for (const w of agyWindows) {
+    const ocsName = ocsNameFor({ kind: "antigravity", id: w.conversationId }, names)?.name;
+    entries.push({ kind: "antigravity", target: agyWindowTargetName(w.conversationId), shortId: agyWindowShortId(w.conversationId),
+      conversationId: w.conversationId, pid: w.pid, cwd: w.cwd, registered: w.registered, self: selfAgy === w.conversationId,
+      ...(ocsName === undefined ? {} : { ocsName }) });
+  }
   const cmux = cmuxAvailable();
   if (cmux) {
     for (const s of listCmuxSurfaces()) {
@@ -515,7 +528,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
   return { entries, codexIpc, codexQueue: codexQueueAvailable(env), cmux, home: ocsHome(env) };
 }
 
-export type DmTargetKind = "opencode" | "claude" | "codex-task" | "pi" | "hermes" | "grok" | "agy" | "cmux";
+export type DmTargetKind = "opencode" | "claude" | "codex-task" | "pi" | "hermes" | "grok" | "agy" | "antigravity" | "cmux";
 
 export interface ResolvedDmTarget {
   kind: DmTargetKind;
@@ -552,6 +565,7 @@ export interface ResolvedDmTarget {
   /** Hermes 会话的持久 id。在不在线只有投递时连宿主才知道（解析是同步的）。 */
   hermesSessionKey?: string;
   grokSessionId?: string;
+  agyConversationId?: string;
   openCodeSessionId?: string;
   openCodeSession?: OpenCodeSessionRegistration;
   cmuxRef?: string;
@@ -573,6 +587,8 @@ export function selfIdentity(from: string): string {
   if (ocId !== null) return `opencode:${ocId}`;
   const grokId = grokSessionIdFromTarget(from);
   if (grokId !== null) return `grok:${grokId}`;
+  const agyId = agyConversationIdFromTarget(from);
+  if (agyId !== null) return `antigravity:${agyId}`;
   const piSessionId = piSessionIdFromTarget(from);
   if (piSessionId !== null) return `pi:${piSessionId}`;
   const hermesKey = hermesSessionKeyFromTarget(from);
@@ -655,6 +671,7 @@ function resolveNamedTarget(
   if (named.kind === "hermes") return { ...resolveDmTarget(hermesTargetName(named.id), env)!, via: "ocs-name" };
   if (named.kind === "opencode") return { ...resolveDmTarget(opencodeTargetName(named.id), env)!, via: "ocs-name" };
   if (named.kind === "grok") return { ...resolveDmTarget(grokTargetName(named.id), env)!, via: "ocs-name" };
+  if (named.kind === "antigravity") return { ...resolveDmTarget(agyWindowTargetName(named.id), env)!, via: "ocs-name" };
   const live = sessions.find((candidate) => claudeEntryMatches(named, candidate));
   if (live !== undefined) return { ...claudeTarget(live, sessions, env), via: "ocs-name" };
   return {
@@ -684,6 +701,8 @@ export function shadowFreeWorkspaceAlias(
 export function selfNameOwner(env: NodeJS.ProcessEnv = process.env): NameOwner | null {
   const grokId = selfGrokSessionId(env);
   if (grokId !== null) return { kind: "grok", id: grokId };
+  const agyId = selfAgyConversationId(env);
+  if (agyId !== null) return { kind: "antigravity", id: agyId };
   const piSessionId = env[OCS_PI_SESSION_ID_ENV];
   if (typeof piSessionId === "string" && isPiSessionId(piSessionId)) {
     return { kind: "pi", id: piSessionId.toLowerCase() };
@@ -719,7 +738,7 @@ export function canonicalWakeAddress(address: string, env: NodeJS.ProcessEnv = p
   ) return address;
   const shortId = CLAUDE_SHORT_TARGET_RE.test(address) ||
     CODEX_SHORT_TARGET_RE.test(address) ||
-    PI_SHORT_TARGET_RE.test(address) || /^oc-[0-9a-f]{8}$/.test(address);
+    PI_SHORT_TARGET_RE.test(address) || /^oc-[0-9a-f]{8}$/.test(address) || AGY_SHORT_TARGET_RE.test(address);
   // 只在确实可能改写时才走完整解析：普通名字的解析会顺带写工作区索引。
   if (!shortId && readOcsName(address, env) === null) return address;
   const resolved = resolveDmTarget(address, env);
@@ -734,6 +753,7 @@ export function canonicalWakeAddress(address: string, env: NodeJS.ProcessEnv = p
   if (resolved.kind === "hermes" && resolved.hermesSessionKey !== undefined) return hermesTargetName(resolved.hermesSessionKey);
   if (resolved.kind === "opencode" && resolved.openCodeSessionId !== undefined) return opencodeTargetName(resolved.openCodeSessionId);
   if (resolved.kind === "grok" && resolved.grokSessionId !== undefined) return grokTargetName(resolved.grokSessionId);
+  if (resolved.kind === "antigravity" && resolved.agyConversationId !== undefined) return agyWindowTargetName(resolved.agyConversationId);
   if (resolved.kind === "claude" && resolved.claude?.name) return resolved.claude.name;
   return address;
 }
@@ -758,6 +778,20 @@ export function resolveDmTarget(
     if (id === undefined) return null;
     return { kind: "opencode", name: opencodeTargetName(id), identity: `opencode:${id}`, openCodeSessionId: id,
       ...(matches[0] === undefined ? {} : { openCodeSession: matches[0] }) };
+  }
+  const agyId = agyConversationIdFromTarget(target);
+  if (agyId !== null) return { kind: "antigravity", name: agyWindowTargetName(agyId), identity: `antigravity:${agyId}`, agyConversationId: agyId };
+  if (AGY_SHORT_TARGET_RE.test(target)) {
+    // Short alias: only a live window can expand it; two windows sharing a prefix must be disambiguated.
+    const prefix = target.slice(4).toLowerCase();
+    const matches = listAgyWindows({ env }).windows.filter((w) => w.conversationId.startsWith(prefix));
+    if (matches.length > 1) return { kind: "antigravity", name: target.toLowerCase(), identity: `name:${target.toLowerCase()}`,
+      ambiguousNameTargets: matches.map((w) => `${agyWindowTargetName(w.conversationId)}(pid ${w.pid}, cwd ${w.cwd ?? "?"})`) };
+    if (matches.length === 1) {
+      const id = matches[0]!.conversationId;
+      return { kind: "antigravity", name: agyWindowTargetName(id), identity: `antigravity:${id}`, agyConversationId: id, via: "short-id" };
+    }
+    return null;
   }
   const grokId = grokSessionIdFromTarget(target);
   if (grokId !== null) return { kind: "grok", name: grokTargetName(grokId), identity: `grok:${grokId}`, grokSessionId: grokId };

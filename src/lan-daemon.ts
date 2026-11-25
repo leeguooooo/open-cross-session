@@ -44,6 +44,7 @@ import { claudeShortId, entryShortId, listOcsNames, ocsNameFor, readOcsName } fr
 import { buildRoster, resolveDmTarget, type ResolvedDmTarget } from "./roster.ts";
 import { findAgyWorker } from "./agy.ts";
 import { grokTargetName, listGrokSessions } from "./grok.ts";
+import { agyWindowTargetName, listAgyWindows } from "./agy-session.ts";
 import { codexThreadLivePid } from "./codex-queue.ts";
 import { primeCodexDaemon } from "./codex-daemon.ts";
 import { hermesTargetName, listHermesSessions } from "./hermes.ts";
@@ -68,6 +69,8 @@ export const LAN_DAEMON_ENV_STRIP = [
   "OCS_NAME",
   "OCS_PI_SESSION_ID", "PI_SESSION_ID", "OCS_OPENCODE_SESSION_ID", "OPENCODE_SESSION_ID",
   "GROK_SESSION_ID",
+  "ANTIGRAVITY_AGENT", "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_TRAJECTORY_ID", "ANTIGRAVITY_SOURCE_METADATA",
+  "ANTIGRAVITY_LS_ADDRESS", "ANTIGRAVITY_CSRF_TOKEN",
   "HERMES_SESSION_ID",
   "HERMES_SESSION_SOURCE",
   "HERMES_UI_SESSION_ID",
@@ -125,12 +128,16 @@ export function localAddressOf(
     const key = grokTargetName(resolved.grokSessionId);
     return { key, display: ocsNameFor({ kind: "grok", id: resolved.grokSessionId }, names)?.name ?? key };
   }
+  if (resolved.kind === "antigravity" && resolved.agyConversationId !== undefined) {
+    const key = agyWindowTargetName(resolved.agyConversationId);
+    return { key, display: ocsNameFor({ kind: "antigravity", id: resolved.agyConversationId }, names)?.name ?? key };
+  }
   return null;
 }
 
 export interface LanWhoEntry {
   address: string;
-  kind: "opencode" | "claude" | "codex" | "pi" | "hermes" | "grok" | "agy";
+  kind: "opencode" | "claude" | "codex" | "pi" | "hermes" | "grok" | "agy" | "antigravity";
   status?: string;
   label?: string;
   capabilities?: Capabilities;
@@ -156,7 +163,7 @@ export async function lanWhoEntries(env: NodeJS.ProcessEnv = process.env): Promi
   await primeCodexDaemon(env);
   const hermes = await listHermesSessions({ env });
   const grok = await listGrokSessions({ env });
-  const roster = buildRoster(env, hermes.available ? hermes.sessions : [], grok.sessions);
+  const roster = buildRoster(env, hermes.available ? hermes.sessions : [], grok.sessions, listAgyWindows({ env }).windows);
   const claimed = await desktopClaimed(
     roster.entries.flatMap((e) => (e.kind === "codex-task" && e.livePid === null ? [e.threadId] : [])),
     env,
@@ -171,6 +178,10 @@ export async function lanWhoEntries(env: NodeJS.ProcessEnv = process.env): Promi
     }
     if (entry.kind === "agy") {
       out.push({ capabilities, address: "agy", kind: "agy", status: entry.status, label: "Antigravity CLI worker" });
+      continue;
+    }
+    if (entry.kind === "antigravity") {
+      out.push({ capabilities, address: entry.ocsName ?? entry.target, kind: "antigravity", status: entry.registered ? "dm" : "identify-only" });
       continue;
     }
     if (entry.kind === "grok") {
@@ -269,6 +280,10 @@ export async function handleLanDm(
   }
   if (resolved.kind === "opencode" && resolved.openCodeSession === undefined) return { ok: false, error: "not-found" };
   if (resolved.kind === "pi" && resolved.piSession === undefined) return { ok: false, error: "not-found" };
+  if (resolved.kind === "antigravity") {
+    // Remote DMs only reach a live window this machine can actually deliver to.
+    if (!listAgyWindows({ env }).windows.some((w) => w.conversationId === resolved.agyConversationId && w.registered)) return { ok: false, error: "not-found" };
+  }
   if (resolved.kind === "grok") {
     const grok = await listGrokSessions({ env });
     if (!grok.sessions.some((s) => s.id === resolved.grokSessionId)) return { ok: false, error: "not-found" };
