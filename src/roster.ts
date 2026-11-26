@@ -383,7 +383,7 @@ export type RosterEntry =
   | { kind: "grok"; target: string; sessionId: string; cwd: string; title: string | null; status: string; self: boolean; ocsName?: string }
   | { kind: "agy"; target: "agy"; pid: number; cwd: string; status: string; self: boolean; ocsName: "agy" }
   /** Interactive agy window (#89). registered=false: identify-only until its agent runs ocs once. */
-  | { kind: "antigravity"; target: string; shortId: string; conversationId: string; pid: number; cwd: string | null; registered: boolean; self: boolean; ocsName?: string }
+  | { kind: "antigravity"; target: string; shortId: string; conversationId: string; pid: number; cwd: string | null; registered: boolean; self: boolean; ocsName?: string; acp?: true }
   | { kind: "cmux"; ref: string; title: string };
 
 export interface Roster {
@@ -517,7 +517,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
     const ocsName = ocsNameFor({ kind: "antigravity", id: w.conversationId }, names)?.name;
     entries.push({ kind: "antigravity", target: agyWindowTargetName(w.conversationId), shortId: agyWindowShortId(w.conversationId),
       conversationId: w.conversationId, pid: w.pid, cwd: w.cwd, registered: w.registered, self: selfAgy === w.conversationId,
-      ...(ocsName === undefined ? {} : { ocsName }) });
+      ...(ocsName === undefined ? {} : { ocsName }), ...(w.acp ? { acp: true as const } : {}) });
   }
   const cmux = cmuxAvailable();
   if (cmux) {
