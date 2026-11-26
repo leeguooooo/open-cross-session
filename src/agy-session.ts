@@ -40,7 +40,7 @@ export const AGY_WINDOW_WAKE_TIMEOUT_MS = 15000;
 const PROBE_TIMEOUT_MS = 3000;
 const NOTE_MAX_BYTES = 5120;
 /** agy subcommands; any of these as argv[1] is not an interactive window. */
-const SUBCOMMANDS = new Set(["agent", "agents", "agentapi", "changelog", "help", "install", "mcp", "mic-serve", "models",
+const SUBCOMMANDS = new Set(["acp", "agent", "agents", "agentapi", "changelog", "help", "install", "mcp", "mic-serve", "models",
   "plugin", "plugins", "remote-control", "update"]);
 
 export const isAgyConversationId = (id: string): boolean => UUID.test(id);

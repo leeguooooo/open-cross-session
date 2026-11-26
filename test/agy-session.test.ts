@@ -320,6 +320,7 @@ describe("agy ACP sessions (agy acp, e.g. Orca Bot)", () => {
     expect(isAcpAgy(proc({ args: "agy" }))).toBe(false);
     expect(isAcpAgy(proc({ comm: "/usr/local/bin/agy-proxy", args: "agy-proxy acp" }))).toBe(false);
     expect(isInteractiveAgy(proc({ tty: "??", args: ACP_ARGS }))).toBe(false);
+    expect(isInteractiveAgy(proc({ args: ACP_ARGS }))).toBe(false); // even on a pty
   });
 
   test("discovery: the one agy ACP holder of the brain dir; other holders are ignored", () => {
