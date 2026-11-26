@@ -5,6 +5,13 @@
 // OWN language server. Its loopback address and CSRF token exist only in the window's tool
 // shells, so a window becomes DM-able after its agent runs ocs once (self-registration below).
 //
+// ACP sessions (`agy acp`, e.g. Orca Bot): no presence lock and no tty. The process that hosts a
+// loaded session holds <app data>/brain/<conversation> open as a directory (with
+// --process-per-session that is the `agy acp --worker` child), its tool shells get
+// ANTIGRAVITY_LS_ADDRESS with an empty CSRF token, and agentapi send-message into that server
+// runs a turn whose output streams to the ACP client as session/update (probed on agy 1.5.16).
+// The brain-dir holder takes the place of the presence lock in every proof below.
+//
 // Invariants (CLAUDE.md iron rule 17):
 //   * agentapi echoes success for any id, even one no server owns (probed against agy 1.4.7 /
 //     1.5.16), so its reply is never the liveness proof. Before every send, re-prove: the
@@ -46,13 +53,16 @@ export function agyConversationIdFromTarget(target: string): string | null {
 }
 
 export interface AgyProc { pid: number; ppid: number; tty: string; comm: string; args: string; start: string; }
-export interface AgyWindow { conversationId: string; pid: number; cwd: string | null; registered: boolean; }
+/** acp: an `agy acp` session (proved by its brain dir), not an interactive window. */
+export interface AgyWindow { conversationId: string; pid: number; cwd: string | null; registered: boolean; acp?: true; }
 interface Registration { v: 1; pid: number; start: string; lsAddress: string; token: string; exe: string | null; registeredAt: string; }
 export interface AgyWindowDeps {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   /** conversation id → REG holder pids of <presence>/<id>.lock; null = the probe itself failed. */
   lockHolders?: (presenceDir: string) => Map<string, number[]> | null;
+  /** conversation id → pids holding <brain>/<id> open as a directory; null = the probe itself failed. */
+  brainHolders?: (brainDir: string) => Map<string, number[]> | null;
   proc?: (pid: number) => AgyProc | null;
   listener?: (pid: number, port: number) => boolean;
   cwdOf?: (pid: number) => string | null;
@@ -81,7 +91,10 @@ function defaultProc(pid: number): AgyProc | null {
   return { pid, ppid: Number(m[1]), tty: m[2]!, start: m[3]!, comm: m[4]!, args: (a.stdout ?? "").trim() };
 }
 
-function defaultLockHolders(dir: string): Map<string, number[]> | null {
+function defaultLockHolders(dir: string): Map<string, number[]> | null { return holdersIn(dir, "REG", /^([0-9a-f-]{36})\.lock$/i); }
+function defaultBrainHolders(dir: string): Map<string, number[]> | null { return holdersIn(dir, "DIR", /^([0-9a-f-]{36})$/i); }
+
+function holdersIn(dir: string, type: "REG" | "DIR", nameRe: RegExp): Map<string, number[]> | null {
   const r = spawnSync("lsof", ["-n", "-P", "-F", "pftn", "+d", dir], { encoding: "utf8", timeout: PROBE_TIMEOUT_MS, env: sysEnv() });
   if (r.error !== undefined || r.signal !== null) return null; // exit 1 = nobody holds anything
   const out = new Map<string, number[]>();
@@ -91,9 +104,9 @@ function defaultLockHolders(dir: string): Map<string, number[]> | null {
     const tag = line[0];
     if (tag === "p") { const n = Number(line.slice(1)); pid = Number.isSafeInteger(n) && n > 0 ? n : null; }
     else if (tag === "f") reg = false;
-    else if (tag === "t") reg = line.slice(1) === "REG";
+    else if (tag === "t") reg = line.slice(1) === type;
     else if (tag === "n" && pid !== null && reg) {
-      const m = /^([0-9a-f-]{36})\.lock$/i.exec(basename(line.slice(1)));
+      const m = nameRe.exec(basename(line.slice(1)));
       if (m === null || !UUID.test(m[1]!)) continue;
       const id = m[1]!.toLowerCase();
       const list = out.get(id) ?? [];
@@ -139,6 +152,25 @@ export function isInteractiveAgy(p: AgyProc): boolean {
   return !argv.some((a) => a === "-p" || a === "--print" || a === "--prompt" || a.startsWith("--print=") || a.startsWith("--prompt="));
 }
 
+/** An ACP stdio server (or its per-session worker). It has no tty; its sessions are proved by brain-dir holding. */
+export function isAcpAgy(p: AgyProc): boolean {
+  if (basename(p.comm).replace(/\.exe$/i, "") !== "agy") return false;
+  const argv = p.args.split(/\s+/).slice(1);
+  return argv[0] === "acp" && !argv.some((a) => a === "--login" || a === "-h" || a === "--help");
+}
+const hostKindOk = (p: AgyProc, acp: boolean): boolean => acp ? isAcpAgy(p) : isInteractiveAgy(p);
+/** Exactly one agy ACP process holds this conversation's brain dir; other holders (indexers, shells) don't count. */
+function acpOwner(holders: Map<string, number[]> | null, id: string, proc: (pid: number) => AgyProc | null,
+  cache = new Map<number, AgyProc | null>()): AgyProc | null {
+  const owners: AgyProc[] = [];
+  for (const pid of holders?.get(id) ?? []) {
+    if (!cache.has(pid)) cache.set(pid, proc(pid));
+    const p = cache.get(pid)!;
+    if (p !== null && isAcpAgy(p)) owners.push(p);
+  }
+  return owners.length === 1 ? owners[0]! : null;
+}
+
 function ownedPath(path: string, dir: boolean): boolean {
   try {
     const s = lstatSync(path);
@@ -156,7 +188,7 @@ function readRegistration(pid: number, env: NodeJS.ProcessEnv): Registration | n
     const r = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     if (r.v !== 1 || r.pid !== pid || typeof r.start !== "string" || r.start.length === 0 || r.start.length > 64 ||
         typeof r.lsAddress !== "string" || !LS_ADDRESS_RE.test(r.lsAddress) ||
-        typeof r.token !== "string" || !TOKEN_RE.test(r.token) ||
+        typeof r.token !== "string" || !(r.token === "" || TOKEN_RE.test(r.token)) ||
         !(r.exe === null || (typeof r.exe === "string" && isAbsolute(r.exe))) || typeof r.registeredAt !== "string") return null;
     return r as unknown as Registration;
   } catch { return null; }
@@ -198,7 +230,7 @@ export function selfAgyConversationId(env: NodeJS.ProcessEnv = process.env, deps
   if ((deps.platform ?? process.platform) === "win32") return null;
   // Same exclusions as discovery: an `agy -p` job or a subcommand is not a window and cannot take window DMs.
   const host = nearestAgyAncestor(deps.proc ?? defaultProc, env, start, deps.ancestors);
-  return host === null || !isInteractiveAgy(host) ? null : id.toLowerCase();
+  return host === null || !(isInteractiveAgy(host) || isAcpAgy(host)) ? null : id.toLowerCase();
 }
 
 /**
@@ -210,14 +242,23 @@ export function registerSelfAgyWindow(env: NodeJS.ProcessEnv = process.env, deps
   const address = env.ANTIGRAVITY_LS_ADDRESS;
   const token = env.ANTIGRAVITY_CSRF_TOKEN;
   if (env.ANTIGRAVITY_AGENT !== "1" || typeof id !== "string" || !UUID.test(id) || env.OCS_NAME === "agy") return null;
-  if (typeof address !== "string" || !LS_ADDRESS_RE.test(address) || typeof token !== "string" || !TOKEN_RE.test(token)) return null;
+  if (typeof address !== "string" || !LS_ADDRESS_RE.test(address) || typeof token !== "string") return null;
   if ((deps.platform ?? process.platform) === "win32") return null;
   const proc = deps.proc ?? defaultProc;
   const host = nearestAgyAncestor(proc, env, start, deps.ancestors);
-  if (host === null || !isInteractiveAgy(host)) return null;
-  const holders = (deps.lockHolders ?? defaultLockHolders)(join(agyAppDataDir(env), "presence"));
+  if (host === null) return null;
   const conversation = id.toLowerCase();
-  if (holders === null || holders.get(conversation)?.length !== 1 || holders.get(conversation)![0] !== host.pid) return null;
+  const acp = isAcpAgy(host);
+  if (acp) {
+    // ACP servers run with an empty CSRF token; an interactive window always has one.
+    if (token !== "" && !TOKEN_RE.test(token)) return null;
+    const holders = (deps.brainHolders ?? defaultBrainHolders)(join(agyAppDataDir(env), "brain"));
+    if (acpOwner(holders, conversation, proc, new Map([[host.pid, host]]))?.pid !== host.pid) return null;
+  } else {
+    if (!isInteractiveAgy(host) || !TOKEN_RE.test(token)) return null;
+    const holders = (deps.lockHolders ?? defaultLockHolders)(join(agyAppDataDir(env), "presence"));
+    if (holders === null || holders.get(conversation)?.length !== 1 || holders.get(conversation)![0] !== host.pid) return null;
+  }
   const port = Number(LS_ADDRESS_RE.exec(address)![1]);
   if (!(deps.listener ?? defaultListener)(host.pid, port)) return null;
   const exe = typeof env.ANTIGRAVITY_AGENTAPI_EXE === "string" && isAbsolute(env.ANTIGRAVITY_AGENTAPI_EXE) &&
@@ -228,7 +269,7 @@ export function registerSelfAgyWindow(env: NodeJS.ProcessEnv = process.env, deps
       writeRegistration({ v: 1, pid: host.pid, start: host.start, lsAddress: address, token, exe, registeredAt: new Date().toISOString() }, env);
     } catch { return null; }
   }
-  return { conversationId: conversation, pid: host.pid, cwd: (deps.cwdOf ?? defaultCwd)(host.pid), registered: true };
+  return { conversationId: conversation, pid: host.pid, cwd: (deps.cwdOf ?? defaultCwd)(host.pid), registered: true, ...(acp ? { acp: true as const } : {}) };
 }
 
 function pruneRegistrations(live: ReadonlySet<number>, env: NodeJS.ProcessEnv, alive: (pid: number) => boolean): void {
@@ -241,32 +282,49 @@ function pruneRegistrations(live: ReadonlySet<number>, env: NodeJS.ProcessEnv, a
   }
 }
 
-/** Live interactive windows. registered = DM-able; otherwise identify-only. */
+/** Live interactive windows and ACP sessions. registered = DM-able; otherwise identify-only. */
 export function listAgyWindows(deps: AgyWindowDeps = {}): { windows: AgyWindow[]; reason?: string } {
   const env = deps.env ?? process.env;
   if ((deps.platform ?? process.platform) === "win32") return { windows: [], reason: "interactive agy windows are not supported on Windows" };
-  const dir = join(agyAppDataDir(env), "presence");
-  try { if (!lstatSync(dir).isDirectory()) return { windows: [] }; } catch { return { windows: [] }; }
-  const holders = (deps.lockHolders ?? defaultLockHolders)(dir);
-  if (holders === null) return { windows: [], reason: "lsof unavailable; cannot prove which agy windows are open" };
+  const isDir = (dir: string): boolean => { try { return lstatSync(dir).isDirectory(); } catch { return false; } };
+  const presence = join(agyAppDataDir(env), "presence");
+  const brain = join(agyAppDataDir(env), "brain");
   const proc = deps.proc ?? defaultProc;
   const alive = deps.alive ?? defaultAlive;
   const procs = new Map<number, AgyProc | null>();
-  const windows: AgyWindow[] = [];
-  for (const [id, pids] of holders) {
-    if (pids.length !== 1) continue; // two holders of one conversation: refuse to pick
-    const pid = pids[0]!;
+  const procOf = (pid: number): AgyProc | null => {
     if (!procs.has(pid)) procs.set(pid, alive(pid) ? proc(pid) : null);
-    const p = procs.get(pid)!;
-    if (p === null || !isInteractiveAgy(p)) continue;
-    const reg = readRegistration(pid, env);
+    return procs.get(pid)!;
+  };
+  const windows: AgyWindow[] = [];
+  const add = (id: string, p: AgyProc, acp: boolean): void => {
+    const reg = readRegistration(p.pid, env);
     // DM-able only while the registered server still listens: `who` must not promise what the send-time check refuses.
-    const registered = reg !== null && reg.start === p.start &&
-      (deps.listener ?? defaultListener)(pid, Number(LS_ADDRESS_RE.exec(reg.lsAddress)![1]));
-    windows.push({ conversationId: id, pid, cwd: (deps.cwdOf ?? defaultCwd)(pid), registered });
+    const registered = reg !== null && reg.start === p.start && (acp || reg.token !== "") &&
+      (deps.listener ?? defaultListener)(p.pid, Number(LS_ADDRESS_RE.exec(reg.lsAddress)![1]));
+    windows.push({ conversationId: id, pid: p.pid, cwd: (deps.cwdOf ?? defaultCwd)(p.pid), registered, ...(acp ? { acp: true as const } : {}) });
+  };
+  const reasons: string[] = [];
+  if (isDir(presence)) {
+    const holders = (deps.lockHolders ?? defaultLockHolders)(presence);
+    if (holders === null) reasons.push("lsof unavailable; cannot prove which agy windows are open");
+    for (const [id, pids] of holders ?? []) {
+      if (pids.length !== 1) continue; // two holders of one conversation: refuse to pick
+      const p = procOf(pids[0]!);
+      if (p !== null && isInteractiveAgy(p)) add(id, p, false);
+    }
+  }
+  if (isDir(brain)) {
+    const holders = (deps.brainHolders ?? defaultBrainHolders)(brain);
+    if (holders === null) { if (reasons.length === 0) reasons.push("lsof unavailable; cannot prove which agy ACP sessions are open"); }
+    else for (const id of holders.keys()) {
+      if (windows.some((w) => w.conversationId === id)) continue;
+      const owner = acpOwner(holders, id, procOf, procs);
+      if (owner !== null) add(id, owner, true);
+    }
   }
   pruneRegistrations(new Set(windows.map((w) => w.pid)), env, alive);
-  return { windows };
+  return reasons.length > 0 ? { windows, reason: reasons[0]! } : { windows };
 }
 
 /** `agy-<8hex>` → the one live window with that prefix; several = ambiguous; none = null. */
@@ -302,7 +360,8 @@ export function wakeAgyWindow(conversationId: string, note: string, deps: AgyWin
   if (!window.registered) return reg !== null && p !== null && reg.start === p.start
     ? { ok: false, reason: "unavailable", detail: "window's local server is not listening on its registered port" }
     : { ok: false, reason: "unregistered" };
-  if (p === null || reg === null || reg.start !== p.start || !isInteractiveAgy(p)) return { ok: false, reason: "unavailable", detail: "window changed since discovery" };
+  if (p === null || reg === null || reg.start !== p.start || !hostKindOk(p, window.acp === true))
+    return { ok: false, reason: "unavailable", detail: "window changed since discovery" };
   const port = Number(LS_ADDRESS_RE.exec(reg.lsAddress)![1]);
   if (!(deps.listener ?? defaultListener)(window.pid, port)) return { ok: false, reason: "unavailable", detail: "window's local server is not listening on its registered port" };
   const exe = reg.exe ?? (isAbsolute(p.comm) ? p.comm : null);

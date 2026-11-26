@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, statSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import {
-  agyConversationIdFromTarget, agyWindowShortId, agyWindowTargetName, isInteractiveAgy, listAgyWindows, neutralizeAgyNote,
+  agyConversationIdFromTarget, agyWindowShortId, agyWindowTargetName, isAcpAgy, isInteractiveAgy, listAgyWindows, neutralizeAgyNote,
   registerSelfAgyWindow, selfAgyConversationId, wakeAgyWindow, type AgyProc, type AgyWindowDeps,
 } from "../src/agy-session.ts";
 import { resolveDmTarget, selfIdentity } from "../src/roster.ts";
@@ -293,6 +293,115 @@ describe("agy interactive windows (#89)", () => {
     const down = { ...s.deps, listener: () => false };
     expect(listAgyWindows(down).windows[0]!.registered).toBe(false);
     expect(wakeAgyWindow(CONV, "hello", down)).toMatchObject({ ok: false, reason: "unavailable" });
+    expect(s.runs).toEqual([]);
+  });
+});
+
+describe("agy ACP sessions (agy acp, e.g. Orca Bot)", () => {
+  const ACP_ARGS = "agy acp --dangerously-skip-permissions";
+  const INDEXER = 555;
+  function acpSetup(over: Partial<AgyWindowDeps> = {}, procOver: Partial<AgyProc> = {}) {
+    const s = setup({
+      lockHolders: () => new Map(),
+      brainHolders: () => new Map([[CONV, [PID, INDEXER]]]),
+      proc: (pid) => pid === PID ? proc({ tty: "??", args: ACP_ARGS, ...procOver })
+        : pid === INDEXER ? proc({ pid: INDEXER, comm: "/usr/libexec/mdworker", args: "mdworker", tty: "??" }) : null,
+      ...over,
+    });
+    mkdirSync(join(s.env.OCS_AGY_APP_DATA_DIR!, "brain"));
+    return { ...s, shellEnv: { ...s.shellEnv, ANTIGRAVITY_CSRF_TOKEN: "" } as NodeJS.ProcessEnv };
+  }
+
+  test("isAcpAgy: the ACP server and its worker, not login or help", () => {
+    expect(isAcpAgy(proc({ tty: "??", args: ACP_ARGS }))).toBe(true);
+    expect(isAcpAgy(proc({ tty: "??", args: "/opt/homebrew/bin/agy acp --worker --gemini_dir=.gemini" }))).toBe(true);
+    expect(isAcpAgy(proc({ args: "agy acp --login" }))).toBe(false);
+    expect(isAcpAgy(proc({ args: "agy acp --help" }))).toBe(false);
+    expect(isAcpAgy(proc({ args: "agy" }))).toBe(false);
+    expect(isAcpAgy(proc({ comm: "/usr/local/bin/agy-proxy", args: "agy-proxy acp" }))).toBe(false);
+    expect(isInteractiveAgy(proc({ tty: "??", args: ACP_ARGS }))).toBe(false);
+  });
+
+  test("discovery: the one agy ACP holder of the brain dir; other holders are ignored", () => {
+    const { deps } = acpSetup();
+    expect(listAgyWindows(deps).windows).toEqual([{ conversationId: CONV, pid: PID, cwd: "/work/agy", registered: false, acp: true }]);
+    // An interactive window holding its own brain dir is listed once, as a window.
+    const w = setup({ brainHolders: () => new Map([[CONV, [PID]]]) });
+    mkdirSync(join(w.env.OCS_AGY_APP_DATA_DIR!, "brain"));
+    expect(listAgyWindows(w.deps).windows).toEqual([{ conversationId: CONV, pid: PID, cwd: "/work/agy", registered: false }]);
+    // Two ACP processes on one conversation: refuse to pick.
+    const two = acpSetup({ brainHolders: () => new Map([[CONV, [PID, 4]]]),
+      proc: (pid) => pid === PID || pid === 4 ? proc({ pid, tty: "??", args: ACP_ARGS }) : null, alive: () => true });
+    expect(listAgyWindows(two.deps).windows).toEqual([]);
+    // Only a non-agy holder: nothing.
+    const none = acpSetup({ brainHolders: () => new Map([[CONV, [INDEXER]]]) });
+    expect(listAgyWindows(none.deps).windows).toEqual([]);
+  });
+
+  test("a failed brain-dir probe is reported", () => {
+    const { deps } = acpSetup({ brainHolders: () => null });
+    expect(listAgyWindows(deps).reason).toContain("lsof");
+  });
+
+  test("registration with the empty ACP token, then DM through its own server", () => {
+    const { deps, shellEnv, home, runs } = acpSetup();
+    expect(registerSelfAgyWindow(shellEnv, deps, 4242)).toMatchObject({ conversationId: CONV, pid: PID, registered: true, acp: true });
+    expect(JSON.parse(readFileSync(join(home, "agy-windows", PID + ".json"), "utf8"))).toMatchObject({ token: "", lsAddress: "localhost:54284" });
+    expect(listAgyWindows(deps).windows[0]).toMatchObject({ registered: true, acp: true });
+    expect(selfAgyConversationId(shellEnv, deps, 4242)).toBe(CONV);
+    expect(wakeAgyWindow(CONV, "hello", deps)).toEqual({ ok: true });
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.args.slice(0, 4)).toEqual(["agentapi", "send-message", "--title=ocs", CONV]);
+    expect(runs[0]!.env.ANTIGRAVITY_CSRF_TOKEN).toBe("");
+    expect(runs[0]!.env.ANTIGRAVITY_LS_ADDRESS).toBe("localhost:54284");
+  });
+
+  test("ACP registration refuses what it cannot prove", () => {
+    const cases: Array<[string, (s: ReturnType<typeof acpSetup>) => [NodeJS.ProcessEnv, AgyWindowDeps]]> = [
+      ["brain dir held by another agy acp", (s) => [s.shellEnv, { ...s.deps, brainHolders: () => new Map([[CONV, [4]]]),
+        proc: (pid) => pid === PID || pid === 4 ? proc({ pid, tty: "??", args: ACP_ARGS }) : null }]],
+      ["brain dir not held", (s) => [s.shellEnv, { ...s.deps, brainHolders: () => new Map() }]],
+      ["probe failed", (s) => [s.shellEnv, { ...s.deps, brainHolders: () => null }]],
+      ["malformed token", (s) => [{ ...s.shellEnv, ANTIGRAVITY_CSRF_TOKEN: "x y" }, s.deps]],
+      ["port not ours", (s) => [s.shellEnv, { ...s.deps, listener: () => false }]],
+    ];
+    for (const [name, make] of cases) {
+      const s = acpSetup();
+      const [env, deps] = make(s);
+      expect([name, registerSelfAgyWindow(env, deps, 4242)]).toEqual([name, null]);
+      expect([name, s.runs.length]).toEqual([name, 0]);
+    }
+    // An interactive window never registers without its CSRF token, and a tokenless file does not make it DM-able.
+    const w = setup();
+    expect(registerSelfAgyWindow({ ...w.shellEnv, ANTIGRAVITY_CSRF_TOKEN: "" }, w.deps, 4242)).toBeNull();
+    const a = acpSetup();
+    registerSelfAgyWindow(a.shellEnv, a.deps, 4242);
+    const asWindow = { ...a.deps, lockHolders: () => new Map([[CONV, [PID]]]), brainHolders: () => new Map(), proc: (pid: number) => pid === PID ? proc() : null };
+    expect(listAgyWindows(asWindow).windows[0]!.registered).toBe(false);
+    expect(wakeAgyWindow(CONV, "hello", asWindow).ok).toBe(false);
+    expect(a.runs).toEqual([]);
+  });
+
+  test("ACP wake sends zero bytes unless every proof holds at send time", () => {
+    const failing: Array<[string, Partial<AgyWindowDeps>, Partial<AgyProc>?]> = [
+      ["session closed (brain dir released)", { brainHolders: () => new Map() }],
+      ["listener gone", { listener: () => false }],
+      ["pid reused", {}, { start: "Thu Nov 26 09:00:00 2026" }],
+      ["process is no longer agy acp", {}, { args: "agy mcp" }],
+    ];
+    for (const [name, over, procOver] of failing) {
+      const s = acpSetup();
+      registerSelfAgyWindow(s.shellEnv, s.deps, 4242);
+      const deps = { ...s.deps, ...over, ...(procOver ? { proc: (pid: number) => pid === PID ? proc({ tty: "??", args: ACP_ARGS, ...procOver }) : null } : {}) };
+      expect([name, wakeAgyWindow(CONV, "hello", deps).ok]).toEqual([name, false]);
+      expect([name, s.runs.length]).toEqual([name, 0]);
+    }
+    // The process stops being an ACP server between discovery and the send-time re-proof.
+    const s = acpSetup();
+    registerSelfAgyWindow(s.shellEnv, s.deps, 4242);
+    let calls = 0;
+    const flipping = { ...s.deps, proc: (pid: number) => pid !== PID ? null : proc({ tty: "??", args: ++calls > 1 ? "agy mcp" : ACP_ARGS }) };
+    expect(wakeAgyWindow(CONV, "hello", flipping)).toMatchObject({ ok: false, reason: "unavailable" });
     expect(s.runs).toEqual([]);
   });
 });
