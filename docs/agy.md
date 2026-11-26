@@ -130,3 +130,36 @@ How it works, and what it does not promise:
   window have not yet been verified on real hosts. This relies on agy
   internals that are not a documented interface. If an agy update changes
   them, ocs reports the window as unavailable and sends nothing.
+
+### ACP sessions (`agy acp`)
+
+ACP clients such as Orca Bot run `agy acp`, which talks to the client over
+stdio. It has no terminal and holds no presence lock, so the window discovery
+above does not find it. ocs lists these sessions in the same "Antigravity CLI
+windows" section, marked `(acp)`, with the same `agy-<8hex>` /
+`agy-<conversation-id>` address (the conversation id is the ACP `sessionId`).
+
+- **Discovery.** The process that hosts a loaded session keeps
+  `~/.gemini/antigravity-cli/brain/<conversation-id>/` open. ocs lists the
+  session when exactly one `agy acp` process holds that directory; with
+  `--process-per-session` that is the `agy acp --worker` child. Other
+  processes that hold it (indexers, shells) are ignored; two `agy acp`
+  holders of one conversation are not listed.
+- **Registration.** As for a window: the session becomes DM-able once its
+  agent runs any ocs command. ACP gives its tool shells the server address and
+  an empty CSRF token, so the token recorded for an ACP session is empty. An
+  interactive window is never registered without its token.
+- **Delivery.** Before every send, ocs checks again that the same `agy acp`
+  process (pid and start time) holds the brain directory and listens on the
+  registered port; otherwise nothing is sent. The message runs a turn in that
+  session; agy streams the reply to the ACP client as `session/update` (seen
+  in single-process mode). Whether the client shows a turn it did not start is
+  up to the client. The outcome rules (`accepted` / `unknown`, no resend) are
+  the same as for windows.
+- **Several sessions.** Registration is per process. One `agy acp` process
+  that serves several sessions has one server for all of them, so after one
+  of its agents runs ocs, every session it holds is DM-able. With
+  `--process-per-session` each session has its own worker and registers on
+  its own.
+- **Status.** Verified on macOS with agy 1.5.16, in both modes. Linux is not
+  yet verified.
