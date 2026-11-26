@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.25
+
 - Antigravity sessions run by `agy acp` (ACP clients such as Orca Bot) now get an address too. 0.9.24 only found interactive `agy` windows, so these sessions were missing from `ocs who`. They are now listed under "Antigravity CLI windows" as `agy-<8hex>` with `(acp)` and become DM-able after their agent runs any ocs command. ocs proves the session is live by the `agy acp` process that keeps the session's `brain/<conversation-id>` directory open, and re-checks it and the registered port before every send. The DM runs a turn in that session; agy streams the reply to the ACP client. See docs/agy.md
 
 ## 0.9.24
