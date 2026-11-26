@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.24
+
 - Interactive Antigravity CLI windows now get their own address (#89). `ocs who` lists each open `agy` window as `agy-<8hex>` and says whether it can take a DM or is identify-only. After the window's agent runs any ocs command (for example `ocs whoami`), `ocs dm agy-<8hex>` and `@agy-<8hex>` deliver into that window's existing conversation, and replies from the window are identified automatically. `ocs whoami --json` inside a window also gives the native `conversationId`. Before every send, ocs checks that the window's own agy process still holds the conversation and serves the registered local port; if a check fails, nothing is sent. A send whose result is unknown is never retried. Supported on macOS and Linux. The plain `agy` address is still the headless receiver. See docs/agy.md
 
 ## 0.9.23
