@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { codexSessionsRoot, listCodexSessions } from "../src/codex-sessions.ts";
+import { codexSessionsRoot, codexShortId, listCodexSessions } from "../src/codex-sessions.ts";
 import { codexRolloutHolderPids } from "../src/codex-queue.ts";
 import { discoverCodexDesktopOwners } from "../src/codex-ipc.ts";
 import { appendMessage, readMessages } from "../src/store.ts";
@@ -290,6 +290,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
           threadId?: string;
           summary?: string | null;
           cwd?: string | null;
+          project?: string;
           self?: boolean;
           livePid?: number | null;
           tty?: string | null;
@@ -300,10 +301,11 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
       const codex = roster.entries.filter((entry) => entry.kind === "codex-task");
       expect(codex).toEqual([{
         kind: "codex-task",
-        target: "codex-bbbbbbbb",
+        target: codexShortId(THREAD_B),
         threadId: THREAD_B,
         summary: "hello world",
         cwd: "/tmp/b",
+        project: "b",
         self: true,
         livePid: null,
         tty: null,

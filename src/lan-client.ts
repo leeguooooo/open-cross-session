@@ -292,6 +292,11 @@ export async function sendRemoteDm(
   return { delivered: true, reply: { ok: false, error, ...(detail === undefined ? {} : { detail }) } };
 }
 
+/** A peer's `project` field (#93): peer-controlled, so only a plain NAME_RE name survives. */
+export function cleanWhoProject(value: unknown): string | undefined {
+  return typeof value === "string" && NAME_RE.test(value) ? value : undefined;
+}
+
 export async function remoteWho(
   peer: LanPeer,
   identity: LanIdentity,
@@ -315,6 +320,7 @@ export async function remoteWho(
     if (e.kind !== "opencode" && e.kind !== "claude" && e.kind !== "codex" && e.kind !== "pi" && e.kind !== "hermes" && e.kind !== "grok" && e.kind !== "agy" && e.kind !== "antigravity") continue;
     const status = clean(e.status, 16);
     const label = clean(e.label, 60);
+    const project = cleanWhoProject(e.project);
     const capabilities = parseCapabilities(e.capabilities);
     entries.push({
       address,
@@ -322,6 +328,7 @@ export async function remoteWho(
       ...(capabilities === undefined ? {} : { capabilities }),
       ...(status === undefined ? {} : { status }),
       ...(label === undefined ? {} : { label }),
+      ...(project === undefined ? {} : { project }),
     });
   }
   return { name: clean(reply.name, 64) ?? peer.name, entries };

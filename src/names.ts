@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { NativeClaudeSession } from "./claude-inject.ts";
-import { isCodexThreadId } from "./codex-sessions.ts";
+import { codexShortId, isCodexThreadId } from "./codex-sessions.ts";
 import { hermesSessionKeyFromTarget, hermesTargetName, isHermesSessionKey } from "./hermes.ts";
 import { isPiSessionId } from "./pi-sessions.ts";
 import { grokSessionIdFromTarget, grokTargetName, isGrokSessionId } from "./grok.ts";
@@ -32,8 +32,11 @@ export type OcsNameEntry =
 /** 这些形状是 ocs 自己的地址语法，给了名字就会遮蔽真实会话。 */
 const RESERVED_RE = /^(?:claude|codex|pi)-[0-9a-f]{8}$/i;
 
+/** `codex.<project>` etc. are project addresses (#93); kept in sync with project-address.ts. */
+const PROJECT_ADDRESS_SHAPE_RE = /^(?:codex|pi|claude)\.[A-Za-z0-9]/i;
+
 export function isReservedOcsName(name: string): boolean {
-  return opencodeSessionIdFromTarget(name) !== null || /^oc-[0-9a-f]{8}$/i.test(name) || name.toLowerCase() === "agy" || RESERVED_RE.test(name) ||
+  return PROJECT_ADDRESS_SHAPE_RE.test(name) || opencodeSessionIdFromTarget(name) !== null || /^oc-[0-9a-f]{8}$/i.test(name) || name.toLowerCase() === "agy" || RESERVED_RE.test(name) ||
     grokSessionIdFromTarget(name) !== null ||
     agyConversationIdFromTarget(name) !== null || AGY_SHORT_TARGET_RE.test(name) ||
     isCodexThreadId(name) ||
@@ -56,6 +59,7 @@ export function ownerShortId(owner: NameOwner): string {
   if (owner.kind === "hermes") return hermesTargetName(owner.id);
   if (owner.kind === "grok") return grokTargetName(owner.id);
   if (owner.kind === "antigravity") return agyWindowTargetName(owner.id);
+  if (owner.kind === "codex") return codexShortId(owner.id);
   return `${owner.kind}-${owner.id.slice(0, 8).toLowerCase()}`;
 }
 
@@ -65,6 +69,7 @@ export function entryShortId(entry: OcsNameEntry): string {
   if (entry.kind === "hermes") return hermesTargetName(entry.id);
   if (entry.kind === "grok") return grokTargetName(entry.id);
   if (entry.kind === "antigravity") return agyWindowTargetName(entry.id);
+  if (entry.kind === "codex") return codexShortId(entry.id);
   return `${entry.kind}-${entry.id.slice(0, 8).toLowerCase()}`;
 }
 

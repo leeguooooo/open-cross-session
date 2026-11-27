@@ -1,3 +1,4 @@
+import { codexShortId } from "../src/codex-sessions.ts";
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -103,10 +104,10 @@ describe("dmChannel", () => {
   test("身份串全长且带命名空间：别名截断/跨空间同形不再碰撞（review 回归）", () => {
     const env = sessionsFixture();
     const me = selfIdentity("me");
-    // 共享 8-hex 前缀的两个 codex thread：别名同为 codex-aaaaaaaa，身份串不同
+    // 共享 8-hex 前缀的两个 codex thread：展示地址已按完整 id 哈希（#93）互不相同，身份串也不同
     const t1 = resolveDmTarget("aaaaaaaa-1111-2222-3333-444444444444", env)!;
     const t2 = resolveDmTarget("aaaaaaaa-9999-8888-7777-666666666666", env)!;
-    expect(t1.name).toBe(t2.name);
+    expect(t1.name).not.toBe(t2.name);
     expect(dmChannel(me, t1.identity)).not.toBe(dmChannel(me, t2.identity));
     // 跨命名空间同形：叫 surface-33 的 Claude 会话 vs cmux 的 surface:33
     const claudeAlike = resolveDmTarget("surface-33", env)!;
@@ -394,7 +395,7 @@ describe("resolveSelfName", () => {
   });
 });
 
-test("codex-<8hex> 短地址解析到唯一的本地 thread id", () => {
+test("codex-<8hex> 旧时间前缀短地址仍解析到唯一的本地 thread id，展示名换成哈希地址", () => {
   const root = tempDir("ocs-codex-short-");
   const day = join(root, "sessions", "2026", "09", "04");
   mkdirSync(day, { recursive: true });
@@ -405,7 +406,7 @@ test("codex-<8hex> 短地址解析到唯一的本地 thread id", () => {
   const resolved = resolveDmTarget("codex-aaaaaaaa", { CODEX_HOME: root });
   expect(resolved).toMatchObject({
     kind: "codex-task",
-    name: "codex-aaaaaaaa",
+    name: codexShortId(THREAD),
     identity: `codex:${THREAD}`,
     threadId: THREAD,
   });

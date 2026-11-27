@@ -13,6 +13,8 @@ import { writeTraffic, type TrafficEvent } from "./traffic.ts";
 import { appendFileSync, renameSync, statSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { createHash } from "node:crypto";
+import { codexShortId } from "./codex-sessions.ts";
+import { expandProjectAddress } from "./project-address.ts";
 import { collectingSink, deliverDm } from "./deliver.ts";
 import { messages, type Lang } from "./i18n.ts";
 import { LanProtocolError, type LanIdentity } from "./lan-crypto.ts";
@@ -110,8 +112,10 @@ export function localAddressOf(
     return { key: entryShortId(entry), display: entry.name };
   }
   if (resolved.kind === "codex-task" && resolved.threadId !== undefined) {
+    // The key feeds lanChannel(): it stays the time prefix so existing LAN conversations
+    // keep their channel (#93 changed only the displayed address).
     const key = `codex-${resolved.threadId.slice(0, 8)}`;
-    return { key, display: ocsNameFor({ kind: "codex", id: resolved.threadId }, names)?.name ?? key };
+    return { key, display: ocsNameFor({ kind: "codex", id: resolved.threadId }, names)?.name ?? codexShortId(resolved.threadId) };
   }
   if (resolved.kind === "pi" && resolved.piSessionId !== undefined) {
     const key = `pi-${resolved.piSessionId.slice(0, 8)}`;
@@ -140,6 +144,8 @@ export interface LanWhoEntry {
   kind: "opencode" | "claude" | "codex" | "pi" | "hermes" | "grok" | "agy" | "antigravity";
   status?: string;
   label?: string;
+  /** Project name only (#93) — never a path. Peer-controlled on the receiving side. */
+  project?: string;
   capabilities?: Capabilities;
 }
 
@@ -196,6 +202,7 @@ export async function lanWhoEntries(env: NodeJS.ProcessEnv = process.env): Promi
         kind: "claude",
         ...(entry.status === null ? {} : { status: entry.status }),
         ...(entry.ocsName === undefined ? { label: entry.name.slice(0, 60) } : {}),
+        ...(entry.project === undefined ? {} : { project: entry.project }),
       });
     } else if (entry.kind === "codex-task" && (entry.livePid !== null || claimed.has(entry.threadId.toLowerCase()))) {
       out.push({
@@ -203,6 +210,7 @@ export async function lanWhoEntries(env: NodeJS.ProcessEnv = process.env): Promi
         address: entry.ocsName ?? entry.target,
         kind: "codex",
         ...(entry.summary === null ? {} : { label: entry.summary.slice(0, 60) }),
+        ...(entry.project === undefined ? {} : { project: entry.project }),
       });
     } else if (entry.kind === "hermes") {
       out.push({
@@ -218,6 +226,7 @@ export async function lanWhoEntries(env: NodeJS.ProcessEnv = process.env): Promi
         address: entry.ocsName ?? entry.target,
         kind: "pi",
         ...(entry.name === null ? {} : { label: entry.name.slice(0, 60) }),
+        ...(entry.project === undefined ? {} : { project: entry.project }),
       });
     }
   }
@@ -260,9 +269,19 @@ export async function handleLanDm(
   }
   const replyLang: Lang = req.lang === "zh" ? "zh" : "en";
   await primeCodexDaemon(env); // 长驻进程：每个请求现拍，不用上一次的快照
+  // #93 `codex.<project>`: one reachable session of that kind in that project, or refuse.
+  // Candidates carry pids / paths, so they are never sent back to the peer.
+  let target = to;
+  try {
+    const expansion = await expandProjectAddress(to, env);
+    if (expansion.kind === "refused") return { ok: false, error: expansion.reason === "none" ? "not-found" : "ambiguous" };
+    target = expansion.target;
+  } catch {
+    return { ok: false, error: "resolve-failed" };
+  }
   let resolved: ResolvedDmTarget | null;
   try {
-    resolved = resolveDmTarget(to, env);
+    resolved = resolveDmTarget(target, env);
   } catch (error) {
     return { ok: false, error: "resolve-failed" };
   }
@@ -295,7 +314,7 @@ export async function handleLanDm(
       return { ok: false, error: "not-found" };
     }
   }
-  const local = localAddressOf(resolved, to, env);
+  const local = localAddressOf(resolved, target, env);
   if (local === null) return { ok: false, error: "not-found" };
 
   const channel = lanChannel(peer.fingerprint, local.key, fromKey);

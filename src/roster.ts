@@ -18,6 +18,7 @@ import {
   claudeWorkspaceTargetMatches,
   uniqueClaudeWorkspaceAlias,
   uniqueClaudeWorkspaceIdentity,
+  workspaceAliasForCwd,
 } from "./claude-address.ts";
 import { listNativeSessions, type NativeClaudeSession } from "./claude-inject.ts";
 import { codexDesktopIpcAvailable } from "./codex-ipc.ts";
@@ -25,6 +26,7 @@ import { codexHosts, codexQueueAvailable, codexThreadLivePids, psTable } from ".
 import { codexDaemonSnapshot } from "./codex-daemon.ts";
 import {
   codexSessionsRoot,
+  codexShortId,
   isCodexThreadId,
   listCodexRolloutFiles,
   listCodexSessions,
@@ -284,8 +286,10 @@ export function findCodexCmuxSurface(
   surfaces?: readonly CmuxSurface[],
 ): CmuxSurface | null {
   if (!isCodexThreadId(threadId)) return null;
+  // Titles may carry the old time-prefix address or the hashed one (#93).
   const prefix = threadId.slice(0, 8).toLowerCase();
-  const suffix = new RegExp(`(?:^|[^a-z0-9])codex-${prefix}(?:-[0-9a-f]+)?$`, "i");
+  const hashed = codexShortId(threadId).slice("codex-".length);
+  const suffix = new RegExp(`(?:^|[^a-z0-9])codex-(?:${prefix}|${hashed})(?:-[0-9a-f]+)?$`, "i");
   const matches = (surfaces ?? listActiveCodexCmuxSurfaces())
     .filter(({ title }) => suffix.test(title.trim()));
   return matches.length === 1 ? matches[0]! : null;
@@ -337,6 +341,8 @@ export type RosterEntry =
       ocsName?: string;
       workspaceAlias?: string;
       workspaceWarning?: string;
+      /** Project name from the working directory (#93); same derivation for every kind. */
+      project?: string;
       pid: number;
       status: string | null;
       cwd: string | null;
@@ -349,6 +355,8 @@ export type RosterEntry =
       ocsName?: string;
       summary: string | null;
       cwd: string | null;
+      /** Project name from the working directory (#93). */
+      project?: string;
       self: boolean;
       /** 持有该 thread rollout fd 的进程；非 null 即证明会话在跑（`codex queue` 可达）。 */
       livePid: number | null;
@@ -366,6 +374,8 @@ export type RosterEntry =
       ocsName?: string;
       pid: number;
       cwd: string;
+      /** Project name from the working directory (#93). */
+      project?: string;
       self: boolean;
     }
   | {
@@ -427,6 +437,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
       ...(ocsName === undefined ? {} : { ocsName }),
       ...(alias !== null && alias !== s.name ? { workspaceAlias: alias } : {}),
       ...(workspaceWarning === undefined ? {} : { workspaceWarning }),
+      ...(rawAlias === null ? {} : { project: rawAlias }),
       pid: s.pid,
       status: s.status,
       cwd: s.cwd ?? null,
@@ -460,13 +471,15 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
     const livePid = codexLive.get(s.threadId) ?? null;
     const host = livePid === null ? undefined : codexHostByPid.get(livePid);
     const ocsName = ocsNameFor({ kind: "codex", id: s.threadId }, names)?.name;
+    const project = workspaceAliasForCwd(s.cwd);
     entries.push({
       kind: "codex-task",
-      target: `codex-${s.threadId.slice(0, 8)}`,
+      target: codexShortId(s.threadId),
       threadId: s.threadId,
       ...(ocsName === undefined ? {} : { ocsName }),
       summary: s.summary,
       cwd: s.cwd,
+      ...(project === null ? {} : { project }),
       self: s.threadId === selfCodexThreadId,
       livePid,
       tty: host?.tty ?? null,
@@ -476,6 +489,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
   const selfPiSessionId = env[OCS_PI_SESSION_ID_ENV]?.toLowerCase();
   for (const s of listPiSessions(env)) {
     const ocsName = ocsNameFor({ kind: "pi", id: s.session_id }, names)?.name;
+    const project = workspaceAliasForCwd(s.cwd);
     entries.push({
       kind: "pi",
       target: `pi-${s.session_id.slice(0, 8)}`,
@@ -484,6 +498,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
       ...(ocsName === undefined ? {} : { ocsName }),
       pid: s.pid,
       cwd: s.cwd,
+      ...(project === null ? {} : { project }),
       self: selfPiSessionId === s.session_id,
     });
   }
@@ -810,7 +825,7 @@ export function resolveDmTarget(
   if (isCodexThreadId(codexThreadId)) {
     return {
       kind: "codex-task",
-      name: `codex-${codexThreadId.slice(0, 8).toLowerCase()}`,
+      name: codexShortId(codexThreadId),
       identity: `codex:${codexThreadId.toLowerCase()}`,
       threadId: codexThreadId.toLowerCase(),
     };
@@ -822,12 +837,16 @@ export function resolveDmTarget(
     // rollout，只在守护进程里 loaded（codex-daemon.ts）——statebar 已经把它的地址亮出来了。
     const ids = new Set(listCodexRolloutFiles(codexSessionsRoot(env)).map((session) => session.threadId));
     for (const threadId of codexDaemonSnapshot().threads.keys()) ids.add(threadId);
-    const matches = [...ids].filter((threadId) => threadId.startsWith(prefix)).map((threadId) => ({ threadId }));
+    // #93: the displayed address hashes the full id; the old time prefix keeps resolving.
+    // Either way a second candidate makes it ambiguous — never pick one.
+    const matches = [...ids]
+      .filter((threadId) => codexShortId(threadId) === `codex-${prefix}` || threadId.startsWith(prefix))
+      .map((threadId) => ({ threadId }));
     if (matches.length === 1) {
       const threadId = matches[0]!.threadId;
       return {
         kind: "codex-task",
-        name: `codex-${prefix}`,
+        name: codexShortId(threadId),
         identity: `codex:${threadId}`,
         threadId,
       };

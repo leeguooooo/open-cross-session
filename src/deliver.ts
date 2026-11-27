@@ -18,6 +18,8 @@ import { steerCodexTurn } from "./codex-steer.ts";
 import { codexHosts, codexThreadLivePid, psTable, queueCodexThread } from "./codex-queue.ts";
 import { primeCodexDaemon } from "./codex-daemon.ts";
 import type { messages } from "./i18n.ts";
+import { codexRolloutLastActive, codexSessionsRoot, codexShortId } from "./codex-sessions.ts";
+import { liveProjectPeers, projectOfCodexThread } from "./project-address.ts";
 import { hermesTargetName, wakeHermesSession, type HermesWakeResult } from "./hermes.ts";
 import { listPiSessions, wakePiSession, type PiSessionRegistration } from "./pi-sessions.ts";
 import {
@@ -193,7 +195,7 @@ function tryCodexCmuxFallback(
     surface.ref,
     wakeNote({
       ...wakeInput,
-      receiver: `codex-${targetThreadId.slice(0, 8)}`,
+      receiver: codexShortId(targetThreadId),
       implicitReceiver: true,
     }),
   );
@@ -267,7 +269,7 @@ async function deliverToCodexTaskImpl(
         expectedTurnId: activeTurn,
         prompt: wakeNote({
           ...wakeInput,
-          receiver: `codex-${targetThreadId.slice(0, 8)}`,
+          receiver: codexShortId(targetThreadId),
           implicitReceiver: true,
         }),
         env,
@@ -302,7 +304,7 @@ async function deliverToCodexTaskImpl(
       env,
       prompt: wakeNote({
         ...wakeInput,
-        receiver: `codex-${targetThreadId.slice(0, 8)}`,
+        receiver: codexShortId(targetThreadId),
         implicitReceiver: true,
       }),
     });
@@ -346,7 +348,7 @@ async function deliverToCodexTaskImpl(
       env,
       prompt: wakeNote({
         ...wakeInput,
-        receiver: `codex-${targetThreadId.slice(0, 8)}`,
+        receiver: codexShortId(targetThreadId),
         implicitReceiver: true,
       }),
     });
@@ -366,7 +368,15 @@ async function deliverToCodexTaskImpl(
   // Its `codex:` route makes the message discoverable from `ocs inbox` on resume.
   if (options.parkOffline === true && livePid === null &&
       (result.reason === "unavailable" || result.reason === "not-open")) {
-    sink.log(M.dmCodexParked(targetThreadId, wakeInput.channel));
+    sink.log(M.dmCodexParked(targetThreadId, wakeInput.channel,
+      codexRolloutLastActive(codexSessionsRoot(env), targetThreadId)));
+    // #93: point at live sessions working in the same project instead of leaving the
+    // sender to guess (it may have meant one of them).
+    const project = projectOfCodexThread(targetThreadId, env);
+    if (project !== null) {
+      const peers = await liveProjectPeers("codex", project, targetThreadId, env);
+      if (peers.length > 0) sink.log(M.dmParkedProjectPeers(project, peers.map((peer) => peer.address)));
+    }
     sink.pending?.("parked");
     return false;
   }

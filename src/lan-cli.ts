@@ -42,6 +42,7 @@ import {
   type LanPeer,
 } from "./lan-store.ts";
 import { appendMessage, NAME_RE } from "./store.ts";
+import { parseProjectAddress, sameProject } from "./project-address.ts";
 
 export interface LanCliContext {
   lang: Lang;
@@ -713,7 +714,8 @@ export async function printLanWho(ctx: Pick<LanCliContext, "lang" | "fail"> & { 
     console.log(L.whoHeader(result.peer.label, result.who.name));
     if (result.who.entries.length === 0) console.log(L.whoEmpty);
     for (const e of result.who.entries) {
-      console.log(L.whoEntry(`${e.address}@${result.peer.label}`, e.kind, e.status ?? "", e.label ?? ""));
+      const project = e.project === undefined ? "" : `  [${e.project}]`;
+      console.log(L.whoEntry(`${e.address}@${result.peer.label}${project}`, e.kind, e.status ?? "", e.label ?? ""));
     }
   }
 }
@@ -777,6 +779,54 @@ export function splitRemoteAddress(target: string): { address: string; peer: str
   if (!NAME_RE.test(address)) return null;
   if (!PEER_LABEL_RE.test(peer) && !/^[a-z2-7]{8,52}$/.test(peer)) return null;
   return { address, peer };
+}
+
+export type LanProjectCheck =
+  | { ok: true }
+  | { ok: false; reason: "missing"; peer: string }
+  | { ok: false; reason: "unverifiable" }
+  | { ok: false; reason: "mismatch"; actual: string };
+
+/**
+ * `ocs dm <address>@<peer> --project <name>` (#93): confirm, before the DM request is sent,
+ * that the peer lists that address in <name>. A peer that does not report projects (older
+ * ocs) cannot confirm it and is refused. `codex.<project>@peer` carries its own project and
+ * is enforced by the receiving daemon.
+ */
+/** Pure verdict for `verifyLanProject`, given the peer's current roster. */
+export function lanProjectVerdict(
+  entries: readonly { address: string; project?: string }[],
+  address: string,
+  expected: string,
+  peerLabel: string,
+): LanProjectCheck {
+  const shaped = parseProjectAddress(address);
+  if (shaped !== null) {
+    return sameProject(shaped.project, expected) ? { ok: true } : { ok: false, reason: "mismatch", actual: shaped.project };
+  }
+  const entry = entries.find((candidate) => candidate.address.toLowerCase() === address.toLowerCase());
+  if (entry === undefined) return { ok: false, reason: "missing", peer: peerLabel };
+  if (entry.project === undefined) return { ok: false, reason: "unverifiable" };
+  return sameProject(entry.project, expected) ? { ok: true } : { ok: false, reason: "mismatch", actual: entry.project };
+}
+
+export async function verifyLanProject(
+  ctx: LanCliContext,
+  target: string,
+  expected: string,
+  who: typeof remoteWho = remoteWho,
+): Promise<LanProjectCheck> {
+  const parsed = splitRemoteAddress(target);
+  if (parsed === null) ctx.fail(lanMessages(ctx.lang).dmAddressInvalid(target));
+  const peer = requirePeer(ctx, parsed.peer);
+  if (parseProjectAddress(parsed.address) !== null) return lanProjectVerdict([], parsed.address, expected, peer.label);
+  let entries: Awaited<ReturnType<typeof remoteWho>>["entries"];
+  try {
+    entries = (await who(peer, identity(ctx))).entries;
+  } catch {
+    return { ok: false, reason: "missing", peer: peer.label };
+  }
+  return lanProjectVerdict(entries, parsed.address, expected, peer.label);
 }
 
 export async function lanDm(ctx: LanCliContext, target: string, body: string, sender: LanDmSender): Promise<void> {
