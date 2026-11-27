@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Codex short addresses no longer collide for tasks opened around the same time (#93). Codex thread ids are UUIDv7, so their first 8 hex digits only change about once a minute, and `ocs who` showed near-identical addresses such as `codex-01a21b2c` / `codex-01a21b2b`. The short address shown by `ocs who`, `ocs whoami` and delivery output is now a hash of the full thread id, like OpenCode's `oc-<8hex>`. Old `codex-<8hex>` prefixes still resolve, and any address that matches more than one thread is still refused. LAN conversation channels are unchanged
+- When a DM goes to a Codex thread that has ended, the "parked" notice now says when the thread was last active (for example `last active 2026-10-14 15:11 (43 days ago)`), including threads whose rollout Codex has archived as `.jsonl.zst` (#93)
+
 ## 0.9.25
 
 - Antigravity sessions run by `agy acp` (ACP clients such as Orca Bot) now get an address too. 0.9.24 only found interactive `agy` windows, so these sessions were missing from `ocs who`. They are now listed under "Antigravity CLI windows" as `agy-<8hex>` with `(acp)` and become DM-able after their agent runs any ocs command. ocs proves the session is live by the `agy acp` process that keeps the session's `brain/<conversation-id>` directory open, and re-checks it and the registered port before every send. The DM runs a turn in that session; agy streams the reply to the ACP client. See docs/agy.md

@@ -10,7 +10,8 @@
 // first line is a `session_meta` record carrying cwd/originator/source/git, and
 // the first `event_msg` of type `user_message` is the earliest human-readable
 // label for the session.
-import { closeSync, openSync, readdirSync, readSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 /** Minimal inline of upstream format.ts sanitizeSingleLine: strip ANSI/control chars, collapse tabs/newlines. */
@@ -45,6 +46,16 @@ export interface CodexSessionSummary {
 
 export function isCodexThreadId(value: string): boolean {
   return THREAD_ID_RE.test(value);
+}
+
+/**
+ * Display short address for a Codex thread (#93). Thread ids are UUIDv7, so their first
+ * 8 hex digits are a ~65 s timestamp bucket: sessions opened together get near-identical
+ * prefixes. Hash the full id instead, as OpenCode does (`openCodeShortId`).
+ * Display only — channel keys keep using the full id (local) or the time prefix (LAN).
+ */
+export function codexShortId(threadId: string): string {
+  return `codex-${createHash("sha256").update(threadId.toLowerCase()).digest("hex").slice(0, 8)}`;
 }
 
 /** `$CODEX_HOME/sessions`, else `~/.codex/sessions`. */
@@ -120,6 +131,37 @@ export function listCodexRolloutFiles(
     b.startedAt - a.startedAt || b.startedAtLabel.localeCompare(a.startedAtLabel)
   );
   return found;
+}
+
+/**
+ * Last write time of a thread's rollout, including archives Codex has compressed to
+ * `.jsonl.zst` (which `listCodexRolloutFiles` deliberately skips). Null when not found.
+ */
+export function codexRolloutLastActive(root: string, threadId: string): number | null {
+  if (!isCodexThreadId(threadId)) return null;
+  const suffixes = [`-${threadId.toLowerCase()}.jsonl`, `-${threadId.toLowerCase()}.jsonl.zst`];
+  let latest: number | null = null;
+  for (const year of readdirOrEmpty(root)) {
+    if (!/^\d{4}$/.test(year)) continue;
+    for (const month of readdirOrEmpty(join(root, year))) {
+      if (!/^\d{2}$/.test(month)) continue;
+      for (const day of readdirOrEmpty(join(root, year, month))) {
+        if (!/^\d{2}$/.test(day)) continue;
+        const dayPath = join(root, year, month, day);
+        for (const name of readdirOrEmpty(dayPath)) {
+          const lower = name.toLowerCase();
+          if (!lower.startsWith("rollout-") || !suffixes.some((suffix) => lower.endsWith(suffix))) continue;
+          try {
+            const mtime = statSync(join(dayPath, name)).mtimeMs;
+            if (latest === null || mtime > latest) latest = mtime;
+          } catch {
+            // Raced with rotation/deletion: not evidence of anything.
+          }
+        }
+      }
+    }
+  }
+  return latest;
 }
 
 function readHead(path: string, bytes: number): string {

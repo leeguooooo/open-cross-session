@@ -90,8 +90,9 @@ ocs rename --clear                              # drop the name
   DMs come back as `ocs dm <your-name>`.
 - Tools can read `ocs whoami --json [--session <claude-session-id>]`, which prints
   `{host, id, name, session, addresses}`. Every entry in `addresses` works with `ocs dm`.
-  In Codex it also prints `threadId`, the full thread UUID: the short `codex-<8hex>` id
-  can be shared by Codex tasks started within about a minute of each other.
+  In Codex it also prints `threadId`, the full thread UUID. The short
+  `codex-<8hex>` id is a hash of the full thread id, so tasks started at the same time get
+  different ids; the old form (the thread id's first 8 hex digits) still works.
 
 ### Pair it with Claude Status Bar
 

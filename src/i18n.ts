@@ -16,6 +16,23 @@ export function detectLang(env: NodeJS.ProcessEnv = process.env): Lang {
   return locale.toLowerCase().startsWith("zh") ? "zh" : "en";
 }
 
+/** Local wall-clock `YYYY-MM-DD HH:mm`. */
+export function localStamp(ms: number): string {
+  const at = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+}
+
+/** Coarse "how long ago": minutes, hours, then days. */
+export function agoText(ms: number, lang: Lang, now: number = Date.now()): string {
+  const minutes = Math.max(0, Math.floor((now - ms) / 60_000));
+  if (minutes < 60) return lang === "zh" ? `${minutes} 分钟前` : `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return lang === "zh" ? `${hours} 小时前` : `${hours} h ago`;
+  const days = Math.floor(hours / 24);
+  return lang === "zh" ? `${days} 天前` : `${days} days ago`;
+}
+
 interface Catalog {
   help: string;
   stored: (channel: string, seq: number) => string;
@@ -226,7 +243,8 @@ interface Catalog {
   dmParked: (target: string, channel: string) => string;
   dmParkedNew: (target: string, channel: string) => string;
   dmParkedStable: (target: string, channel: string) => string;
-  dmCodexParked: (thread: string, channel: string) => string;
+  /** `lastActive`: rollout mtime (epoch ms) when known (#93). */
+  dmCodexParked: (thread: string, channel: string, lastActive?: number | null) => string;
   dmPiParked: (target: string, channel: string) => string;
   dmTargetNotFound: (target: string) => string;
   dmCmuxBusy: (ref: string) => string;
@@ -648,8 +666,8 @@ Other sessions are unaffected; set OCS_NO_CLAUDE_CHANNEL=1 on the sender to skip
     `${target} has no live session — NOT woken. This created a new DM channel ${channel}; a restarted session with a different name will not discover or read it. Do not resend to this address. If you send to a live alias from \`ocs who\` instead, the peer may see both messages.`,
   dmParkedStable: (target, channel) =>
     `${target} has no live session — NOT woken. The message was appended to stable workspace DM ${channel}; the peer can read it after restart by using the same workspace alias, but ocs does not auto-nudge offline sessions.`,
-  dmCodexParked: (thread, channel) =>
-    `Codex thread ${thread} has no live session — NOT woken. The message is parked in ${channel}; \`ocs inbox\` in that thread will find it after it resumes. Do not resend.`,
+  dmCodexParked: (thread, channel, lastActive) =>
+    `Codex thread ${thread} has no live session — NOT woken.${lastActive == null ? "" : ` It was last active ${localStamp(lastActive)} (${agoText(lastActive, "en")}).`} The message is parked in ${channel}; \`ocs inbox\` in that thread will find it after it resumes. Do not resend.`,
   dmPiParked: (target, channel) =>
     `${target} is not a live registered Pi TUI — NOT woken. The message is parked in ${channel}. Do not resend. Run \`ocs skill install\`, then /reload that Pi: it becomes wakeable and \`ocs inbox\` there finds the message. A restarted Pi is a new session — resume this one with --continue/--resume, or read it with \`ocs read ${channel}\`.`,
   dmTargetNotFound: (target) =>
@@ -1060,8 +1078,8 @@ ${lanMessages("zh").help}
     `${target} 当前没有活会话——**没有被唤醒**。这次发送新建了 DM 频道 ${channel}；对方若已重启并更名，将不会发现或读到它。不要向此地址重发。若改发到 \`ocs who\` 里的实时别名，对方可能看到两条。`,
   dmParkedStable: (target, channel) =>
     `${target} 当前没有活会话——**没有被唤醒**。消息已追加到稳定工作区 DM ${channel}；对方重启后使用同一工作区别名即可读取，但 ocs 不会自动催收离线会话。`,
-  dmCodexParked: (thread, channel) =>
-    `Codex 线程 ${thread} 当前没有活会话——**没有被唤醒**。消息停靠在 ${channel}；该线程恢复后用 \`ocs inbox\` 能找到。请勿重发。`,
+  dmCodexParked: (thread, channel, lastActive) =>
+    `Codex 线程 ${thread} 当前没有活会话——**没有被唤醒**。${lastActive == null ? "" : `它最后活跃于 ${localStamp(lastActive)}（${agoText(lastActive, "zh")}）。`}消息停靠在 ${channel}；该线程恢复后用 \`ocs inbox\` 能找到。请勿重发。`,
   dmPiParked: (target, channel) =>
     `${target} 不是已登记的活 Pi TUI——**没有被唤醒**。消息停靠在 ${channel}。请勿重发。\`ocs skill install\` 后在那个 Pi 里 /reload：它就能被唤醒，\`ocs inbox\` 也能找到这条。重启 Pi 是新会话——要用 --continue/--resume 恢复这个会话，或直接 \`ocs read ${channel}\`。`,
   dmTargetNotFound: (target) => `找不到目标: ${target}——跑 \`ocs who\` 看可达的 agent`,
