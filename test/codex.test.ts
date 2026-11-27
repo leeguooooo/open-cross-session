@@ -290,6 +290,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
           threadId?: string;
           summary?: string | null;
           cwd?: string | null;
+          project?: string;
           self?: boolean;
           livePid?: number | null;
           tty?: string | null;
@@ -304,6 +305,7 @@ describe("wakeCodexTask 端到端（假 IPC 路由器）", () => {
         threadId: THREAD_B,
         summary: "hello world",
         cwd: "/tmp/b",
+        project: "b",
         self: true,
         livePid: null,
         tty: null,

@@ -94,6 +94,24 @@ ocs rename --clear                              # drop the name
   `codex-<8hex>` id is a hash of the full thread id, so tasks started at the same time get
   different ids; the old form (the thread id's first 8 hex digits) still works.
 
+### Address by project
+
+With many sessions open, a project name is more reliable than a short id. `ocs who` marks
+each session with the project it works in, `[project]` (the git repository name, else the
+directory name; worktrees of one repository share it):
+
+```bash
+ocs dm codex.my-api "fix the retry logic"    # the one live Codex session in my-api; pi. / claude. too
+ocs dm codex.my-api@mac "…"                  # on a paired computer
+ocs dm codex-1f3a9c2e "…" --project my-api   # refused unless the target works in my-api
+```
+
+No live session in the project, or more than one, is refused with the candidates listed, and
+nothing is stored. `--project` also refuses a session that has ended or whose working directory
+is unknown. LAN peers receive only project names, never paths; a peer too old to report
+projects makes `--project` refuse. Names given with `ocs rename` before this, such as
+`codex.xxx`, still win; new names of that shape are refused.
+
 ### Pair it with Claude Status Bar
 
 [Claude Status Bar](https://github.com/leeguooooo/claude-code-usage-bar) (`cs`)

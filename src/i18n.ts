@@ -109,6 +109,15 @@ interface Catalog {
   doctorHermesSelf: (target: string, open: boolean) => string;
   whoHermesHeader: string;
   dmCodexAmbiguous: (target: string, matches: string[]) => string;
+  /** #93 project addressing / `dm --project`. Nothing is stored when these are printed. */
+  dmProjectNone: (kind: string, project: string) => string;
+  dmProjectAmbiguous: (kind: string, project: string, candidates: string[]) => string;
+  dmProjectResolved: (target: string, address: string) => string;
+  dmProjectMismatch: (target: string, expected: string, actual: string) => string;
+  dmProjectUnknown: (target: string, expected: string) => string;
+  dmProjectLanUnverifiable: (target: string) => string;
+  dmProjectLanMissing: (target: string, peer: string) => string;
+  dmParkedProjectPeers: (project: string, addresses: string[]) => string;
   inboxEmpty: string;
   inboxHeader: (threads: number) => string;
   inboxLine: (unread: number, lastFrom: string, lastAt: string) => string;
@@ -292,8 +301,11 @@ Usage:
   ocs who [--verbose | --json]
       Roster of every reachable agent: Claude sessions, Codex tasks, Pi sessions, terminals,
       plus pending idle notifications. Same-project peers come first; --verbose shows raw IDs/paths.
-  ocs dm <name-or-id> <text> [--as <name>] [--inherit <old-dm-channel>] [--notify-when-idle] [--no-wake] [--batch <tasks.json>] [--json]
+  ocs dm <name-or-id> <text> [--as <name>] [--project <project>] [--inherit <old-dm-channel>] [--notify-when-idle] [--no-wake] [--batch <tasks.json>] [--json]
       Message + wake one agent. Channel is auto-derived; nothing to set up.
+      codex.<project> / pi.<project> / claude.<project> picks the one live session of that kind working in
+      <project> (\`ocs who\` shows [project]); none or several → refused, nothing stored.
+      --project <project> refuses, before anything is stored, a target that is not a live session in <project>.
       --inherit binds one pre-v0.3.4 DM history channel; both Claude workspaces must be live and unique.
   ocs inbox [--as <name> | --session <claude-session-id>] [--json]
       List unread threads attributable to this identity; reading still uses the existing ocs read command.
@@ -460,6 +472,21 @@ Data directory: ~/.ocs (override with OCS_HOME). Language: OCS_LANG=en|zh.`,
   whoHermesHeader: "Hermes sessions (wake: ocs dm hermes-<id> / @hermes-<id>; busy sessions queue it, nothing is interrupted)",
   dmCodexAmbiguous: (target, matches) =>
     `Codex address ${target} is ambiguous: ${matches.join(", ")} — use the full thread id from \`ocs who --verbose\``,
+  dmProjectNone: (kind, project) =>
+    `no live ${kind} session works in project ${project} — nothing was stored or sent. \`ocs who\` lists sessions with their [project]`,
+  dmProjectAmbiguous: (kind, project, candidates) =>
+    `${candidates.length} live ${kind} sessions work in project ${project}, so ${kind}.${project} is ambiguous — nothing was stored or sent. Pick one:\n${candidates.map((c) => `  ${c}`).join("\n")}`,
+  dmProjectResolved: (target, address) => `resolved ${target} → ${address}`,
+  dmProjectMismatch: (target, expected, actual) =>
+    `${target} works in project ${actual}, not ${expected} — nothing was stored or sent. \`ocs who\` lists sessions with their [project]`,
+  dmProjectUnknown: (target, expected) =>
+    `cannot confirm that ${target} works in project ${expected} (no live session with a known working directory) — nothing was stored or sent`,
+  dmProjectLanUnverifiable: (target) =>
+    `cannot confirm the project of ${target}: that peer does not report projects (it runs an older ocs) — nothing was sent. Upgrade ocs there, or drop --project`,
+  dmProjectLanMissing: (target, peer) =>
+    `${target} is not listed by ${peer} right now — nothing was sent. \`ocs who --lan\` lists its agents`,
+  dmParkedProjectPeers: (project, addresses) =>
+    `live sessions in project ${project}: ${addresses.join(", ")}`,
   inboxEmpty: "inbox: no unread threads for this identity",
   inboxHeader: (threads) => `Inbox: ${threads} unread thread(s)`,
   inboxLine: (unread, lastFrom, lastAt) =>
@@ -695,7 +722,7 @@ Other sessions are unaffected; set OCS_NO_CLAUDE_CHANNEL=1 on the sender to skip
   renameCleared: (names, id) => `name cleared: ${names.join(", ")} (reach this session as ${id})`,
   renameNothingToClear: (id) => `this session has no ocs name (reach it as ${id})`,
   renameReserved: (name) =>
-    `${name} looks like an ocs address (claude-/codex-/pi-<8hex> or a full id); pick another name`,
+    `${name} looks like an ocs address (claude-/codex-/pi-<8hex>, a full id, or a project address like codex.<project>); pick another name`,
   renameTaken: (name, owner) =>
     `name ${name} is already used by ${owner}; pick another, or pass --force if that session is gone`,
   renameLiveCollision: (name, pid) =>
@@ -728,8 +755,11 @@ const zh: Catalog = {
   ocs who [--verbose | --json]
       全机 agent 花名册：Claude 会话、Codex 任务、Pi 会话、终端，都在一张表里，
       外加待触发的空闲通知；当前项目优先，--verbose 显示底层 ID/路径
-  ocs dm <名字或id> <内容> [--as <name>] [--inherit <旧dm频道>] [--notify-when-idle] [--no-wake] [--batch <tasks.json>] [--json]
+  ocs dm <名字或id> <内容> [--as <name>] [--project <项目>] [--inherit <旧dm频道>] [--notify-when-idle] [--no-wake] [--batch <tasks.json>] [--json]
       给一个 agent 发消息并唤醒；频道自动派生，什么都不用建
+      codex.<项目> / pi.<项目> / claude.<项目> 选中该项目里唯一在线的这类会话（\`ocs who\` 显示 [项目]）；
+      没有或有多个都拒发，什么都不存
+      --project <项目>：目标不是该项目里的在线会话就拒发，什么都不存
       --inherit 一次性绑定 v0.3.4 之前的 DM 历史；双方 Claude 工作区必须在线且唯一
   ocs inbox [--as <name> | --session <claude-session-id>] [--json]
       列出能可靠归属给当前身份的未读线程；读取仍复用现有 ocs read 命令
@@ -879,6 +909,21 @@ ${lanMessages("zh").help}
   whoHermesHeader: "Hermes 会话（唤醒: ocs dm hermes-<id> / @hermes-<id>；对方忙时排队，不打断）",
   dmCodexAmbiguous: (target, matches) =>
     `Codex 地址 ${target} 不唯一：${matches.join("、")}——请从 \`ocs who --verbose\` 复制完整 thread id`,
+  dmProjectNone: (kind, project) =>
+    `项目 ${project} 里没有在线的 ${kind} 会话——没有存储也没有发送。\`ocs who\` 会列出每个会话的 [项目]`,
+  dmProjectAmbiguous: (kind, project, candidates) =>
+    `项目 ${project} 里有 ${candidates.length} 个在线的 ${kind} 会话，${kind}.${project} 有歧义——没有存储也没有发送。请指定其中一个：\n${candidates.map((c) => `  ${c}`).join("\n")}`,
+  dmProjectResolved: (target, address) => `已解析 ${target} → ${address}`,
+  dmProjectMismatch: (target, expected, actual) =>
+    `${target} 在项目 ${actual} 里工作，不是 ${expected}——没有存储也没有发送。\`ocs who\` 会列出每个会话的 [项目]`,
+  dmProjectUnknown: (target, expected) =>
+    `无法确认 ${target} 在项目 ${expected} 里工作（不是工作目录可知的在线会话）——没有存储也没有发送`,
+  dmProjectLanUnverifiable: (target) =>
+    `无法确认 ${target} 的项目：对端不报告项目（它的 ocs 版本较旧）——没有发送。请升级对端的 ocs，或去掉 --project`,
+  dmProjectLanMissing: (target, peer) =>
+    `${peer} 当前没有列出 ${target}——没有发送。\`ocs who --lan\` 会列出它的 agent`,
+  dmParkedProjectPeers: (project, addresses) =>
+    `项目 ${project} 里在线的会话：${addresses.join("、")}`,
   inboxEmpty: "inbox：当前身份没有未读线程",
   inboxHeader: (threads) => `收件箱：${threads} 个未读线程`,
   inboxLine: (unread, lastFrom, lastAt) =>
@@ -1102,7 +1147,7 @@ ${lanMessages("zh").help}
   renameReplaced: (names) => `旧名字已释放：${names.join("、")}`,
   renameCleared: (names, id) => `名字已删除：${names.join("、")}（仍可用 ${id} 找到本会话）`,
   renameNothingToClear: (id) => `本会话没有 ocs 名字（可用 ${id} 找到它）`,
-  renameReserved: (name) => `${name} 长得像 ocs 地址（claude-/codex-/pi-<8hex> 或完整 id），换一个名字`,
+  renameReserved: (name) => `${name} 长得像 ocs 地址（claude-/codex-/pi-<8hex>、完整 id，或 codex.<项目> 这样的项目地址），换一个名字`,
   renameTaken: (name, owner) => `名字 ${name} 已被 ${owner} 占用；换一个，或确认那个会话已经不用了再加 --force`,
   renameLiveCollision: (name, pid) => `${name} 是 pid ${pid} 的活 Claude 会话名；精确会话名优先，换一个名字`,
   skillInstalled: (path) => `技能已安装: ${path}`,

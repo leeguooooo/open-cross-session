@@ -32,8 +32,11 @@ export type OcsNameEntry =
 /** 这些形状是 ocs 自己的地址语法，给了名字就会遮蔽真实会话。 */
 const RESERVED_RE = /^(?:claude|codex|pi)-[0-9a-f]{8}$/i;
 
+/** `codex.<project>` etc. are project addresses (#93); kept in sync with project-address.ts. */
+const PROJECT_ADDRESS_SHAPE_RE = /^(?:codex|pi|claude)\.[A-Za-z0-9]/i;
+
 export function isReservedOcsName(name: string): boolean {
-  return opencodeSessionIdFromTarget(name) !== null || /^oc-[0-9a-f]{8}$/i.test(name) || name.toLowerCase() === "agy" || RESERVED_RE.test(name) ||
+  return PROJECT_ADDRESS_SHAPE_RE.test(name) || opencodeSessionIdFromTarget(name) !== null || /^oc-[0-9a-f]{8}$/i.test(name) || name.toLowerCase() === "agy" || RESERVED_RE.test(name) ||
     grokSessionIdFromTarget(name) !== null ||
     agyConversationIdFromTarget(name) !== null || AGY_SHORT_TARGET_RE.test(name) ||
     isCodexThreadId(name) ||

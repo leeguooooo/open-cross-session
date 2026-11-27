@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Codex short addresses no longer collide for tasks opened around the same time (#93). Codex thread ids are UUIDv7, so their first 8 hex digits only change about once a minute, and `ocs who` showed near-identical addresses such as `codex-01a21b2c` / `codex-01a21b2b`. The short address shown by `ocs who`, `ocs whoami` and delivery output is now a hash of the full thread id, like OpenCode's `oc-<8hex>`. Old `codex-<8hex>` prefixes still resolve, and any address that matches more than one thread is still refused. LAN conversation channels are unchanged
+- Address sessions by project (#93). `ocs who` (and `ocs who --lan`) shows the project each Claude, Codex and Pi session works in as `[project]`: the git repository name, else the directory name. `ocs dm codex.<project> "…"` (also `pi.` / `claude.`, and `…@<peer>` on a paired computer) reaches the one live session of that kind in that project; none or several is refused with the candidates listed, and nothing is stored. `ocs dm <address> --project <project>` refuses, before anything is stored, a target that is not a live session in that project, so a task meant for one repository no longer lands in another. LAN peers receive only project names, never paths. Names already registered with `ocs rename` keep working; new names shaped like `codex.<x>` are refused
+- When a DM to an ended Codex thread is parked, the notice also lists live sessions in the same project (#93)
 - When a DM goes to a Codex thread that has ended, the "parked" notice now says when the thread was last active (for example `last active 2026-10-14 15:11 (43 days ago)`), including threads whose rollout Codex has archived as `.jsonl.zst` (#93)
 
 ## 0.9.25

@@ -18,6 +18,7 @@ import {
   claudeWorkspaceTargetMatches,
   uniqueClaudeWorkspaceAlias,
   uniqueClaudeWorkspaceIdentity,
+  workspaceAliasForCwd,
 } from "./claude-address.ts";
 import { listNativeSessions, type NativeClaudeSession } from "./claude-inject.ts";
 import { codexDesktopIpcAvailable } from "./codex-ipc.ts";
@@ -340,6 +341,8 @@ export type RosterEntry =
       ocsName?: string;
       workspaceAlias?: string;
       workspaceWarning?: string;
+      /** Project name from the working directory (#93); same derivation for every kind. */
+      project?: string;
       pid: number;
       status: string | null;
       cwd: string | null;
@@ -352,6 +355,8 @@ export type RosterEntry =
       ocsName?: string;
       summary: string | null;
       cwd: string | null;
+      /** Project name from the working directory (#93). */
+      project?: string;
       self: boolean;
       /** 持有该 thread rollout fd 的进程；非 null 即证明会话在跑（`codex queue` 可达）。 */
       livePid: number | null;
@@ -369,6 +374,8 @@ export type RosterEntry =
       ocsName?: string;
       pid: number;
       cwd: string;
+      /** Project name from the working directory (#93). */
+      project?: string;
       self: boolean;
     }
   | {
@@ -430,6 +437,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
       ...(ocsName === undefined ? {} : { ocsName }),
       ...(alias !== null && alias !== s.name ? { workspaceAlias: alias } : {}),
       ...(workspaceWarning === undefined ? {} : { workspaceWarning }),
+      ...(rawAlias === null ? {} : { project: rawAlias }),
       pid: s.pid,
       status: s.status,
       cwd: s.cwd ?? null,
@@ -463,6 +471,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
     const livePid = codexLive.get(s.threadId) ?? null;
     const host = livePid === null ? undefined : codexHostByPid.get(livePid);
     const ocsName = ocsNameFor({ kind: "codex", id: s.threadId }, names)?.name;
+    const project = workspaceAliasForCwd(s.cwd);
     entries.push({
       kind: "codex-task",
       target: codexShortId(s.threadId),
@@ -470,6 +479,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
       ...(ocsName === undefined ? {} : { ocsName }),
       summary: s.summary,
       cwd: s.cwd,
+      ...(project === null ? {} : { project }),
       self: s.threadId === selfCodexThreadId,
       livePid,
       tty: host?.tty ?? null,
@@ -479,6 +489,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
   const selfPiSessionId = env[OCS_PI_SESSION_ID_ENV]?.toLowerCase();
   for (const s of listPiSessions(env)) {
     const ocsName = ocsNameFor({ kind: "pi", id: s.session_id }, names)?.name;
+    const project = workspaceAliasForCwd(s.cwd);
     entries.push({
       kind: "pi",
       target: `pi-${s.session_id.slice(0, 8)}`,
@@ -487,6 +498,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
       ...(ocsName === undefined ? {} : { ocsName }),
       pid: s.pid,
       cwd: s.cwd,
+      ...(project === null ? {} : { project }),
       self: selfPiSessionId === s.session_id,
     });
   }

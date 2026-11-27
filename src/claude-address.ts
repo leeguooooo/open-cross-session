@@ -93,7 +93,12 @@ function canonicalPath(path: string): string {
 }
 
 function workspaceAnchor(session: NativeClaudeSession): WorkspaceAnchor | null {
-  if (typeof session.cwd !== "string" || !isAbsolute(session.cwd)) return null;
+  return typeof session.cwd === "string" ? anchorForCwd(session.cwd) : null;
+}
+
+function anchorForCwd(cwd: string): WorkspaceAnchor | null {
+  if (!isAbsolute(cwd)) return null;
+  const session = { cwd };
   const cached = anchorCache.get(session.cwd);
   if (cached !== undefined) return cached;
   let remoteRaw: string | null;
@@ -216,6 +221,15 @@ function workspaceKey(env: NodeJS.ProcessEnv): Buffer {
 
 export function claudeWorkspaceAlias(session: NativeClaudeSession): string | null {
   return workspaceAnchor(session)?.alias ?? null;
+}
+
+/**
+ * Project name of any session's working directory (#93): the same alias Claude sessions get
+ * (git remote repo name > repository directory > cwd basename; worktrees share it).
+ * Null when the directory is not absolute, git is unavailable, or the name is not NAME_RE-safe.
+ */
+export function workspaceAliasForCwd(cwd: string | null | undefined): string | null {
+  return typeof cwd === "string" ? anchorForCwd(cwd)?.alias ?? null : null;
 }
 
 /**

@@ -782,8 +782,9 @@ describe("ocs rename：名字和 id 都能找到会话", () => {
       expect(content(await f.nextFrame())).toContain("ping by mention");
 
       const who = await run(f, ["who"]);
-      expect(who.stdout).toContain("  helper  busy");
-      expect(who.stdout).toContain("  boss  busy");
+      // #93: each session shows the project it works in.
+      expect(who.stdout).toContain("  helper  [worker]  busy");
+      expect(who.stdout).toContain("  boss  [tester]  busy");
       expect(who.stdout).not.toContain("ocs rename <name>");
 
       const collision = await run(f, ["rename", "worker-a"]);

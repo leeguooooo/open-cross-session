@@ -33,6 +33,8 @@ If the skill came from somewhere `upgrade` can't refresh:
 ocs who                          # all reachable peers, current project first + pending notices; you are marked
 ocs who --verbose                # raw IDs/paths for diagnostics
 ocs dm <name-or-id> "<text>"     # request work / answer / deliver a result; wakes the peer
+ocs dm codex.<project> "<text>"  # the one live Codex session working in <project> (also pi./claude.)
+ocs dm <name-or-id> "<text>" --project <project>  # refuse unless the target works in <project>
 ocs dm <name> "<text>" --no-wake # stored only; peer must read/inbox later
 ocs dm <name> --batch tasks.json # JSON array of related tasks, one message/delivery
 ocs stats [channel] --json        # observed message outcomes and batch counts
@@ -60,6 +62,13 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
   owner is gone). `ocs whoami --json` prints this session's host, id, name, and addresses.
 - A Codex transport PID may serve several threads. A child build process with that PPID does not identify its owning thread. Match the full thread ID and cwd; never pick the only listed peer as a substitute for an unknown owner.
 - Use the full ID shown by `ocs who --verbose` only if a short prefix is ambiguous.
+- `ocs who` shows the project each session works in as `[project]` (the git repository
+  name, else the directory name). **When you hand a task to another session, name the
+  project:** use `codex.<project>` / `pi.<project>` / `claude.<project>`, or add
+  `--project <project>` to any address. ocs then refuses — storing nothing — a session that
+  works in another project, has ended, or is ambiguous, instead of sending your task to
+  the wrong repository. If it refuses with several candidates, pick one address from the
+  list it prints; never guess between near-identical addresses.
 - `ocs who` lists every reachable Codex task: one whose rollout is held open by a
   live process (wakeable with `codex queue`, terminal TUIs included — shown as
   `[queue transport pid N · <host app> <tty>]`) or one claimed by an open Desktop renderer

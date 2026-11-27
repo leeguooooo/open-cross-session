@@ -89,6 +89,21 @@ ocs rename --clear                              # 删掉名字
   在 Codex 里还会多输出 `threadId`（完整 thread UUID）。Codex 短 id `codex-<8hex>` 由完整 thread id
   哈希得到，同一时间开的几个任务也互不相同；旧的按 thread id 前 8 位的写法仍然能用。
 
+### 按项目寻址
+
+同时开着很多会话时，按项目名找人比记短 id 可靠。`ocs who` 在每个会话后面标出它所在的项目
+`[项目]`（git 仓库名，不是 git 仓库就用目录名；同一仓库的 worktree 算同一个项目）：
+
+```bash
+ocs dm codex.my-api "修一下重试逻辑"        # my-api 里唯一在线的 Codex 会话；也支持 pi. / claude.
+ocs dm codex.my-api@mac "…"                # 配对机器上的
+ocs dm codex-1f3a9c2e "…" --project my-api  # 目标不在 my-api 里就拒发
+```
+
+项目里没有在线会话、或有不止一个，都会拒发并列出候选，什么都不存；`--project` 对已结束的会话、
+工作目录不明的目标同样拒发。局域网对端只收到项目名，收不到路径；对端版本太旧、不报告项目时，
+`--project` 拒发。用 `ocs rename` 起过的 `codex.xxx` 这类老名字仍然优先，新名字不能再这样起。
+
 ### 搭配 Claude Status Bar
 
 [Claude Status Bar](https://github.com/leeguooooo/claude-code-usage-bar)（`cs`）会在状态栏单独一行

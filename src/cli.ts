@@ -55,7 +55,7 @@ import {
 import { detectLang, messages } from "./i18n.ts";
 import { lanMessages } from "./i18n-lan.ts";
 import { LAN_DAEMON_COMMAND, runLanDaemon } from "./lan-daemon.ts";
-import { cmdLan, doctorLanSection, findLanAgents, lanDm, lanPeerCount, lanWhoJson, printLanWho, type LanCliContext, type LanDmSender } from "./lan-cli.ts";
+import { cmdLan, doctorLanSection, findLanAgents, lanDm, lanPeerCount, lanWhoJson, printLanWho, verifyLanProject, type LanCliContext, type LanDmSender } from "./lan-cli.ts";
 import {
   identityCursorConsumer,
   inboxCursorState,
@@ -129,6 +129,7 @@ import {
   type NameOwner,
 } from "./names.ts";
 import { verifiedClaudeWorkspaceIdentity } from "./workspace-registry.ts";
+import { checkTargetProject, expandProjectAddress, sameProject } from "./project-address.ts";
 import {
   codexQueueSupported,
   diagnoseCodexLiveness,
@@ -186,7 +187,7 @@ const COMMAND_SPECS: Record<string, CommandSpec> = {
     minPos: 1,
     maxPos: null,
   },
-  dm: { value: ["as", "inherit", "batch"], bool: ["notify-when-idle", "no-wake", "json"], minPos: 1, maxPos: null },
+  dm: { value: ["as", "inherit", "batch", "project"], bool: ["notify-when-idle", "no-wake", "json"], minPos: 1, maxPos: null },
   stats: { value: [], bool: ["json"], minPos: 0, maxPos: 1 },
   inbox: { value: ["as", "session"], bool: ["json"], minPos: 0, maxPos: 0 },
   read: { value: ["as", "since"], bool: ["json", "peek", "include-self"], minPos: 1, maxPos: 1 },
@@ -849,19 +850,48 @@ async function cmdDm(parsed: Parsed): Promise<void> {
   const body = messageBody(parsed, bodyParts);
   if (parsed.flags.has("no-wake") && parsed.flags.has("notify-when-idle")) fail(M.failNoWakeNotify);
   const from = senderName(parsed);
+  // #93 `--project <name>`: refuse, before anything is written, a target working elsewhere.
+  const projectFlag = parsed.flags.get("project");
+  if (projectFlag === true || (typeof projectFlag === "string" && !NAME_RE.test(projectFlag))) {
+    fail(M.dmProjectUnknown(target, typeof projectFlag === "string" ? projectFlag : "?"));
+  }
+  const expectedProject = typeof projectFlag === "string" ? projectFlag : null;
   // `<地址>@<对端>`：NAME_RE 里没有 '@'，本机地址不可能长这样，分流无歧义。
   if (target.includes("@")) {
     for (const flag of ["notify-when-idle", "inherit"]) {
       if (parsed.flags.has(flag)) fail(L.dmFlagUnsupported(flag));
+    }
+    if (expectedProject !== null) {
+      const check = await verifyLanProject(lanContext(parsed), target, expectedProject);
+      if (check.ok === false) {
+        fail(check.reason === "missing" ? M.dmProjectLanMissing(target, check.peer)
+          : check.reason === "unverifiable" ? M.dmProjectLanUnverifiable(target)
+          : M.dmProjectMismatch(target, expectedProject, check.actual));
+      }
     }
     await lanDm(lanContext(parsed), target, body, lanDmSender(parsed, from));
     return;
   }
   // 订阅方在任何 workspace 索引 / 频道写入前就要确定：失败必须保持零落盘。
   const idleSubscriber = parsed.flags.has("notify-when-idle") ? requireIdleSubscriber() : null;
+  // #93 `codex.<project>`: exactly one reachable session of that kind in that project.
+  const expansion = await expandProjectAddress(target);
+  if (expansion.kind === "refused") {
+    const listed = expansion.candidates.map((c) => `${c.address}  [${c.project}]${c.label === null ? "" : `  ${c.label.slice(0, 60)}`}`);
+    fail(expansion.reason === "none"
+      ? M.dmProjectNone(expansion.projectKind, expansion.project)
+      : M.dmProjectAmbiguous(expansion.projectKind, expansion.project, listed));
+  }
+  if (expansion.kind === "expanded") {
+    console.log(M.dmProjectResolved(target, `${expansion.candidate.address}  [${expansion.candidate.project}]`));
+    if (expectedProject !== null && !sameProject(expansion.candidate.project, expectedProject)) {
+      fail(M.dmProjectMismatch(target, expectedProject, expansion.candidate.project));
+    }
+  }
+  const dmTarget = expansion.target;
   let resolved: ReturnType<typeof resolveDmTarget>;
   try {
-    resolved = resolveDmTarget(target);
+    resolved = resolveDmTarget(dmTarget);
   } catch (error) {
     fail(M.dmConversationFailed(error instanceof Error ? error.message : String(error)));
   }
@@ -877,6 +907,14 @@ async function cmdDm(parsed: Parsed): Promise<void> {
   }
   if (resolved.ambiguousNameTargets !== undefined) {
     fail(M.dmNameAmbiguous(target, resolved.ambiguousNameTargets));
+  }
+  if (expectedProject !== null) {
+    const check = await checkTargetProject(resolved, expectedProject);
+    if (check.ok === false) {
+      fail(check.reason === "mismatch"
+        ? M.dmProjectMismatch(target, expectedProject, check.actual)
+        : M.dmProjectUnknown(target, expectedProject));
+    }
   }
   // #78：本机既没有这个活会话、也不是 ocs 名字 / 工作区别名——原来会新建一个本机孤儿频道。
   // 局域网对端上有同地址的 agent 时，在任何写入之前拒绝，并给出 `<地址>@<对端>`。
@@ -1113,6 +1151,9 @@ async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lan
       .map(({ entry }) => entry);
   const projectTag = (entry: { cwd?: string | null }): string =>
     entry.cwd === cwd ? M.whoCurrentProject : "";
+  // #93: which project a session works in, so a task is not sent to the wrong one.
+  const projectName = (entry: { project?: string }, shown?: string): string =>
+    entry.project === undefined || entry.project === shown ? "" : `  [${entry.project}]`;
   const claude = relevantFirst(roster.entries.filter((e) => e.kind === "claude"));
   const codexCandidates = relevantFirst(roster.entries.filter((e) => e.kind === "codex-task"));
   let codexOwners: Record<string, string> = {};
@@ -1154,7 +1195,8 @@ async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lan
     for (const e of claude) {
       if (e.kind !== "claude") continue;
       // 名字 + 不变短 id 并排：两个都能 dm / @。
-      const address = `${e.ocsName ?? e.workspaceAlias ?? e.name}${e.id === undefined ? "" : `  ${e.id}`}`;
+      const shown = e.ocsName ?? e.workspaceAlias ?? e.name;
+      const address = `${shown}${e.id === undefined ? "" : `  ${e.id}`}${projectName(e, shown)}`;
       console.log(verbose
         ? `  ${address}  session=${e.name}  pid=${e.pid}  cwd=${e.cwd ?? "?"}  ${e.status ?? "?"}${hasClaudeChannel(e.pid) ? M.whoChannelTag : ""}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`
         : `  ${address}  ${e.status ?? "unknown"}${hasClaudeChannel(e.pid) ? M.whoChannelTag : ""}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`);
@@ -1174,8 +1216,8 @@ async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lan
       const named = e.ocsName === undefined ? "" : `${e.ocsName}  `;
       console.log(
         verbose
-          ? `  ${named}${e.target}  thread=${e.threadId}  cwd=${e.cwd ?? "?"}  ${via}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`
-          : `  ${named}${e.target}  ${label.slice(0, 60)}  cwd=${e.cwd ?? "?"}  ${via}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`,
+          ? `  ${named}${e.target}${projectName(e)}  thread=${e.threadId}  cwd=${e.cwd ?? "?"}  ${via}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`
+          : `  ${named}${e.target}${projectName(e)}  ${label.slice(0, 60)}  cwd=${e.cwd ?? "?"}  ${via}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`,
       );
     }
   } else if (codexCandidates.length > 0) {
@@ -1204,8 +1246,8 @@ async function cmdWhoLocal(parsed: Parsed, peers?: Awaited<ReturnType<typeof lan
       const named = e.ocsName === undefined ? "" : `${e.ocsName}  `;
       console.log(
         verbose
-          ? `  ${named}${e.target}  session=${e.sessionId}  pid=${e.pid}  cwd=${e.cwd}${label}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`
-          : `  ${named}${e.target}${label}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`,
+          ? `  ${named}${e.target}${projectName(e)}  session=${e.sessionId}  pid=${e.pid}  cwd=${e.cwd}${label}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`
+          : `  ${named}${e.target}${projectName(e)}${label}${projectTag(e)}${e.self ? M.whoSelfTag : ""}`,
       );
     }
   }
@@ -1718,6 +1760,8 @@ If the skill came from somewhere \`upgrade\` can't refresh:
 ocs who                          # all reachable peers, current project first + pending notices; you are marked
 ocs who --verbose                # raw IDs/paths for diagnostics
 ocs dm <name-or-id> "<text>"     # request work / answer / deliver a result; wakes the peer
+ocs dm codex.<project> "<text>"  # the one live Codex session working in <project> (also pi./claude.)
+ocs dm <name-or-id> "<text>" --project <project>  # refuse unless the target works in <project>
 ocs dm <name> "<text>" --no-wake # stored only; peer must read/inbox later
 ocs dm <name> --batch tasks.json # JSON array of related tasks, one message/delivery
 ocs stats [channel] --json        # observed message outcomes and batch counts
@@ -1745,6 +1789,13 @@ ocs dm <address>@<peer> "<text>" # message + wake an agent on a paired machine
   owner is gone). \`ocs whoami --json\` prints this session's host, id, name, and addresses.
 - A Codex transport PID may serve several threads. A child build process with that PPID does not identify its owning thread. Match the full thread ID and cwd; never pick the only listed peer as a substitute for an unknown owner.
 - Use the full ID shown by \`ocs who --verbose\` only if a short prefix is ambiguous.
+- \`ocs who\` shows the project each session works in as \`[project]\` (the git repository
+  name, else the directory name). **When you hand a task to another session, name the
+  project:** use \`codex.<project>\` / \`pi.<project>\` / \`claude.<project>\`, or add
+  \`--project <project>\` to any address. ocs then refuses — storing nothing — a session that
+  works in another project, has ended, or is ambiguous, instead of sending your task to
+  the wrong repository. If it refuses with several candidates, pick one address from the
+  list it prints; never guess between near-identical addresses.
 - \`ocs who\` lists every reachable Codex task: one whose rollout is held open by a
   live process (wakeable with \`codex queue\`, terminal TUIs included — shown as
   \`[queue transport pid N · <host app> <tty>]\`) or one claimed by an open Desktop renderer

@@ -187,7 +187,8 @@ describe("ocs lan 端到端（两台机器）", () => {
       // 远端花名册
       const who = await run(b, ["who", "--lan"]);
       expect(who.stdout).toContain("LAN alpha (alpha):");
-      expect(who.stdout).toContain("claude-aaaaaaaa@alpha  claude  idle  worker-a");
+      // #93: the peer reports the project name (never the path).
+      expect(who.stdout).toContain("claude-aaaaaaaa@alpha  [work]  claude  idle  worker-a");
 
       // #78: the address without @peer is not a local session on B. Before, B stored it in a new
       // local orphan channel and said "no live session"; now it refuses before writing anything
