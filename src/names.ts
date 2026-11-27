@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { NativeClaudeSession } from "./claude-inject.ts";
-import { isCodexThreadId } from "./codex-sessions.ts";
+import { codexShortId, isCodexThreadId } from "./codex-sessions.ts";
 import { hermesSessionKeyFromTarget, hermesTargetName, isHermesSessionKey } from "./hermes.ts";
 import { isPiSessionId } from "./pi-sessions.ts";
 import { grokSessionIdFromTarget, grokTargetName, isGrokSessionId } from "./grok.ts";
@@ -56,6 +56,7 @@ export function ownerShortId(owner: NameOwner): string {
   if (owner.kind === "hermes") return hermesTargetName(owner.id);
   if (owner.kind === "grok") return grokTargetName(owner.id);
   if (owner.kind === "antigravity") return agyWindowTargetName(owner.id);
+  if (owner.kind === "codex") return codexShortId(owner.id);
   return `${owner.kind}-${owner.id.slice(0, 8).toLowerCase()}`;
 }
 
@@ -65,6 +66,7 @@ export function entryShortId(entry: OcsNameEntry): string {
   if (entry.kind === "hermes") return hermesTargetName(entry.id);
   if (entry.kind === "grok") return grokTargetName(entry.id);
   if (entry.kind === "antigravity") return agyWindowTargetName(entry.id);
+  if (entry.kind === "codex") return codexShortId(entry.id);
   return `${entry.kind}-${entry.id.slice(0, 8).toLowerCase()}`;
 }
 

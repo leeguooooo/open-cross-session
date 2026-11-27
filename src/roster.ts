@@ -25,6 +25,7 @@ import { codexHosts, codexQueueAvailable, codexThreadLivePids, psTable } from ".
 import { codexDaemonSnapshot } from "./codex-daemon.ts";
 import {
   codexSessionsRoot,
+  codexShortId,
   isCodexThreadId,
   listCodexRolloutFiles,
   listCodexSessions,
@@ -284,8 +285,10 @@ export function findCodexCmuxSurface(
   surfaces?: readonly CmuxSurface[],
 ): CmuxSurface | null {
   if (!isCodexThreadId(threadId)) return null;
+  // Titles may carry the old time-prefix address or the hashed one (#93).
   const prefix = threadId.slice(0, 8).toLowerCase();
-  const suffix = new RegExp(`(?:^|[^a-z0-9])codex-${prefix}(?:-[0-9a-f]+)?$`, "i");
+  const hashed = codexShortId(threadId).slice("codex-".length);
+  const suffix = new RegExp(`(?:^|[^a-z0-9])codex-(?:${prefix}|${hashed})(?:-[0-9a-f]+)?$`, "i");
   const matches = (surfaces ?? listActiveCodexCmuxSurfaces())
     .filter(({ title }) => suffix.test(title.trim()));
   return matches.length === 1 ? matches[0]! : null;
@@ -462,7 +465,7 @@ export function buildRoster(env: NodeJS.ProcessEnv = process.env, hermes: readon
     const ocsName = ocsNameFor({ kind: "codex", id: s.threadId }, names)?.name;
     entries.push({
       kind: "codex-task",
-      target: `codex-${s.threadId.slice(0, 8)}`,
+      target: codexShortId(s.threadId),
       threadId: s.threadId,
       ...(ocsName === undefined ? {} : { ocsName }),
       summary: s.summary,
@@ -810,7 +813,7 @@ export function resolveDmTarget(
   if (isCodexThreadId(codexThreadId)) {
     return {
       kind: "codex-task",
-      name: `codex-${codexThreadId.slice(0, 8).toLowerCase()}`,
+      name: codexShortId(codexThreadId),
       identity: `codex:${codexThreadId.toLowerCase()}`,
       threadId: codexThreadId.toLowerCase(),
     };
@@ -822,12 +825,16 @@ export function resolveDmTarget(
     // rollout，只在守护进程里 loaded（codex-daemon.ts）——statebar 已经把它的地址亮出来了。
     const ids = new Set(listCodexRolloutFiles(codexSessionsRoot(env)).map((session) => session.threadId));
     for (const threadId of codexDaemonSnapshot().threads.keys()) ids.add(threadId);
-    const matches = [...ids].filter((threadId) => threadId.startsWith(prefix)).map((threadId) => ({ threadId }));
+    // #93: the displayed address hashes the full id; the old time prefix keeps resolving.
+    // Either way a second candidate makes it ambiguous — never pick one.
+    const matches = [...ids]
+      .filter((threadId) => codexShortId(threadId) === `codex-${prefix}` || threadId.startsWith(prefix))
+      .map((threadId) => ({ threadId }));
     if (matches.length === 1) {
       const threadId = matches[0]!.threadId;
       return {
         kind: "codex-task",
-        name: `codex-${prefix}`,
+        name: codexShortId(threadId),
         identity: `codex:${threadId}`,
         threadId,
       };

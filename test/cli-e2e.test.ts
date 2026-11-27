@@ -1,3 +1,4 @@
+import { codexShortId } from "../src/codex-sessions.ts";
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
@@ -925,7 +926,7 @@ describe("静默记录：保留任务历史，不触发模型回合", () => {
 });
 
 describe("whoami --json：Codex 追加完整 threadId", () => {
-  test("同一分钟建的两个 thread 短 id 相同，threadId 仍能区分；Claude 输出不变", async () => {
+  test("同一分钟建的两个 thread 短 id 不再相同（#93 哈希），threadId 仍完整给出", async () => {
     const f = fixture({ withSelf: false });
     try {
       const a = "019a0000-1111-7000-8000-000000000001";
@@ -943,9 +944,10 @@ describe("whoami --json：Codex 追加完整 threadId", () => {
       };
       const meA = await runAs(a);
       const meB = await runAs(b);
-      expect(meA).toMatchObject({ host: "codex", id: "codex-019a0000", threadId: a });
-      expect(meB).toMatchObject({ host: "codex", id: "codex-019a0000", threadId: b });
-      expect(meA.addresses).toEqual(["codex-019a0000"]);
+      expect(meA).toMatchObject({ host: "codex", id: codexShortId(a), threadId: a });
+      expect(meB).toMatchObject({ host: "codex", id: codexShortId(b), threadId: b });
+      expect(meA.id).not.toBe(meB.id);
+      expect(meA.addresses).toEqual([codexShortId(a)]);
     } finally {
       f.close();
     }

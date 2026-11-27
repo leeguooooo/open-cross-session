@@ -13,6 +13,7 @@ import { writeTraffic, type TrafficEvent } from "./traffic.ts";
 import { appendFileSync, renameSync, statSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { createHash } from "node:crypto";
+import { codexShortId } from "./codex-sessions.ts";
 import { collectingSink, deliverDm } from "./deliver.ts";
 import { messages, type Lang } from "./i18n.ts";
 import { LanProtocolError, type LanIdentity } from "./lan-crypto.ts";
@@ -110,8 +111,10 @@ export function localAddressOf(
     return { key: entryShortId(entry), display: entry.name };
   }
   if (resolved.kind === "codex-task" && resolved.threadId !== undefined) {
+    // The key feeds lanChannel(): it stays the time prefix so existing LAN conversations
+    // keep their channel (#93 changed only the displayed address).
     const key = `codex-${resolved.threadId.slice(0, 8)}`;
-    return { key, display: ocsNameFor({ kind: "codex", id: resolved.threadId }, names)?.name ?? key };
+    return { key, display: ocsNameFor({ kind: "codex", id: resolved.threadId }, names)?.name ?? codexShortId(resolved.threadId) };
   }
   if (resolved.kind === "pi" && resolved.piSessionId !== undefined) {
     const key = `pi-${resolved.piSessionId.slice(0, 8)}`;
